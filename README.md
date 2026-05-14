@@ -57,7 +57,6 @@ Required:
 
 Optional:
 
-- `include/README`, `lib/README`, `test/README`: default PlatformIO placeholders.
 - `.vscode/extensions.json`: editor recommendation only.
 
 Ignored:
