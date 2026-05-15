@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <WebSocketsServer.h>
+#include <esp_http_server.h>
 
 using WebSocketTextHandler = void (*)(uint8_t clientId, const uint8_t* payload, size_t length);
 using WebSocketBinaryHandler = void (*)(uint8_t clientId, uint8_t* payload, size_t length);
@@ -20,15 +20,16 @@ public:
   void sendBinary(const uint8_t* payload, size_t length);
 
 private:
-  static void handleEvent(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length);
-  void handleEventInstance(uint8_t clientId, WStype_t type, uint8_t* payload, size_t length);
+  static esp_err_t handleWsRequest(httpd_req_t* request);
+  esp_err_t handleWsRequestInstance(httpd_req_t* request);
+  void handleDisconnect();
+  bool clientIsConnected() const;
+  bool sendFrame(httpd_ws_type_t type, const uint8_t* payload, size_t length);
 
-  WebSocketsServer* server_ = nullptr;
+  httpd_handle_t server_ = nullptr;
   WebSocketTextHandler textHandler_ = nullptr;
   WebSocketBinaryHandler binaryHandler_ = nullptr;
   WebSocketConnectionHandler connectionHandler_ = nullptr;
   bool hasClient_ = false;
-  uint8_t activeClientId_ = 0;
-
-  static WebSocketServerController* instance_;
+  int activeClientFd_ = -1;
 };

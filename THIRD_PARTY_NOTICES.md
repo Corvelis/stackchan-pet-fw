@@ -10,8 +10,10 @@ downloads the libraries listed in `platformio.ini` during setup.
 | `m5stack/M5Unified` | MIT | M5Stack unified device library. |
 | `m5stack/M5GFX` | MIT, with bundled components under additional permissive/font licenses | See the M5GFX repository for bundled component license details. |
 | `bblanchon/ArduinoJson` | MIT | Header-only JSON library. |
-| `links2004/WebSockets` | LGPL-2.1 | Also includes public-domain `libb64`. |
 | `m5stack/StackChan-BSP` | MIT | StackChan board support package. |
+
+The WebSocket endpoint is implemented with ESP-IDF `esp_http_server`, which is
+provided by the Arduino-ESP32 framework.
 
 ## Runtime Images
 
