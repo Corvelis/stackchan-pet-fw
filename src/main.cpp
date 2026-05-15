@@ -52,12 +52,19 @@ uint8_t listeningNodPhase = 0;
 bool pettingActive = false;
 unsigned long pettingEndMs = 0;
 unsigned long nextPetMoveMs = 0;
+Pose pettingBasePose = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
 bool shakeActive = false;
 unsigned long shakeEndMs = 0;
 unsigned long nextShakeCheckMs = 0;
 unsigned long lastShakeTriggerMs = 0;
 unsigned long nextShakeMotionMs = 0;
 uint8_t shakeStrongSamples = 0;
+uint8_t backTouchStrongSamples = 0;
+bool backTouchReady = false;
+unsigned long backTouchReleasedSinceMs = 0;
+unsigned long lastInitializeDrawMs = 0;
+uint8_t initializeSpinnerFrame = 0;
+unsigned long interactionReadyAtMs = 0;
 struct WifiCredential {
   const char* ssid;
   const char* password;
@@ -72,6 +79,7 @@ size_t currentWifiIndex = 0;
 uint8_t wifiConnectAttempts = 0;
 
 void sendAffectionState(const char* requestId = nullptr);
+bool interactionsReady(unsigned long now);
 
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
@@ -154,15 +162,32 @@ void cancelListeningNod(bool recenter) {
   }
 }
 
+Pose makePettingPoseFromBase(const Pose& base, bool bigMove) {
+  const int amplitude = bigMove
+                          ? random(PET_BIG_PAN_MIN, PET_BIG_PAN_MAX + 1)
+                          : random(PET_SMALL_PAN_MIN, PET_SMALL_PAN_MAX + 1);
+  const int direction = random(100) < 50 ? -1 : 1;
+  const int panJitter = random(-4, 5);
+  const int tiltLift = bigMove
+                         ? random(14, 27)
+                         : random(8, 18);
+  return {
+    constrain(base.pan + direction * amplitude + panJitter, SERVO_PAN_MIN, SERVO_PAN_MAX),
+    constrain(base.tilt + tiltLift, SERVO_TILT_MIN, SERVO_TILT_MAX)
+  };
+}
+
 void setPettingActive(bool active, unsigned long now) {
   if (active) {
     pettingEndMs = now + PET_TOUCH_RELEASE_GRACE_MS;
     if (!pettingActive) {
       pettingActive = true;
       nextPetMoveMs = 0;
+      pettingBasePose = motionController.currentPose();
       cancelListeningNod(false);
       faceController.setPetFaceMode(true);
-      motionController.setTargetPose(SERVO_PAN_CENTER + random(-6, 7), SERVO_TILT_CENTER + random(6, 13));
+      const Pose pose = makePettingPoseFromBase(pettingBasePose, false);
+      motionController.setTargetPose(pose.pan, pose.tilt);
       applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
       Serial.println("[pet] start");
     }
@@ -177,7 +202,10 @@ void setPettingActive(bool active, unsigned long now) {
   pettingEndMs = 0;
   nextPetMoveMs = 0;
   faceController.setPetFaceMode(false);
-  motionController.setTargetPose(SERVO_PAN_CENTER + random(-3, 4), SERVO_TILT_CENTER + random(-2, 5));
+  motionController.setTargetPose(
+    constrain(pettingBasePose.pan + random(-3, 4), SERVO_PAN_MIN, SERVO_PAN_MAX),
+    constrain(pettingBasePose.tilt + random(-2, 5), SERVO_TILT_MIN, SERVO_TILT_MAX)
+  );
   Serial.println("[pet] end");
 }
 
@@ -200,16 +228,9 @@ void updatePetting(unsigned long now) {
   }
 
   nextPetMoveMs = now + random(PET_MOVE_MIN_INTERVAL_MS, PET_MOVE_MAX_INTERVAL_MS + 1);
-  const bool bigMove = random(100) < 22;
-  const int amplitude = bigMove
-                          ? random(PET_BIG_PAN_MIN, PET_BIG_PAN_MAX + 1)
-                          : random(PET_SMALL_PAN_MIN, PET_SMALL_PAN_MAX + 1);
-  const int direction = random(100) < 50 ? -1 : 1;
-  const int panJitter = random(-4, 5);
-  const int tilt = bigMove
-                     ? random(PET_BIG_TILT_MIN, PET_BIG_TILT_MAX + 1)
-                     : random(PET_SMALL_TILT_MIN, PET_SMALL_TILT_MAX + 1);
-  motionController.setTargetPose(SERVO_PAN_CENTER + direction * amplitude + panJitter, tilt);
+  const bool bigMove = random(100) < PET_BIG_MOVE_CHANCE_PERCENT;
+  const Pose pose = makePettingPoseFromBase(pettingBasePose, bigMove);
+  motionController.setTargetPose(pose.pan, pose.tilt);
 }
 
 void setShakeActive(bool active, unsigned long now) {
@@ -299,6 +320,11 @@ void updateShake(unsigned long now) {
     return;
   }
 
+  if (!interactionsReady(now)) {
+    shakeStrongSamples = 0;
+    return;
+  }
+
   const float ax = data.accel.x;
   const float ay = data.accel.y;
   const float az = data.accel.z;
@@ -354,6 +380,33 @@ void drawBootScreen(const char* message) {
   M5.Display.println("Stack-chan");
   M5.Display.setCursor(16, 72);
   M5.Display.println(message);
+}
+
+void drawInitializeScreen(unsigned long now) {
+  if (lastInitializeDrawMs != 0 && now - lastInitializeDrawMs < 160) {
+    return;
+  }
+  lastInitializeDrawMs = now;
+
+  static const char spinner[] = {'|', '/', '-', '\\'};
+  const unsigned long remainingMs = now >= interactionReadyAtMs ? 0 : interactionReadyAtMs - now;
+
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(16, 32);
+  M5.Display.println("Stack-chan");
+  M5.Display.setCursor(16, 76);
+  M5.Display.printf("%c Initialize", spinner[initializeSpinnerFrame % 4]);
+
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(16, 116);
+  M5.Display.printf("Ready in %lu.%lus", remainingMs / 1000, (remainingMs % 1000) / 100);
+  initializeSpinnerFrame = (initializeSpinnerFrame + 1) % 4;
+}
+
+bool interactionsReady(unsigned long now) {
+  return interactionReadyAtMs != 0 && now >= interactionReadyAtMs;
 }
 
 void addCorsHeaders() {
@@ -905,7 +958,11 @@ void updateWiFi(unsigned long now) {
   }
 }
 
-void updateTouch() {
+void updateTouch(unsigned long now) {
+  if (!interactionsReady(now)) {
+    return;
+  }
+
   auto touch = M5.Touch.getDetail();
   if (infoScreenVisible && touch.wasHold()) {
     switchNetworkModeAndRestart();
@@ -926,10 +983,39 @@ void updateBackTouch(unsigned long now) {
   // This is the physical touch sensor on Stack-chan's back, not the CoreS3 screen.
   auto& touchSensor = M5StackChan.TouchSensor;
   const auto& intensities = touchSensor.getIntensities();
-  const bool touchingBack = intensities[0] > 0 || intensities[1] > 0 || intensities[2] > 0;
+  const bool touchingBack = intensities[0] >= BACK_TOUCH_INTENSITY_THRESHOLD ||
+                            intensities[1] >= BACK_TOUCH_INTENSITY_THRESHOLD ||
+                            intensities[2] >= BACK_TOUCH_INTENSITY_THRESHOLD;
+  const bool backTouchDetected = touchSensor.wasPressed() || touchSensor.wasClicked() ||
+                                 touchSensor.wasSwipedForward() || touchSensor.wasSwipedBackward() || touchingBack;
 
-  if (touchSensor.wasPressed() || touchSensor.wasClicked() ||
-      touchSensor.wasSwipedForward() || touchSensor.wasSwipedBackward() || touchingBack) {
+  if (!backTouchReady) {
+    backTouchStrongSamples = 0;
+    if (!interactionsReady(now) || backTouchDetected) {
+      backTouchReleasedSinceMs = 0;
+      return;
+    }
+    if (backTouchReleasedSinceMs == 0) {
+      backTouchReleasedSinceMs = now;
+      return;
+    }
+    if (now - backTouchReleasedSinceMs < BACK_TOUCH_STARTUP_RELEASE_MS) {
+      return;
+    }
+    backTouchReady = true;
+    Serial.println("[touch] back touch ready");
+    return;
+  }
+
+  if (backTouchDetected) {
+    if (backTouchStrongSamples < BACK_TOUCH_REQUIRED_SAMPLES) {
+      ++backTouchStrongSamples;
+    }
+  } else if (backTouchStrongSamples > 0) {
+    --backTouchStrongSamples;
+  }
+
+  if (backTouchStrongSamples >= BACK_TOUCH_REQUIRED_SAMPLES) {
     setPettingActive(true, now);
   }
 }
@@ -996,13 +1082,16 @@ void setup() {
   wsServer.onConnection(onWsConnection);
 
   connectWiFi();
+  interactionReadyAtMs = millis() + INTERACTION_STARTUP_IGNORE_MS;
+  lastInitializeDrawMs = 0;
+  drawInitializeScreen(millis());
 }
 
 void loop() {
   M5StackChan.update();
 
   unsigned long now = millis();
-  updateTouch();
+  updateTouch(now);
   updateBackTouch(now);
   updateShake(now);
   updateWiFi(now);
@@ -1012,6 +1101,14 @@ void loop() {
   }
   if (httpStarted) {
     httpServer.handleClient();
+  }
+
+  if (!interactionsReady(now)) {
+    drawInitializeScreen(now);
+    audioController.update(now);
+    affectionController.update(now);
+    motionController.update(now);
+    return;
   }
 
   if (infoScreenVisible) {

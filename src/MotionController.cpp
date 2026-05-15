@@ -8,11 +8,12 @@ void MotionController::begin() {
   currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
   targetPose_ = currentPose_;
   servoOutputEnabled_ = SERVO_OUTPUT_ENABLED != 0;
+  servoOutputStarted_ = false;
+  disableAutoAngleSyncAfterFirstMove_ = false;
   logPose("initial", currentPose_);
   if (servoOutputEnabled_) {
-    M5StackChan.Motion.setAutoAngleSyncEnabled(false);
-    writeServoPose(currentPose_);
-    Serial.println("[motion] StackChan serial servo output enabled");
+    M5StackChan.Motion.setAutoAngleSyncEnabled(true);
+    Serial.printf("[motion] StackChan serial servo output enabled after %u ms\n", SERVO_STARTUP_OUTPUT_DELAY_MS);
   } else {
     Serial.println("[motion] servo output disabled");
   }
@@ -53,6 +54,16 @@ void MotionController::update(unsigned long now) {
     return;
   }
   lastUpdateMs_ = now;
+
+  if (!servoOutputReady(now)) {
+    return;
+  }
+
+  if (!servoOutputStarted_) {
+    servoOutputStarted_ = true;
+    syncCurrentPoseFromServos();
+    return;
+  }
 
   Pose next = {
     approach(currentPose_.pan, targetPose_.pan),
@@ -105,14 +116,47 @@ int MotionController::toStackChanPitch(int tilt) const {
   return constrain(static_cast<int>(pitch), 0, 900);
 }
 
+Pose MotionController::fromStackChanAngles(int yaw, int pitch) const {
+  const int roundedYawDegrees = yaw >= 0 ? (yaw + 5) / 10 : (yaw - 5) / 10;
+  const int pan = SERVO_PAN_CENTER - roundedYawDegrees;
+  const long tilt = map(constrain(pitch, 0, 900), 0, 900, SERVO_TILT_MIN, SERVO_TILT_MAX);
+  return {clampPan(pan), clampTilt(static_cast<int>(tilt))};
+}
+
+bool MotionController::physicalAnglesLookValid(int yaw, int pitch) const {
+  return yaw > -1200 && yaw < 1200 && pitch > 60 && pitch < 840;
+}
+
+bool MotionController::servoOutputReady(unsigned long now) const {
+  return servoOutputEnabled_ && now >= SERVO_STARTUP_OUTPUT_DELAY_MS;
+}
+
+void MotionController::syncCurrentPoseFromServos() {
+  const auto angles = M5StackChan.Motion.getCurrentAngles();
+  if (physicalAnglesLookValid(angles.x, angles.y)) {
+    currentPose_ = fromStackChanAngles(angles.x, angles.y);
+    targetPose_ = currentPose_;
+    Serial.printf("[motion] startup pose sync yaw=%d pitch=%d\n", angles.x, angles.y);
+    logPose("startup physical", currentPose_);
+  } else {
+    Serial.printf("[motion] startup pose sync ignored yaw=%d pitch=%d\n", angles.x, angles.y);
+    logPose("startup fallback", currentPose_);
+  }
+  disableAutoAngleSyncAfterFirstMove_ = true;
+}
+
 void MotionController::writeServoPose(const Pose& pose) {
-  if (!servoOutputEnabled_) {
+  if (!servoOutputReady(millis())) {
     return;
   }
 
   const int yaw = toStackChanYaw(pose.pan);
   const int pitch = toStackChanPitch(pose.tilt);
   M5StackChan.Motion.move(yaw, pitch, SERVO_OUTPUT_SPEED);
+  if (disableAutoAngleSyncAfterFirstMove_) {
+    M5StackChan.Motion.setAutoAngleSyncEnabled(false);
+    disableAutoAngleSyncAfterFirstMove_ = false;
+  }
 }
 
 void MotionController::logPose(const char* label, const Pose& pose) const {
