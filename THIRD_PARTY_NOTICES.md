@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This repository does not vendor third-party library source code. PlatformIO
+This repository vendors the QR Code generator source listed below. PlatformIO
 downloads the libraries listed in `platformio.ini` during setup.
 
 ## Direct PlatformIO Dependencies
@@ -14,6 +14,15 @@ downloads the libraries listed in `platformio.ini` during setup.
 
 The WebSocket endpoint is implemented with ESP-IDF `esp_http_server`, which is
 provided by the Arduino-ESP32 framework.
+
+## Vendored Source
+
+| Source | License | Notes |
+| --- | --- | --- |
+| `lib/qrcodegen` from Nayuki QR Code generator library | MIT | C QR Code generator used for on-device Wi-Fi setup QR display. |
+
+The vendored QR Code generator source retains its upstream copyright and MIT
+license notice in `lib/qrcodegen/qrcodegen.h` and `lib/qrcodegen/qrcodegen.c`.
 
 ## Runtime Images
 
