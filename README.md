@@ -18,6 +18,7 @@ implementations are out of scope.
 - WebSocket binary PCM audio channel.
 - HTTP camera capture and status endpoints.
 - STA Wi-Fi mode and SoftAP direct-connection mode.
+- Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
 - Local petting and shake reactions.
 - Persistent affection state controlled through WebSocket events.
 - Device-side interaction events for petting, shake, session start, and level changes.
@@ -79,7 +80,9 @@ Ignored:
 cp src/config_private.example.h src/config_private.h
 ```
 
-3. Edit `src/config_private.h`:
+3. Optionally edit `src/config_private.h`.
+   You can also leave it unconfigured and register Wi-Fi from the browser setup
+   page after boot:
 
 ```cpp
 #define WIFI_SSID "your-wifi-ssid"
@@ -183,7 +186,7 @@ https://tyc.rei-yumesaki.net/material/illust/
 
 The firmware supports two network modes:
 
-- STA mode: connects to the Wi-Fi credentials in `src/config_private.h`.
+- STA mode: connects to saved Wi-Fi settings or credentials in `src/config_private.h`.
 - SoftAP mode: starts its own access point.
 
 Default SoftAP settings:
@@ -197,6 +200,21 @@ IP: 192.168.4.1
 Hold the touch screen while the info screen is visible to switch between STA and
 SoftAP. The selected mode is saved in device preferences and applied after
 restart.
+
+## Wi-Fi Setup Page
+
+If STA mode starts with no configured Wi-Fi credentials, the device
+automatically falls back to SoftAP mode. Connect a phone or PC to
+`StackChan-Direct`, then open this URL in a browser:
+
+```text
+http://192.168.4.1/wifi
+```
+
+The setup page can scan nearby SSIDs, save an SSID/password, edit or delete
+saved networks, and change connection priority. Saved networks are tried from
+top to bottom. When the device is already connected in STA mode, open `/wifi`
+on the IP address shown on the Network screen to use the same setup page.
 
 ## On-Device Controls
 
@@ -461,14 +479,16 @@ See `docs/device_affection_api.md` for the detailed device-side affection API.
 
 ## Troubleshooting
 
-- If the screen says Wi-Fi is not configured, create `src/config_private.h` and
-  set `WIFI_SSID` / `WIFI_PASSWORD`.
+- If Wi-Fi is not configured, connect to `StackChan-Direct` and open
+  `http://192.168.4.1/wifi` to register an SSID/password. When building from
+  source, you can also set `WIFI_SSID` / `WIFI_PASSWORD` in `src/config_private.h`.
 - If faces are missing, make sure all required PNG files are in `data/` and run
   `pio run --target uploadfs`.
 - If HTTP works but WebSocket does not, check that the client connects to port
   `8080`, not port `80`.
-- If SoftAP mode is active, connect the phone, PC, or other client device to `StackChan-Direct` and
-  use `192.168.4.1` as the device IP.
+- If SoftAP mode is active, connect the phone, PC, or other client device to
+  `StackChan-Direct` and use `192.168.4.1` as the device IP. The Wi-Fi setup
+  page is `/wifi`.
 
 ## License Notes
 
