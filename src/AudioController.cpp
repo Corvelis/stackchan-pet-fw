@@ -15,7 +15,7 @@ void AudioController::begin(WebSocketServerController* wsServer) {
     Serial.printf("[audio] rx ring allocated: %u bytes\n", static_cast<unsigned>(rxCapacity_));
   }
 
-  M5.Speaker.setVolume(AUDIO_SPEAKER_VOLUME);
+  M5.Speaker.setVolume(volume_);
   M5.Speaker.setChannelVolume(AUDIO_SPEAKER_CHANNEL, 255);
   M5.Speaker.stop(AUDIO_SPEAKER_CHANNEL);
   M5.Mic.end();
@@ -88,6 +88,45 @@ void AudioController::deferNextSpeakerStartUntil(unsigned long timestampMs) {
   speakerStartNotBeforeMs_ = timestampMs;
 }
 
+void AudioController::setVolume(uint8_t volume) {
+  volume_ = volume;
+  M5.Speaker.setVolume(volume_);
+  if (speakerEnabled_) {
+    M5.Speaker.setChannelVolume(AUDIO_SPEAKER_CHANNEL, 255);
+  }
+  Serial.printf("[audio] volume=%u\n", volume_);
+}
+
+uint8_t AudioController::volume() const {
+  return volume_;
+}
+
+void AudioController::setMicMuted(bool muted) {
+  if (micMuted_ == muted) {
+    return;
+  }
+
+  micMuted_ = muted;
+  if (micMuted_) {
+    if (micEnabled_) {
+      M5.Mic.end();
+      micEnabled_ = false;
+    }
+    resetMicBuffers();
+  } else if (state_ == ChanState::Listening && !micEnabled_) {
+    startMicInput();
+  }
+  Serial.printf("[audio] mic_muted=%d\n", micMuted_);
+}
+
+bool AudioController::micMuted() const {
+  return micMuted_;
+}
+
+bool AudioController::isMicStreaming() const {
+  return state_ == ChanState::Listening && micEnabled_ && !micMuted_ && wsServer_ != nullptr && wsServer_->hasClient();
+}
+
 void AudioController::onBinaryReceived(uint8_t* payload, size_t length) {
   if (state_ != ChanState::Speaking || (!speakerEnabled_ && !speakerStartPending_)) {
     Serial.printf("[audio] dropped %u bytes; not speaking\n", static_cast<unsigned>(length));
@@ -153,7 +192,14 @@ void AudioController::enterListening() {
   idleDrainEmptySinceMs_ = 0;
   clearRxRing();
 
-  startMicInput();
+  if (micMuted_) {
+    M5.Mic.end();
+    micEnabled_ = false;
+    resetMicBuffers();
+    Serial.println("[audio] listening: mic muted");
+  } else {
+    startMicInput();
+  }
 }
 
 void AudioController::enterSpeaking() {
@@ -195,7 +241,7 @@ void AudioController::startSpeakerIfDue() {
   speakerStartPending_ = false;
   speakerEnabled_ = M5.Speaker.begin();
   if (speakerEnabled_) {
-    M5.Speaker.setVolume(AUDIO_SPEAKER_VOLUME);
+    M5.Speaker.setVolume(volume_);
     M5.Speaker.setChannelVolume(AUDIO_SPEAKER_CHANNEL, 255);
     playbackStarted_ = false;
     idleDrainEmptySinceMs_ = 0;
@@ -227,7 +273,7 @@ void AudioController::startMicInput() {
 }
 
 void AudioController::updateMicCapture() {
-  if (!micEnabled_ || wsServer_ == nullptr || !wsServer_->hasClient()) {
+  if (micMuted_ || !micEnabled_ || wsServer_ == nullptr || !wsServer_->hasClient()) {
     return;
   }
 
@@ -423,9 +469,12 @@ size_t AudioController::appendRxBytes(const uint8_t* data, size_t length) {
   }
 
   const size_t writable = min(length, rxFree());
-  for (size_t i = 0; i < writable; ++i) {
-    rxRing_[rxWriteIndex_] = data[i];
-    rxWriteIndex_ = (rxWriteIndex_ + 1) % rxCapacity_;
+  size_t copied = 0;
+  while (copied < writable) {
+    const size_t contiguous = min(writable - copied, rxCapacity_ - rxWriteIndex_);
+    memcpy(rxRing_ + rxWriteIndex_, data + copied, contiguous);
+    rxWriteIndex_ = (rxWriteIndex_ + contiguous) % rxCapacity_;
+    copied += contiguous;
   }
   rxSize_ += writable;
   return writable;
@@ -436,9 +485,12 @@ bool AudioController::readRxBytes(uint8_t* out, size_t length) {
     return false;
   }
 
-  for (size_t i = 0; i < length; ++i) {
-    out[i] = rxRing_[rxReadIndex_];
-    rxReadIndex_ = (rxReadIndex_ + 1) % rxCapacity_;
+  size_t copied = 0;
+  while (copied < length) {
+    const size_t contiguous = min(length - copied, rxCapacity_ - rxReadIndex_);
+    memcpy(out + copied, rxRing_ + rxReadIndex_, contiguous);
+    rxReadIndex_ = (rxReadIndex_ + contiguous) % rxCapacity_;
+    copied += contiguous;
   }
   rxSize_ -= length;
   return true;

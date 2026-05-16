@@ -34,6 +34,14 @@
 #define FACE_LISTEN_PATH "/listen.png"
 #define FACE_TALK_0_PATH "/talk_0.png"
 #define FACE_TALK_1_PATH "/talk_1.png"
+#define FACE_IDLE_GUARDED_0_PATH "/idle_guarded_0.png"
+#define FACE_IDLE_ATTACHED_0_PATH "/idle_attached_0.png"
+#define FACE_BLINK_GUARDED_0_PATH "/blink_guarded_0.png"
+#define FACE_BLINK_ATTACHED_0_PATH "/blink_attached_0.png"
+#define FACE_TALK_GUARDED_0_PATH "/talk_guarded_0.png"
+#define FACE_TALK_GUARDED_1_PATH "/talk_guarded_1.png"
+#define FACE_TALK_ATTACHED_0_PATH "/talk_attached_0.png"
+#define FACE_TALK_ATTACHED_1_PATH "/talk_attached_1.png"
 #define FACE_BAD_0_PATH "/bad_0.png"
 #define FACE_BAD_1_PATH "/bad_1.png"
 #define FACE_GOOD_0_PATH "/good_0.png"
@@ -47,15 +55,34 @@
 #define FACE_PHOTO_MASTER_1_PATH "/photo_master_1.png"
 #define FACE_NADENADE_0_PATH "/nadenade_0.png"
 #define FACE_NADENADE_1_PATH "/nadenade_1.png"
+#define FACE_PET_GUARDED_0_PATH "/pet_guarded_0.png"
+#define FACE_PET_GUARDED_1_PATH "/pet_guarded_1.png"
+#define FACE_PET_BLINK_GUARDED_0_PATH "/pet_blink_guarded_0.png"
+#define FACE_PET_ATTACHED_0_PATH "/pet_attached_0.png"
+#define FACE_PET_ATTACHED_1_PATH "/pet_attached_1.png"
+#define FACE_PET_BLINK_ATTACHED_0_PATH "/pet_blink_attached_0.png"
 #define FACE_FURIFURI_0_PATH "/furifuri_0.png"
 #define FACE_FURIFURI_1_PATH "/furifuri_1.png"
+#define FACE_SHAKE_GUARDED_0_PATH "/shake_guarded_0.png"
+#define FACE_SHAKE_GUARDED_1_PATH "/shake_guarded_1.png"
+#define FACE_SHAKE_ATTACHED_0_PATH "/shake_attached_0.png"
+#define FACE_SHAKE_ATTACHED_1_PATH "/shake_attached_1.png"
 #define FACE_BLINK_PATH "/blink.png"
 #define FACE_SMILE_PATH "/smile.png"
+#define FACE_TIRED_0_PATH "/tired_0.png"
+#define FACE_TIRED_TALK_PATH "/tired_talk.png"
+#define FACE_TIRED_BLINK_PATH "/tired_blink.png"
+#define FACE_EXHAUSTED_0_PATH "/exhausted_0.png"
+#define FACE_EXHAUSTED_TALK_PATH "/exhausted_talk.png"
+#define FACE_EXHAUSTED_BLINK_PATH "/exhausted_blink.png"
+#define FACE_LOW_POWER_0_PATH "/low_power_0.png"
+#define FACE_LOW_POWER_TALK_PATH "/low_power_talk.png"
+#define FACE_LOW_POWER_BLINK_PATH "/low_power_blink.png"
 
 #define FACE_IMAGE_WIDTH 240
 #define FACE_IMAGE_HEIGHT 240
 
-#define LIP_SYNC_INTERVAL_MS 150
+#define LIP_SYNC_INTERVAL_MS 220
 #define BLINK_MIN_INTERVAL_MS 3000
 #define BLINK_MAX_INTERVAL_MS 7000
 #define BLINK_DURATION_MS 120
@@ -85,7 +112,8 @@
 #define INTERACTION_STARTUP_IGNORE_MS 4000
 #define PET_TOUCH_RELEASE_GRACE_MS 1000
 #define BACK_TOUCH_INTENSITY_THRESHOLD 2
-#define BACK_TOUCH_REQUIRED_SAMPLES 2
+#define BACK_TOUCH_REQUIRED_MS 140
+#define BACK_TOUCH_RELEASE_MS 180
 #define BACK_TOUCH_STARTUP_RELEASE_MS 1000
 #define PET_MOVE_MIN_INTERVAL_MS 130
 #define PET_MOVE_MAX_INTERVAL_MS 280
@@ -130,7 +158,7 @@
 #define AUDIO_SPEAKER_BUFFER_COUNT 8
 #define AUDIO_SPEAKER_CHANNEL 0
 #define AUDIO_SPEAKER_VOLUME 180
-#define AUDIO_PLAYBACK_PREBUFFER_MS 220
+#define AUDIO_PLAYBACK_PREBUFFER_MS 180
 #define AUDIO_PLAYBACK_PREBUFFER_BYTES ((AUDIO_SAMPLE_RATE * AUDIO_PLAYBACK_PREBUFFER_MS / 1000) * sizeof(int16_t))
 #define AUDIO_RX_RING_BYTES (512 * 1024)
 #define AUDIO_IDLE_DRAIN_GRACE_MS 300
@@ -139,3 +167,19 @@
 
 #define HTTP_PORT 80
 #define CAMERA_JPEG_QUALITY 80
+
+#define DISPLAY_BRIGHTNESS_DEFAULT 160
+#define DISPLAY_BRIGHTNESS_MIN 40
+#define DISPLAY_BRIGHTNESS_MAX 255
+#define DISPLAY_LOW_POWER_BRIGHTNESS_MAX 70
+#define AUDIO_SPEAKER_VOLUME_MIN 0
+#define AUDIO_SPEAKER_VOLUME_MAX 255
+#define SETTINGS_STEP_VALUE 20
+#define THERMAL_SAMPLE_INTERVAL_MS 10000
+#define THERMAL_BASELINE_CAPTURE_MS 15000
+#define THERMAL_WARM_DELTA_C 12.0f
+#define THERMAL_HOT_DELTA_C 20.0f
+#define THERMAL_WARM_ABSOLUTE_C 62.0f
+#define THERMAL_HOT_ABSOLUTE_C 72.0f
+#define THERMAL_LOW_POWER_SUGGEST_MS 30000
+#define LOW_POWER_FACE_UPDATE_INTERVAL_MS 600

@@ -23,6 +23,12 @@ not used for affection messages.
 HTTP `/status` also exposes the current affection values as part of the device
 status, but WebSocket JSON is the main control path.
 
+Immediately after a WebSocket client connects, the firmware always sends the
+latest `affection.state`. On reconnect, the firmware resets short-term `mood`
+and `confusion` to `0` before sending state. If startup/reunion reactions are
+enabled, the firmware sends `interaction.event` `session_start` after that state
+message.
+
 ## Device-Owned State
 
 The firmware owns and persists the canonical affection state.
@@ -36,6 +42,30 @@ The firmware owns and persists the canonical affection state.
 
 The firmware applies event weights, confidence, intensity, cooldowns, duplicate
 suppression, clamping, persistence, and display updates.
+
+`mood` and `confusion` are short-term state. `confusion` decays toward `0` by
+`10` about every 10 seconds, while `mood` decays toward `0` by `2` about every
+10 seconds. During TTS playback or playback-buffer draining, natural decay and
+the resulting `affection.state` broadcasts are paused to prioritize smooth audio
+playback. When short-term state changes through natural decay or reconnect
+reset, `seq` increments and the firmware broadcasts `affection.state`.
+
+`seq` is the primary ordering signal for state freshness. `timestampMs` is the
+device uptime from `millis()`; it is not a Unix timestamp. Use it for logs,
+debugging, and short-window `repeat` throttling, not for ordering across device
+restarts.
+
+Conversation style uses five levels, while face images use three visual tiers.
+
+| `levelIndex` | `level` | `styleId` | `visualTier` |
+| ---: | --- | --- | --- |
+| 1 | `cautious` | `cautious` | `guarded` |
+| 2 | `sulky` | `sulky` | `guarded` |
+| 3 | `normal` | `normal` | `normal` |
+| 4 | `nakayoshi` | `friendly` | `attached` |
+| 5 | `daisuki` | `attached` | `attached` |
+
+Level changes use hysteresis so `levelIndex` does not flap near boundaries.
 
 ## Visual Behavior
 
@@ -66,8 +96,7 @@ Inbound JSON:
   "event": "praise",
   "confidence": 0.92,
   "intensity": 0.8,
-  "source": "client",
-  "timestamp": 1778750000,
+  "source": "phone",
   "requestId": "client-req-0001"
 }
 ```
@@ -81,8 +110,7 @@ Fields:
 | `event` | yes | string | Must match a supported event name. |
 | `confidence` | no | number | Clamped to `0.0..1.0`; default `1.0`. |
 | `intensity` | no | number | Clamped to `0.0..1.0`; default `1.0`. |
-| `source` | no | string | Accepted for metadata; currently not required by firmware logic. |
-| `timestamp` | no | integer | Accepted for metadata; currently not required by firmware logic. |
+| `source` | no | string | Accepts `phone`, `app`, `device`, or `debug`; `app` is normalized to `phone`. |
 | `requestId` | no | string | Included in `affection.state` responses when applicable. |
 
 Supported event names:
@@ -113,7 +141,7 @@ Current event weights:
 | `master_seen` | `+2` | `+3` | `0` | `30000 ms` |
 | `session_start` | `0` | `+5` | `0` | `30000 ms` |
 | `petting` | `+9` | `+20` | `0` | `5000 ms` |
-| `shake` | `-5` | `-10` | `+35` | `4500 ms` |
+| `shake` | `-5` | `-10` | `+100` | `4500 ms` |
 
 Processing notes:
 
@@ -124,6 +152,7 @@ Processing notes:
 - Final values are clamped to the configured state ranges.
 - If a visible state change is applied, the firmware broadcasts
   `affection.state`.
+- Unknown `event` values are ignored and logged to serial.
 
 ## Message: Get State
 
@@ -142,16 +171,21 @@ Outbound JSON:
 {
   "type": "affection.state",
   "requestId": "client-req-0002",
+  "seq": 128,
+  "timestampMs": 345678,
   "affection": 642,
   "mood": 35,
   "confusion": 0,
-  "seq": 128,
-  "level": "nakayoshi"
+  "level": "nakayoshi",
+  "levelIndex": 4,
+  "visualTier": "attached",
+  "styleId": "friendly"
 }
 ```
 
 `requestId` is optional. If provided, the firmware echoes it in the state
-response.
+response. The firmware always responds to `affection.get`, even when the state
+has not changed.
 
 Level values:
 
@@ -162,6 +196,72 @@ Level values:
 | `400..599` | `normal` |
 | `600..799` | `nakayoshi` |
 | `800..1000` | `daisuki` |
+
+## Message: Interaction Event
+
+Outbound JSON:
+
+```json
+{
+  "type": "interaction.event",
+  "event": "petting",
+  "phase": "start",
+  "source": "device",
+  "seq": 128,
+  "timestampMs": 345700,
+  "affection": 650,
+  "mood": 55,
+  "confusion": 0,
+  "level": "nakayoshi",
+  "levelIndex": 4,
+  "visualTier": "attached",
+  "styleId": "friendly"
+}
+```
+
+`interaction.event` reports physical or fixed device-side interactions. `seq`
+and the state fields in the payload are the affection state snapshot at the time
+the event message is sent.
+
+Event values:
+
+```text
+petting
+shake
+session_start
+level_up
+level_down
+```
+
+Phase values:
+
+| Phase | Meaning |
+| --- | --- |
+| `start` | Start of a continuous interaction. |
+| `repeat` | Continued or repeated detection. Clients usually throttle TTS here. |
+| `end` | End of a continuous interaction. |
+| `instant` | One-shot events such as `session_start`, `level_up`, and `level_down`. |
+
+`interaction.event.source` is always `device`. For `level_up` / `level_down`,
+the firmware broadcasts `affection.state` first, then sends the interaction
+event.
+
+## TTS and Connection Modes
+
+When at least one WebSocket client is connected, the firmware is in connected
+mode. In connected mode, the device does not play template TTS by itself; it
+only sends interaction events and handles face/motion changes. The phone
+generates TTS and streams PCM back over the existing binary WebSocket path.
+
+When no WebSocket client is connected, the device can be considered standalone.
+Local voice/effect playback for standalone mode is a future extension.
+
+## Compatibility and Fallbacks
+
+Clients should tolerate older `affection.state` payloads. If `levelIndex`,
+`visualTier`, `styleId`, or `timestampMs` is missing, fall back to normal
+behavior. Unknown `event`, `phase`, `styleId`, and `visualTier` values should be
+ignored or treated as normal fallback values without crashing.
 
 ## Message: Reset
 
@@ -206,6 +306,45 @@ Firmware behavior:
 - `affection.state` is broadcast when a WebSocket client is connected.
 
 This command is intended for tuning and diagnostics.
+
+## Message: Debug Set
+
+Inbound JSON:
+
+```json
+{
+  "type": "affection.debug_set",
+  "levelIndex": 5,
+  "mood": 40,
+  "confusion": 0,
+  "persist": false,
+  "requestId": "client-req-0005"
+}
+```
+
+Firmware behavior:
+
+- Directly switches the affection state for debug UIs.
+- `levelIndex` is clamped to `1..5`; the firmware sets `affection` to the
+  representative value for that level.
+- `affection` or `value` can set the raw affection value, clamped to `0..1000`.
+- If both `levelIndex` and `affection` are present, `levelIndex` wins.
+- `mood` is clamped to `-100..100`; `confusion` is clamped to `0..100`.
+- `persist` is optional. When omitted or `false`, the debug state is not kept
+  after reboot. When `true`, the state is saved immediately.
+- If state changes, `seq` is incremented and `affection.state` is broadcast.
+- If `levelIndex` changes, the firmware sends `interaction.event` `level_up` or
+  `level_down` after `affection.state`.
+
+Representative values:
+
+| `levelIndex` | `affection` |
+| ---: | ---: |
+| 1 | 100 |
+| 2 | 300 |
+| 3 | 500 |
+| 4 | 700 |
+| 5 | 900 |
 
 ## Unsupported Messages
 

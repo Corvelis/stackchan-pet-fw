@@ -8,6 +8,27 @@ constexpr int kAffectionMax = 1000;
 constexpr int kAffectionInitial = 500;
 constexpr unsigned long kSaveMinIntervalMs = 30000;
 constexpr int kSaveAffectionDelta = 5;
+constexpr unsigned long kMoodDecayIntervalMs = 10000;
+constexpr unsigned long kConfusionDecayIntervalMs = 10000;
+constexpr int kMoodDecayStep = 2;
+constexpr int kConfusionDecayStep = 10;
+
+const int kLevelUpThresholds[] = {
+  0,
+  220,
+  420,
+  620,
+  820,
+};
+
+const int kLevelDownThresholds[] = {
+  0,
+  0,
+  170,
+  370,
+  570,
+  770,
+};
 
 const AffectionController::EventSpec kEventSpecs[] = {
   {"talk", 2, 5, 0, 2500},
@@ -19,7 +40,7 @@ const AffectionController::EventSpec kEventSpecs[] = {
   {"master_seen", 2, 3, 0, 30000},
   {"session_start", 0, 5, 0, 30000},
   {"petting", 9, 20, 0, 5000},
-  {"shake", -5, -10, 35, 4500},
+  {"shake", -5, -10, 100, 4500},
 };
 
 float clampUnit(float value) {
@@ -41,16 +62,46 @@ void AffectionController::begin(Preferences* preferences) {
   load();
 }
 
-void AffectionController::update(unsigned long now) {
+AffectionApplyResult AffectionController::update(unsigned long now) {
+  AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
+  result.levelIndex = levelIndex_;
+  result.state = state_;
+
+  int nextMood = state_.mood;
+  int nextConfusion = state_.confusion;
+
+  if (nextConfusion > 0 && now - lastConfusionDecayMs_ >= kConfusionDecayIntervalMs) {
+    nextConfusion = max(0, nextConfusion - kConfusionDecayStep);
+    lastConfusionDecayMs_ = now;
+  }
+
+  if (nextMood != 0 && now - lastMoodDecayMs_ >= kMoodDecayIntervalMs) {
+    if (nextMood > 0) {
+      nextMood = max(0, nextMood - kMoodDecayStep);
+    } else {
+      nextMood = min(0, nextMood + kMoodDecayStep);
+    }
+    lastMoodDecayMs_ = now;
+  }
+
+  result.applied = applyTransientState(nextMood, nextConfusion);
+  result.state = state_;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
+
   if (dirty_ && shouldSave(now)) {
     save(false);
   }
+  return result;
 }
 
 AffectionApplyResult AffectionController::applyEvent(const char* eventName, float confidence, float intensity,
                                                      const char* eventId, unsigned long now) {
   AffectionApplyResult result;
   result.state = state_;
+  result.previousLevelIndex = levelIndex_;
+  result.levelIndex = levelIndex_;
 
   if (eventName == nullptr || eventName[0] == '\0') {
     return result;
@@ -89,8 +140,16 @@ AffectionApplyResult AffectionController::applyEvent(const char* eventName, floa
   result.applied = applyDelta(delta, moodDelta, confusionDelta);
   result.delta = delta;
   result.state = state_;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
 
   if (result.applied) {
+    if (moodDelta != 0) {
+      lastMoodDecayMs_ = now;
+    }
+    if (confusionDelta != 0) {
+      lastConfusionDecayMs_ = now;
+    }
     markEventApplied(eventIndex, now);
     rememberEventId(eventId);
     Serial.printf("[affection] event=%s delta=%d aff=%d mood=%d conf=%d seq=%lu\n",
@@ -102,11 +161,16 @@ AffectionApplyResult AffectionController::applyEvent(const char* eventName, floa
 
 AffectionApplyResult AffectionController::reset(int value) {
   AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
   value = constrain(value, kAffectionMin, kAffectionMax);
   const int delta = value - state_.affection;
   state_.affection = value;
   state_.mood = 0;
   state_.confusion = 0;
+  lastMoodDecayMs_ = millis();
+  lastConfusionDecayMs_ = lastMoodDecayMs_;
+  levelIndex_ = initialLevelIndexForAffection(state_.affection);
+  state_.levelIndex = levelIndex_;
   ++state_.seq;
   dirty_ = true;
   save(true);
@@ -114,15 +178,90 @@ AffectionApplyResult AffectionController::reset(int value) {
   result.applied = true;
   result.delta = delta;
   result.state = state_;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
   Serial.printf("[affection] reset aff=%d seq=%lu\n", state_.affection, static_cast<unsigned long>(state_.seq));
+  return result;
+}
+
+AffectionApplyResult AffectionController::resetTransient() {
+  AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
+  result.levelIndex = levelIndex_;
+  result.applied = applyTransientState(0, 0);
+  result.state = state_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
+  if (result.applied) {
+    lastMoodDecayMs_ = millis();
+    lastConfusionDecayMs_ = lastMoodDecayMs_;
+    Serial.printf("[affection] transient reset mood=%d conf=%d seq=%lu\n",
+                  state_.mood, state_.confusion, static_cast<unsigned long>(state_.seq));
+  }
   return result;
 }
 
 AffectionApplyResult AffectionController::debugAdjust(int delta) {
   AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
   result.applied = applyDelta(delta, 0, 0);
   result.delta = delta;
   result.state = state_;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
+  return result;
+}
+
+AffectionApplyResult AffectionController::debugSet(bool hasAffection, int affection,
+                                                   bool hasLevelIndex, uint8_t requestedLevelIndex,
+                                                   bool hasMood, int mood,
+                                                   bool hasConfusion, int confusion,
+                                                   bool persist) {
+  AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
+
+  const int oldAffection = state_.affection;
+  const int oldMood = state_.mood;
+  const int oldConfusion = state_.confusion;
+  const uint8_t oldLevelIndex = levelIndex_;
+
+  if (hasLevelIndex) {
+    requestedLevelIndex = constrain(requestedLevelIndex, static_cast<uint8_t>(1), static_cast<uint8_t>(5));
+    state_.affection = representativeAffectionForLevel(requestedLevelIndex);
+    levelIndex_ = requestedLevelIndex;
+  } else if (hasAffection) {
+    state_.affection = constrain(affection, kAffectionMin, kAffectionMax);
+    levelIndex_ = initialLevelIndexForAffection(state_.affection);
+  }
+
+  if (hasMood) {
+    state_.mood = constrain(mood, -100, 100);
+    lastMoodDecayMs_ = millis();
+  }
+  if (hasConfusion) {
+    state_.confusion = constrain(confusion, 0, 100);
+    lastConfusionDecayMs_ = millis();
+  }
+  state_.levelIndex = levelIndex_;
+
+  result.applied = oldAffection != state_.affection ||
+                   oldMood != state_.mood ||
+                   oldConfusion != state_.confusion ||
+                   oldLevelIndex != levelIndex_;
+  result.delta = state_.affection - oldAffection;
+  result.state = state_;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
+
+  if (result.applied) {
+    ++state_.seq;
+    if (persist) {
+      dirty_ = true;
+      save(true);
+    }
+    Serial.printf("[affection] debug_set aff=%d mood=%d conf=%d level=%u seq=%lu persist=%d\n",
+                  state_.affection, state_.mood, state_.confusion, levelIndex_,
+                  static_cast<unsigned long>(state_.seq), persist ? 1 : 0);
+  }
   return result;
 }
 
@@ -131,19 +270,19 @@ const AffectionState& AffectionController::state() const {
 }
 
 const char* AffectionController::level() const {
-  if (state_.affection < 200) {
-    return "cautious";
-  }
-  if (state_.affection < 400) {
-    return "sulky";
-  }
-  if (state_.affection < 600) {
-    return "normal";
-  }
-  if (state_.affection < 800) {
-    return "nakayoshi";
-  }
-  return "daisuki";
+  return levelForIndex(levelIndex_);
+}
+
+uint8_t AffectionController::levelIndex() const {
+  return levelIndex_;
+}
+
+const char* AffectionController::styleId() const {
+  return styleIdForIndex(levelIndex_);
+}
+
+const char* AffectionController::visualTier() const {
+  return visualTierForIndex(levelIndex_);
 }
 
 const AffectionController::EventSpec* AffectionController::findSpec(const char* eventName, uint8_t* index) {
@@ -201,13 +340,120 @@ bool AffectionController::applyDelta(int delta, int moodDelta, int confusionDelt
   state_.affection = constrain(state_.affection + delta, kAffectionMin, kAffectionMax);
   state_.mood = constrain(state_.mood + moodDelta, -100, 100);
   state_.confusion = constrain(state_.confusion + confusionDelta, 0, 100);
+  const uint8_t oldLevelIndex = levelIndex_;
+  levelIndex_ = updateLevelIndexForAffection(state_.affection);
+  state_.levelIndex = levelIndex_;
 
-  const bool changed = oldAffection != state_.affection || oldMood != state_.mood || oldConfusion != state_.confusion;
+  const bool changed = oldAffection != state_.affection ||
+                       oldMood != state_.mood ||
+                       oldConfusion != state_.confusion ||
+                       oldLevelIndex != levelIndex_;
   if (changed) {
     ++state_.seq;
     dirty_ = true;
   }
   return changed;
+}
+
+bool AffectionController::applyTransientState(int mood, int confusion) {
+  mood = constrain(mood, -100, 100);
+  confusion = constrain(confusion, 0, 100);
+
+  const int oldMood = state_.mood;
+  const int oldConfusion = state_.confusion;
+  state_.mood = mood;
+  state_.confusion = confusion;
+
+  const bool changed = oldMood != state_.mood || oldConfusion != state_.confusion;
+  if (changed) {
+    ++state_.seq;
+  }
+  return changed;
+}
+
+uint8_t AffectionController::initialLevelIndexForAffection(int affection) const {
+  if (affection < 200) {
+    return 1;
+  }
+  if (affection < 400) {
+    return 2;
+  }
+  if (affection < 600) {
+    return 3;
+  }
+  if (affection < 800) {
+    return 4;
+  }
+  return 5;
+}
+
+uint8_t AffectionController::updateLevelIndexForAffection(int affection) {
+  uint8_t index = constrain(levelIndex_, static_cast<uint8_t>(1), static_cast<uint8_t>(5));
+  while (index < 5 && affection >= kLevelUpThresholds[index]) {
+    ++index;
+  }
+  while (index > 1 && affection < kLevelDownThresholds[index]) {
+    --index;
+  }
+  return index;
+}
+
+int AffectionController::representativeAffectionForLevel(uint8_t index) const {
+  switch (index) {
+    case 1:
+      return 100;
+    case 2:
+      return 300;
+    case 4:
+      return 700;
+    case 5:
+      return 900;
+    case 3:
+    default:
+      return 500;
+  }
+}
+
+const char* AffectionController::levelForIndex(uint8_t index) const {
+  switch (index) {
+    case 1:
+      return "cautious";
+    case 2:
+      return "sulky";
+    case 4:
+      return "nakayoshi";
+    case 5:
+      return "daisuki";
+    case 3:
+    default:
+      return "normal";
+  }
+}
+
+const char* AffectionController::styleIdForIndex(uint8_t index) const {
+  switch (index) {
+    case 1:
+      return "cautious";
+    case 2:
+      return "sulky";
+    case 4:
+      return "friendly";
+    case 5:
+      return "attached";
+    case 3:
+    default:
+      return "normal";
+  }
+}
+
+const char* AffectionController::visualTierForIndex(uint8_t index) const {
+  if (index <= 2) {
+    return "guarded";
+  }
+  if (index >= 4) {
+    return "attached";
+  }
+  return "normal";
 }
 
 void AffectionController::load() {
@@ -223,6 +469,10 @@ void AffectionController::load() {
   state_.affection = constrain(state_.affection, kAffectionMin, kAffectionMax);
   state_.mood = 0;
   state_.confusion = 0;
+  lastMoodDecayMs_ = millis();
+  lastConfusionDecayMs_ = lastMoodDecayMs_;
+  levelIndex_ = initialLevelIndexForAffection(state_.affection);
+  state_.levelIndex = levelIndex_;
   lastSavedAffection_ = state_.affection;
   lastSavedSeq_ = state_.seq;
   Serial.printf("[affection] loaded aff=%d seq=%lu\n", state_.affection, static_cast<unsigned long>(state_.seq));
