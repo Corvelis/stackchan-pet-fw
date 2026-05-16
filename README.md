@@ -216,6 +216,14 @@ saved networks, and change connection priority. Saved networks are tried from
 top to bottom. When the device is already connected in STA mode, open `/wifi`
 on the IP address shown on the Network screen to use the same setup page.
 
+The on-device Network screen can show QR codes for Wi-Fi setup.
+
+- SoftAP mode: use `Wi-Fi QR` to connect to `StackChan-Direct`, then use
+  `Setup QR` to open `http://192.168.4.1/wifi`.
+- STA connected: use `Setup QR` to open `http://<device-ip>/wifi`. The phone or
+  PC must be on the same Wi-Fi network as the device.
+- Tap the QR screen to return to the Network screen.
+
 ## On-Device Controls
 
 - Flick from an edge of the touch screen to show or hide the settings screen.

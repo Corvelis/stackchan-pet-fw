@@ -7,6 +7,7 @@
 #include <M5StackChan.h>
 #include <Preferences.h>
 #include <math.h>
+#include <qrcodegen.h>
 
 #include "AffectionController.h"
 #include "AppState.h"
@@ -36,6 +37,12 @@ enum class SettingsPage : uint8_t {
   Display = 1,
   Audio = 2,
   Power = 3,
+};
+
+enum class NetworkQrType : uint8_t {
+  None = 0,
+  WifiConnect = 1,
+  Setup = 2,
 };
 
 enum class ThermalLevel : uint8_t {
@@ -73,6 +80,7 @@ bool displayOn = true;
 bool wsStarted = false;
 bool httpStarted = false;
 bool wsClientConnected = false;
+NetworkQrType activeNetworkQr = NetworkQrType::None;
 unsigned long lastWifiCheckMs = 0;
 unsigned long lastInfoDrawMs = 0;
 bool pendingStateAfterPlayback = false;
@@ -116,6 +124,8 @@ WifiCredential wifiCredentials[kMaxWifiCredentials] = {
 size_t wifiCredentialCount = 0;
 size_t currentWifiIndex = 0;
 uint8_t wifiConnectAttempts = 0;
+uint8_t qrCodeBuffer[qrcodegen_BUFFER_LEN_MAX];
+uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
 
 void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
@@ -172,6 +182,50 @@ void updateAffectionState(unsigned long now) {
 
 const char* networkModeName() {
   return networkMode == NetworkMode::SoftAp ? "SoftAP" : "STA";
+}
+
+String wifiQrEscape(const char* value) {
+  String escaped;
+  if (value == nullptr) {
+    return escaped;
+  }
+  escaped.reserve(strlen(value) + 4);
+  for (const char* p = value; *p != '\0'; ++p) {
+    if (*p == '\\' || *p == ';' || *p == ',' || *p == ':' || *p == '"') {
+      escaped += '\\';
+    }
+    escaped += *p;
+  }
+  return escaped;
+}
+
+String wifiConnectQrPayload() {
+  String payload = F("WIFI:T:WPA;S:");
+  payload += wifiQrEscape(AP_SSID);
+  payload += F(";P:");
+  payload += wifiQrEscape(AP_PASSWORD);
+  payload += F(";;");
+  return payload;
+}
+
+String wifiSetupUrl() {
+  if (networkMode == NetworkMode::SoftAp) {
+    String url = F("http://");
+    url += WiFi.softAPIP().toString();
+    url += F("/wifi");
+    return url;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    String url = F("http://");
+    url += WiFi.localIP().toString();
+    url += F("/wifi");
+    return url;
+  }
+  return String();
+}
+
+bool setupQrAvailable() {
+  return networkMode == NetworkMode::SoftAp || WiFi.status() == WL_CONNECTED;
 }
 
 NetworkMode loadNetworkMode() {
@@ -1175,12 +1229,15 @@ void drawNetworkSettingsPage() {
     M5.Display.printf("Setup: http://%s/wifi\n", ip.c_str());
     M5.Display.printf("WS: ws://%s:%d%s\n", ip.c_str(), WS_PORT, WS_PATH);
     M5.Display.printf("Stations: %d\n", WiFi.softAPgetStationNum());
+    drawButton(12, 154, 136, 30, "Wi-Fi QR");
+    drawButton(172, 154, 136, 30, "Setup QR");
   } else if (WiFi.status() == WL_CONNECTED) {
     const String ip = WiFi.localIP().toString();
     M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
     M5.Display.printf("IP: %s\n", ip.c_str());
     M5.Display.printf("WS: ws://%s:%d%s\n", ip.c_str(), WS_PORT, WS_PATH);
     M5.Display.printf("Setup: http://%s/wifi\n", ip.c_str());
+    drawButton(172, 154, 136, 30, "Setup QR");
   } else {
     M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
     M5.Display.println("IP: not connected");
@@ -1190,6 +1247,67 @@ void drawNetworkSettingsPage() {
   M5.Display.printf("Client: %s\n", wsClientConnected ? "connected" : "disconnected");
   M5.Display.println();
   M5.Display.printf("Hold: switch to %s\n", networkMode == NetworkMode::SoftAp ? "STA" : "SoftAP");
+}
+
+void drawNetworkQrScreen() {
+  const bool isWifiQr = activeNetworkQr == NetworkQrType::WifiConnect;
+  const String payload = isWifiQr ? wifiConnectQrPayload() : wifiSetupUrl();
+  const bool encoded = payload.length() > 0 &&
+                       qrcodegen_encodeText(payload.c_str(), qrTempBuffer, qrCodeBuffer,
+                                            qrcodegen_Ecc_MEDIUM,
+                                            qrcodegen_VERSION_MIN,
+                                            qrcodegen_VERSION_MAX,
+                                            qrcodegen_Mask_AUTO, true);
+
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(12, 12);
+  M5.Display.println(isWifiQr ? "Wi-Fi QR" : "Setup QR");
+
+  if (!encoded) {
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(12, 72);
+    M5.Display.println("QR unavailable");
+    M5.Display.setCursor(12, 96);
+    M5.Display.println("Tap to return");
+    return;
+  }
+
+  const int size = qrcodegen_getSize(qrCodeBuffer);
+  const int quietModules = 4;
+  const int totalModules = size + quietModules * 2;
+  const int maxQrPixels = min(M5.Display.width() - 28, M5.Display.height() - 78);
+  const int scale = max(1, maxQrPixels / totalModules);
+  const int qrPixels = totalModules * scale;
+  const int originX = (M5.Display.width() - qrPixels) / 2;
+  const int originY = 40;
+
+  M5.Display.fillRect(originX, originY, qrPixels, qrPixels, TFT_WHITE);
+  for (int y = 0; y < size; ++y) {
+    for (int x = 0; x < size; ++x) {
+      if (qrcodegen_getModule(qrCodeBuffer, x, y)) {
+        M5.Display.fillRect(originX + (x + quietModules) * scale,
+                            originY + (y + quietModules) * scale,
+                            scale, scale, TFT_BLACK);
+      }
+    }
+  }
+
+  const int textY = min(originY + qrPixels + 8, M5.Display.height() - 34);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setCursor(12, textY);
+  if (isWifiQr) {
+    M5.Display.printf("SSID: %s\n", AP_SSID);
+    M5.Display.printf("PASS: %s", AP_PASSWORD);
+  } else {
+    M5.Display.println(payload);
+    if (networkMode == NetworkMode::Sta) {
+      M5.Display.print("Same Wi-Fi only");
+    }
+  }
+  M5.Display.setCursor(220, M5.Display.height() - 14);
+  M5.Display.print("Tap: back");
 }
 
 void drawDisplaySettingsPage() {
@@ -1227,6 +1345,10 @@ void drawPowerSettingsPage() {
 void drawInfoScreen() {
   lastInfoDrawMs = millis();
   M5.Display.fillScreen(TFT_BLACK);
+  if (activeNetworkQr != NetworkQrType::None) {
+    drawNetworkQrScreen();
+    return;
+  }
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setCursor(12, 16);
@@ -1258,6 +1380,9 @@ bool settingsPageNeedsPeriodicRefresh() {
 void setInfoScreenVisible(bool visible) {
   if (infoScreenVisible == visible) {
     return;
+  }
+  if (!visible) {
+    activeNetworkQr = NetworkQrType::None;
   }
   infoScreenVisible = visible;
   faceController.setEnabled(displayOn && !visible);
@@ -1302,28 +1427,49 @@ void adjustVolume(int delta) {
 }
 
 bool handleSettingsTouch(const m5::touch_detail_t& touch) {
+  if (activeNetworkQr != NetworkQrType::None) {
+    activeNetworkQr = NetworkQrType::None;
+    drawInfoScreen();
+    return true;
+  }
+
   if (touchIn(touch, 8, 206, 72, 26)) {
+    activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Network;
     drawInfoScreen();
     return true;
   }
   if (touchIn(touch, 86, 206, 72, 26)) {
+    activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Display;
     drawInfoScreen();
     return true;
   }
   if (touchIn(touch, 164, 206, 72, 26)) {
+    activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Audio;
     drawInfoScreen();
     return true;
   }
   if (touchIn(touch, 242, 206, 70, 26)) {
+    activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Power;
     drawInfoScreen();
     return true;
   }
 
-  if (settingsPage == SettingsPage::Display) {
+  if (settingsPage == SettingsPage::Network) {
+    if (networkMode == NetworkMode::SoftAp && touchIn(touch, 12, 154, 136, 30)) {
+      activeNetworkQr = NetworkQrType::WifiConnect;
+      drawInfoScreen();
+      return true;
+    }
+    if (setupQrAvailable() && touchIn(touch, 172, 154, 136, 30)) {
+      activeNetworkQr = NetworkQrType::Setup;
+      drawInfoScreen();
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Display) {
     if (touchIn(touch, 246, 70, 54, 28)) {
       adjustBrightness(-20);
       return true;
@@ -1847,7 +1993,8 @@ void updateTouch(unsigned long now) {
     return;
   }
 
-  if (infoScreenVisible && settingsPage == SettingsPage::Network && touch.wasHold()) {
+  if (infoScreenVisible && settingsPage == SettingsPage::Network &&
+      activeNetworkQr == NetworkQrType::None && touch.wasHold()) {
     switchNetworkModeAndRestart();
     return;
   }
