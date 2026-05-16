@@ -30,6 +30,16 @@ void MotionController::setMotion(const char* name) {
     setTargetPose(SERVO_PAN_CENTER - 35, SERVO_TILT_CENTER + 5);
   } else if (strcmp(name, "nod") == 0) {
     setTargetPose(SERVO_PAN_CENTER, SERVO_TILT_CENTER + 18);
+  } else if (strcmp(name, "small_nod") == 0) {
+    setTargetPose(SERVO_PAN_CENTER, SERVO_TILT_CENTER + 10);
+  } else if (strcmp(name, "small_bounce") == 0) {
+    setTargetPose(SERVO_PAN_CENTER + random(-4, 5), SERVO_TILT_CENTER - 8);
+  } else if (strcmp(name, "lean_forward") == 0) {
+    setTargetPose(SERVO_PAN_CENTER, SERVO_TILT_CENTER - 12);
+  } else if (strcmp(name, "wobble") == 0) {
+    setTargetPose(SERVO_PAN_CENTER + random(-18, 19), SERVO_TILT_CENTER + random(-8, 9));
+  } else if (strcmp(name, "shy_nod") == 0) {
+    setTargetPose(SERVO_PAN_CENTER - 8, SERVO_TILT_CENTER + 12);
   } else if (strcmp(name, "thinking") == 0) {
     setTargetPose(SERVO_PAN_CENTER - 12, SERVO_TILT_CENTER + 10);
   } else {

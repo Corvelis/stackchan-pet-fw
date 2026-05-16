@@ -46,6 +46,22 @@ void FaceController::showFace(const char* name) {
     drawFace(FACE_TALK_0_PATH);
   } else if (strcmp(name, "talk_1") == 0) {
     drawFace(FACE_TALK_1_PATH);
+  } else if (strcmp(name, "idle_guarded_0") == 0) {
+    drawFace(FACE_IDLE_GUARDED_0_PATH);
+  } else if (strcmp(name, "idle_attached_0") == 0) {
+    drawFace(FACE_IDLE_ATTACHED_0_PATH);
+  } else if (strcmp(name, "blink_guarded_0") == 0) {
+    drawFace(FACE_BLINK_GUARDED_0_PATH);
+  } else if (strcmp(name, "blink_attached_0") == 0) {
+    drawFace(FACE_BLINK_ATTACHED_0_PATH);
+  } else if (strcmp(name, "talk_guarded_0") == 0) {
+    drawFace(FACE_TALK_GUARDED_0_PATH);
+  } else if (strcmp(name, "talk_guarded_1") == 0) {
+    drawFace(FACE_TALK_GUARDED_1_PATH);
+  } else if (strcmp(name, "talk_attached_0") == 0) {
+    drawFace(FACE_TALK_ATTACHED_0_PATH);
+  } else if (strcmp(name, "talk_attached_1") == 0) {
+    drawFace(FACE_TALK_ATTACHED_1_PATH);
   } else if (strcmp(name, "bad_0") == 0) {
     drawFace(FACE_BAD_0_PATH);
   } else if (strcmp(name, "bad_1") == 0) {
@@ -72,14 +88,52 @@ void FaceController::showFace(const char* name) {
     drawFace(FACE_NADENADE_0_PATH);
   } else if (strcmp(name, "nadenade_1") == 0) {
     drawFace(FACE_NADENADE_1_PATH);
+  } else if (strcmp(name, "pet_guarded_0") == 0) {
+    drawFace(FACE_PET_GUARDED_0_PATH);
+  } else if (strcmp(name, "pet_guarded_1") == 0) {
+    drawFace(FACE_PET_GUARDED_1_PATH);
+  } else if (strcmp(name, "pet_blink_guarded_0") == 0) {
+    drawFace(FACE_PET_BLINK_GUARDED_0_PATH);
+  } else if (strcmp(name, "pet_attached_0") == 0) {
+    drawFace(FACE_PET_ATTACHED_0_PATH);
+  } else if (strcmp(name, "pet_attached_1") == 0) {
+    drawFace(FACE_PET_ATTACHED_1_PATH);
+  } else if (strcmp(name, "pet_blink_attached_0") == 0) {
+    drawFace(FACE_PET_BLINK_ATTACHED_0_PATH);
   } else if (strcmp(name, "furifuri_0") == 0) {
     drawFace(FACE_FURIFURI_0_PATH);
   } else if (strcmp(name, "furifuri_1") == 0) {
     drawFace(FACE_FURIFURI_1_PATH);
+  } else if (strcmp(name, "shake_guarded_0") == 0) {
+    drawFace(FACE_SHAKE_GUARDED_0_PATH);
+  } else if (strcmp(name, "shake_guarded_1") == 0) {
+    drawFace(FACE_SHAKE_GUARDED_1_PATH);
+  } else if (strcmp(name, "shake_attached_0") == 0) {
+    drawFace(FACE_SHAKE_ATTACHED_0_PATH);
+  } else if (strcmp(name, "shake_attached_1") == 0) {
+    drawFace(FACE_SHAKE_ATTACHED_1_PATH);
   } else if (strcmp(name, "blink") == 0) {
     drawFace(FACE_BLINK_PATH);
   } else if (strcmp(name, "smile") == 0) {
     drawFace(FACE_SMILE_PATH);
+  } else if (strcmp(name, "tired_0") == 0) {
+    drawFace(FACE_TIRED_0_PATH);
+  } else if (strcmp(name, "tired_talk") == 0) {
+    drawFace(FACE_TIRED_TALK_PATH);
+  } else if (strcmp(name, "tired_blink") == 0) {
+    drawFace(FACE_TIRED_BLINK_PATH);
+  } else if (strcmp(name, "exhausted_0") == 0) {
+    drawFace(FACE_EXHAUSTED_0_PATH);
+  } else if (strcmp(name, "exhausted_talk") == 0) {
+    drawFace(FACE_EXHAUSTED_TALK_PATH);
+  } else if (strcmp(name, "exhausted_blink") == 0) {
+    drawFace(FACE_EXHAUSTED_BLINK_PATH);
+  } else if (strcmp(name, "low_power_0") == 0) {
+    drawFace(FACE_LOW_POWER_0_PATH);
+  } else if (strcmp(name, "low_power_talk") == 0) {
+    drawFace(FACE_LOW_POWER_TALK_PATH);
+  } else if (strcmp(name, "low_power_blink") == 0) {
+    drawFace(FACE_LOW_POWER_BLINK_PATH);
   } else {
     Serial.printf("[face] unknown face: %s\n", name);
   }
@@ -193,17 +247,65 @@ void FaceController::setEnabled(bool enabled) {
   }
 }
 
+void FaceController::setThermalFaceMode(ThermalFaceMode mode) {
+  if (thermalFaceMode_ == mode) {
+    return;
+  }
+
+  thermalFaceMode_ = mode;
+  lipOpen_ = false;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  if (enabled_) {
+    showBaseFace();
+  }
+}
+
+void FaceController::setBatteryState(int level, bool charging) {
+  level = level < 0 ? -1 : constrain(level, 0, 100);
+  if (batteryLevel_ == level && batteryCharging_ == charging) {
+    return;
+  }
+  batteryLevel_ = level;
+  batteryCharging_ = charging;
+  batteryOverlayDirty_ = true;
+  if (enabled_) {
+    drawBatteryOverlay();
+  }
+}
+
+void FaceController::setMicState(bool connected, bool muted, bool streaming) {
+  if (micConnected_ == connected && micMuted_ == muted && micStreaming_ == streaming) {
+    return;
+  }
+  micConnected_ = connected;
+  micMuted_ = muted;
+  micStreaming_ = streaming;
+  micOverlayDirty_ = true;
+  if (enabled_) {
+    drawMicOverlay();
+  }
+}
+
 void FaceController::setAffectionState(const AffectionState& state) {
   if (affectionState_.affection == state.affection &&
       affectionState_.mood == state.mood &&
       affectionState_.confusion == state.confusion &&
-      affectionState_.seq == state.seq) {
+      affectionState_.seq == state.seq &&
+      affectionState_.levelIndex == state.levelIndex) {
     return;
   }
 
+  const uint8_t oldTier = visualTierIndex();
   affectionState_ = state;
+  const uint8_t newTier = visualTierIndex();
   affectionOverlayDirty_ = true;
   if (enabled_) {
+    if (oldTier != newTier && !photoFaceMode_ && !photoMasterFaceMode_ && authFaceMode_ == AuthFaceMode::Unknown) {
+      currentPath_ = "";
+      showBaseFace();
+    }
     drawAffectionOverlay(millis());
   }
 }
@@ -225,10 +327,6 @@ void FaceController::update(unsigned long now) {
     return;
   }
 
-  if (affectionOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
-    drawAffectionOverlay(now);
-  }
-
   if (state_ == ChanState::Speaking) {
     if (now - lastLipSyncMs_ >= LIP_SYNC_INTERVAL_MS) {
       lastLipSyncMs_ = now;
@@ -236,6 +334,12 @@ void FaceController::update(unsigned long now) {
       drawFace(talkFacePath(lipOpen_ ? 1 : 0));
     }
     return;
+  }
+
+  if (affectionOverlayDirty_ || batteryOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
+    drawAffectionOverlay(now);
+    drawBatteryOverlay();
+    drawMicOverlay();
   }
 
   if (blinking_) {
@@ -256,7 +360,14 @@ void FaceController::update(unsigned long now) {
     return;
   }
 
-  if (!shakeFaceMode_ && !petFaceMode_ && !photoFaceMode_ && !photoMasterFaceMode_ && state_ == ChanState::Idle && now >= nextSmileMs_) {
+  if (!shakeFaceMode_ &&
+      !petFaceMode_ &&
+      !photoFaceMode_ &&
+      !photoMasterFaceMode_ &&
+      thermalFaceMode_ == ThermalFaceMode::Normal &&
+      visualTierIndex() == 2 &&
+      state_ == ChanState::Idle &&
+      now >= nextSmileMs_) {
     smiling_ = true;
     smileEndMs_ = now + IDLE_SMILE_DURATION_MS;
     drawFace(FACE_SMILE_PATH);
@@ -272,10 +383,10 @@ void FaceController::update(unsigned long now) {
 
 const char* FaceController::talkFacePath(uint8_t index) const {
   if (shakeFaceMode_) {
-    return index == 0 ? FACE_FURIFURI_0_PATH : FACE_FURIFURI_1_PATH;
+    return shakeFacePath(index);
   }
   if (petFaceMode_) {
-    return index == 0 ? FACE_NADENADE_0_PATH : FACE_NADENADE_1_PATH;
+    return petFacePath(index);
   }
   if (photoMasterFaceMode_) {
     return index == 0 ? FACE_PHOTO_MASTER_0_PATH : FACE_PHOTO_MASTER_1_PATH;
@@ -289,15 +400,26 @@ const char* FaceController::talkFacePath(uint8_t index) const {
   if (authFaceMode_ == AuthFaceMode::Master) {
     return index == 0 ? FACE_GOOD_0_PATH : FACE_GOOD_1_PATH;
   }
+  if (thermalFaceMode_ != ThermalFaceMode::Normal) {
+    return thermalFacePath(index);
+  }
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(index == 0 ? FACE_TALK_GUARDED_0_PATH : FACE_TALK_GUARDED_1_PATH,
+                            index == 0 ? fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_TALK_0_PATH) : FACE_TALK_1_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(index == 0 ? FACE_TALK_ATTACHED_0_PATH : FACE_TALK_ATTACHED_1_PATH,
+                            index == 0 ? fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_TALK_0_PATH) : FACE_TALK_1_PATH);
+  }
   return index == 0 ? FACE_TALK_0_PATH : FACE_TALK_1_PATH;
 }
 
 const char* FaceController::listeningFacePath() const {
   if (shakeFaceMode_) {
-    return FACE_FURIFURI_0_PATH;
+    return shakeFacePath(0);
   }
   if (petFaceMode_) {
-    return FACE_NADENADE_0_PATH;
+    return petFacePath(0);
   }
   if (photoMasterFaceMode_) {
     return FACE_PHOTO_MASTER_0_PATH;
@@ -311,15 +433,24 @@ const char* FaceController::listeningFacePath() const {
   if (authFaceMode_ == AuthFaceMode::Master) {
     return FACE_GOOD_0_PATH;
   }
+  if (thermalFaceMode_ != ThermalFaceMode::Normal) {
+    return thermalFacePath(0);
+  }
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_LISTEN_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_LISTEN_PATH);
+  }
   return FACE_LISTEN_PATH;
 }
 
 const char* FaceController::blinkFacePath() const {
   if (shakeFaceMode_) {
-    return FACE_FURIFURI_0_PATH;
+    return shakeFacePath(0);
   }
   if (petFaceMode_) {
-    return FACE_NADENADE_0_PATH;
+    return petBlinkFacePath();
   }
   if (photoMasterFaceMode_) {
     return FACE_PHOTO_MASTER_0_PATH;
@@ -333,13 +464,118 @@ const char* FaceController::blinkFacePath() const {
   if (authFaceMode_ == AuthFaceMode::NotMaster) {
     return FACE_BAD_0_PATH;
   }
+  if (thermalFaceMode_ != ThermalFaceMode::Normal) {
+    return thermalBlinkFacePath();
+  }
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(FACE_BLINK_GUARDED_0_PATH, FACE_BLINK_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(FACE_BLINK_ATTACHED_0_PATH, FACE_BLINK_PATH);
+  }
   return FACE_BLINK_PATH;
+}
+
+const char* FaceController::idleFacePath() const {
+  if (thermalFaceMode_ != ThermalFaceMode::Normal) {
+    return thermalFacePath(0);
+  }
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_IDLE_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_IDLE_PATH);
+  }
+  return FACE_IDLE_PATH;
+}
+
+const char* FaceController::thermalFacePath(uint8_t index) const {
+  switch (thermalFaceMode_) {
+    case ThermalFaceMode::LowPower:
+      return fallbackFacePath(index == 0 ? FACE_LOW_POWER_0_PATH : FACE_LOW_POWER_TALK_PATH,
+                              fallbackFacePath(index == 0 ? FACE_EXHAUSTED_0_PATH : FACE_EXHAUSTED_TALK_PATH,
+                                               index == 0 ? FACE_IDLE_PATH : FACE_TALK_1_PATH));
+    case ThermalFaceMode::Hot:
+      return fallbackFacePath(index == 0 ? FACE_EXHAUSTED_0_PATH : FACE_EXHAUSTED_TALK_PATH,
+                              fallbackFacePath(index == 0 ? FACE_TIRED_0_PATH : FACE_TIRED_TALK_PATH,
+                                               index == 0 ? FACE_IDLE_PATH : FACE_TALK_1_PATH));
+    case ThermalFaceMode::Warm:
+      return fallbackFacePath(index == 0 ? FACE_TIRED_0_PATH : FACE_TIRED_TALK_PATH,
+                              index == 0 ? FACE_IDLE_PATH : FACE_TALK_1_PATH);
+    case ThermalFaceMode::Normal:
+    default:
+      return FACE_IDLE_PATH;
+  }
+}
+
+const char* FaceController::thermalBlinkFacePath() const {
+  switch (thermalFaceMode_) {
+    case ThermalFaceMode::LowPower:
+      return fallbackFacePath(FACE_LOW_POWER_BLINK_PATH,
+                              fallbackFacePath(FACE_EXHAUSTED_BLINK_PATH, FACE_BLINK_PATH));
+    case ThermalFaceMode::Hot:
+      return fallbackFacePath(FACE_EXHAUSTED_BLINK_PATH,
+                              fallbackFacePath(FACE_TIRED_BLINK_PATH, FACE_BLINK_PATH));
+    case ThermalFaceMode::Warm:
+      return fallbackFacePath(FACE_TIRED_BLINK_PATH, FACE_BLINK_PATH);
+    case ThermalFaceMode::Normal:
+    default:
+      return FACE_BLINK_PATH;
+  }
+}
+
+const char* FaceController::petFacePath(uint8_t index) const {
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(index == 0 ? FACE_PET_GUARDED_0_PATH : FACE_PET_GUARDED_1_PATH,
+                            index == 0 ? FACE_NADENADE_0_PATH : FACE_NADENADE_1_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(index == 0 ? FACE_PET_ATTACHED_0_PATH : FACE_PET_ATTACHED_1_PATH,
+                            index == 0 ? FACE_NADENADE_0_PATH : FACE_NADENADE_1_PATH);
+  }
+  return index == 0 ? FACE_NADENADE_0_PATH : FACE_NADENADE_1_PATH;
+}
+
+const char* FaceController::petBlinkFacePath() const {
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(FACE_PET_BLINK_GUARDED_0_PATH, petFacePath(0));
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(FACE_PET_BLINK_ATTACHED_0_PATH, petFacePath(0));
+  }
+  return petFacePath(0);
+}
+
+const char* FaceController::shakeFacePath(uint8_t index) const {
+  if (visualTierIndex() == 1) {
+    return fallbackFacePath(index == 0 ? FACE_SHAKE_GUARDED_0_PATH : FACE_SHAKE_GUARDED_1_PATH,
+                            index == 0 ? FACE_FURIFURI_0_PATH : FACE_FURIFURI_1_PATH);
+  }
+  if (visualTierIndex() == 3) {
+    return fallbackFacePath(index == 0 ? FACE_SHAKE_ATTACHED_0_PATH : FACE_SHAKE_ATTACHED_1_PATH,
+                            index == 0 ? FACE_FURIFURI_0_PATH : FACE_FURIFURI_1_PATH);
+  }
+  return index == 0 ? FACE_FURIFURI_0_PATH : FACE_FURIFURI_1_PATH;
+}
+
+const char* FaceController::fallbackFacePath(const char* preferred, const char* fallback) const {
+  return LittleFS.exists(preferred) ? preferred : fallback;
+}
+
+uint8_t FaceController::visualTierIndex() const {
+  if (affectionState_.levelIndex <= 2) {
+    return 1;
+  }
+  if (affectionState_.levelIndex >= 4) {
+    return 3;
+  }
+  return 2;
 }
 
 void FaceController::showBaseFace() {
   switch (state_) {
     case ChanState::Idle:
-      drawFace(shakeFaceMode_ ? FACE_FURIFURI_0_PATH : (petFaceMode_ ? FACE_NADENADE_0_PATH : (photoMasterFaceMode_ ? FACE_PHOTO_MASTER_0_PATH : (photoFaceMode_ ? FACE_PHOTO_0_PATH : FACE_IDLE_PATH))));
+      drawFace(shakeFaceMode_ ? shakeFacePath(0) : (petFaceMode_ ? petFacePath(0) : (photoMasterFaceMode_ ? FACE_PHOTO_MASTER_0_PATH : (photoFaceMode_ ? FACE_PHOTO_0_PATH : idleFacePath()))));
       break;
     case ChanState::Listening:
       drawFace(listeningFacePath());
@@ -385,6 +621,8 @@ void FaceController::drawFace(const char* path) {
     ok = canvas_.drawPng(&file, x, y);
     if (ok) {
       drawAffectionOverlayOnCanvas(millis());
+      drawBatteryOverlayOnCanvas();
+      drawMicOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
     }
   } else {
@@ -396,6 +634,8 @@ void FaceController::drawFace(const char* path) {
     Serial.printf("[face] failed to draw: %s\n", path);
   } else if (!canvasReady_) {
     drawAffectionOverlay(millis());
+    drawBatteryOverlay();
+    drawMicOverlay();
   }
 }
 
@@ -441,6 +681,41 @@ void FaceController::drawAffectionOverlay(unsigned long now) {
   affectionOverlayDirty_ = false;
 }
 
+void FaceController::drawBatteryOverlay() {
+  const int32_t x = M5.Display.width() - 34;
+  const int32_t y = 10;
+  const int32_t w = 24;
+  const int32_t h = 12;
+  const int32_t nubW = 3;
+  const uint16_t border = M5.Display.color565(210, 220, 210);
+  const uint16_t dim = M5.Display.color565(80, 86, 82);
+  const uint16_t fill = batteryLevel_ >= 0 && batteryLevel_ <= 20
+                          ? M5.Display.color565(255, 92, 80)
+                          : M5.Display.color565(82, 220, 128);
+
+  M5.Display.fillRect(x - 3, y - 4, w + nubW + 8, h + 8, TFT_BLACK);
+  M5.Display.drawRect(x, y, w, h, border);
+  M5.Display.drawRect(x + w, y + 3, nubW, h - 6, border);
+
+  if (batteryLevel_ >= 0) {
+    const int32_t fillW = map(constrain(batteryLevel_, 0, 100), 0, 100, 0, w - 4);
+    if (fillW > 0) {
+      M5.Display.fillRect(x + 2, y + 2, fillW, h - 4, fill);
+    }
+  } else {
+    M5.Display.drawLine(x + 5, y + 3, x + w - 6, y + h - 4, dim);
+  }
+
+  if (batteryCharging_) {
+    const uint16_t bolt = M5.Display.color565(255, 230, 90);
+    M5.Display.drawLine(x + 11, y + 2, x + 8, y + 7, bolt);
+    M5.Display.drawLine(x + 8, y + 7, x + 13, y + 7, bolt);
+    M5.Display.drawLine(x + 13, y + 7, x + 10, y + h - 2, bolt);
+  }
+
+  batteryOverlayDirty_ = false;
+}
+
 void FaceController::drawAffectionOverlayOnCanvas(unsigned long now) {
   lastAffectionOverlayMs_ = now;
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
@@ -481,6 +756,99 @@ void FaceController::drawAffectionOverlayOnCanvas(unsigned long now) {
   }
 
   affectionOverlayDirty_ = false;
+}
+
+void FaceController::drawBatteryOverlayOnCanvas() {
+  const int32_t x = M5.Display.width() - 34;
+  const int32_t y = 10;
+  const int32_t w = 24;
+  const int32_t h = 12;
+  const int32_t nubW = 3;
+  const uint16_t border = M5.Display.color565(210, 220, 210);
+  const uint16_t dim = M5.Display.color565(80, 86, 82);
+  const uint16_t fill = batteryLevel_ >= 0 && batteryLevel_ <= 20
+                          ? M5.Display.color565(255, 92, 80)
+                          : M5.Display.color565(82, 220, 128);
+
+  canvas_.fillRect(x - 3, y - 4, w + nubW + 8, h + 8, TFT_BLACK);
+  canvas_.drawRect(x, y, w, h, border);
+  canvas_.drawRect(x + w, y + 3, nubW, h - 6, border);
+
+  if (batteryLevel_ >= 0) {
+    const int32_t fillW = map(constrain(batteryLevel_, 0, 100), 0, 100, 0, w - 4);
+    if (fillW > 0) {
+      canvas_.fillRect(x + 2, y + 2, fillW, h - 4, fill);
+    }
+  } else {
+    canvas_.drawLine(x + 5, y + 3, x + w - 6, y + h - 4, dim);
+  }
+
+  if (batteryCharging_) {
+    const uint16_t bolt = M5.Display.color565(255, 230, 90);
+    canvas_.drawLine(x + 11, y + 2, x + 8, y + 7, bolt);
+    canvas_.drawLine(x + 8, y + 7, x + 13, y + 7, bolt);
+    canvas_.drawLine(x + 13, y + 7, x + 10, y + h - 2, bolt);
+  }
+
+  batteryOverlayDirty_ = false;
+}
+
+void FaceController::drawMicOverlay() {
+  const int32_t w = 30;
+  const int32_t h = 64;
+  const int32_t x = M5.Display.width() - w - 5;
+  const int32_t y = M5.Display.height() - h - 8;
+  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
+  if (!micConnected_) {
+    micOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
+  const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
+  const uint16_t icon = micStreaming_ ? M5.Display.color565(120, 255, 175) : M5.Display.color565(210, 220, 210);
+  M5.Display.fillRoundRect(x, y, w, h, 8, fill);
+  M5.Display.drawRoundRect(x, y, w, h, 8, border);
+  M5.Display.fillRoundRect(x + 11, y + 16, 8, 20, 4, icon);
+  M5.Display.drawLine(x + 8, y + 32, x + 8, y + 38, icon);
+  M5.Display.drawLine(x + 22, y + 32, x + 22, y + 38, icon);
+  M5.Display.drawArc(x + 15, y + 32, 8, 7, 0, 180, icon);
+  M5.Display.drawLine(x + 15, y + 43, x + 15, y + 49, icon);
+  M5.Display.drawLine(x + 8, y + 49, x + 22, y + 49, icon);
+  if (micMuted_) {
+    M5.Display.drawLine(x + 7, y + 14, x + 23, y + 50, border);
+    M5.Display.drawLine(x + 8, y + 14, x + 24, y + 50, border);
+  }
+  micOverlayDirty_ = false;
+}
+
+void FaceController::drawMicOverlayOnCanvas() {
+  const int32_t w = 30;
+  const int32_t h = 64;
+  const int32_t x = M5.Display.width() - w - 5;
+  const int32_t y = M5.Display.height() - h - 8;
+  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
+  if (!micConnected_) {
+    micOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
+  const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
+  const uint16_t icon = micStreaming_ ? M5.Display.color565(120, 255, 175) : M5.Display.color565(210, 220, 210);
+  canvas_.fillRoundRect(x, y, w, h, 8, fill);
+  canvas_.drawRoundRect(x, y, w, h, 8, border);
+  canvas_.fillRoundRect(x + 11, y + 16, 8, 20, 4, icon);
+  canvas_.drawLine(x + 8, y + 32, x + 8, y + 38, icon);
+  canvas_.drawLine(x + 22, y + 32, x + 22, y + 38, icon);
+  canvas_.drawArc(x + 15, y + 32, 8, 7, 0, 180, icon);
+  canvas_.drawLine(x + 15, y + 43, x + 15, y + 49, icon);
+  canvas_.drawLine(x + 8, y + 49, x + 22, y + 49, icon);
+  if (micMuted_) {
+    canvas_.drawLine(x + 7, y + 14, x + 23, y + 50, border);
+    canvas_.drawLine(x + 8, y + 14, x + 24, y + 50, border);
+  }
+  micOverlayDirty_ = false;
 }
 
 void FaceController::drawHeart(M5GFX& target, int32_t cx, int32_t cy, int32_t size, uint16_t color) {
@@ -608,6 +976,60 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   } else if (strcmp(path, FACE_FURIFURI_1_PATH) == 0) {
     setIndex = 6;
     index = 1;
+  } else if (strcmp(path, FACE_TALK_GUARDED_0_PATH) == 0 || strcmp(path, FACE_IDLE_GUARDED_0_PATH) == 0) {
+    setIndex = 7;
+    index = 0;
+  } else if (strcmp(path, FACE_TALK_GUARDED_1_PATH) == 0) {
+    setIndex = 7;
+    index = 1;
+  } else if (strcmp(path, FACE_TALK_ATTACHED_0_PATH) == 0 || strcmp(path, FACE_IDLE_ATTACHED_0_PATH) == 0) {
+    setIndex = 8;
+    index = 0;
+  } else if (strcmp(path, FACE_TALK_ATTACHED_1_PATH) == 0) {
+    setIndex = 8;
+    index = 1;
+  } else if (strcmp(path, FACE_PET_GUARDED_0_PATH) == 0) {
+    setIndex = 9;
+    index = 0;
+  } else if (strcmp(path, FACE_PET_GUARDED_1_PATH) == 0) {
+    setIndex = 9;
+    index = 1;
+  } else if (strcmp(path, FACE_PET_ATTACHED_0_PATH) == 0) {
+    setIndex = 10;
+    index = 0;
+  } else if (strcmp(path, FACE_PET_ATTACHED_1_PATH) == 0) {
+    setIndex = 10;
+    index = 1;
+  } else if (strcmp(path, FACE_SHAKE_GUARDED_0_PATH) == 0) {
+    setIndex = 11;
+    index = 0;
+  } else if (strcmp(path, FACE_SHAKE_GUARDED_1_PATH) == 0) {
+    setIndex = 11;
+    index = 1;
+  } else if (strcmp(path, FACE_SHAKE_ATTACHED_0_PATH) == 0) {
+    setIndex = 12;
+    index = 0;
+  } else if (strcmp(path, FACE_SHAKE_ATTACHED_1_PATH) == 0) {
+    setIndex = 12;
+    index = 1;
+  } else if (strcmp(path, FACE_TIRED_0_PATH) == 0) {
+    setIndex = 13;
+    index = 0;
+  } else if (strcmp(path, FACE_TIRED_TALK_PATH) == 0) {
+    setIndex = 13;
+    index = 1;
+  } else if (strcmp(path, FACE_EXHAUSTED_0_PATH) == 0) {
+    setIndex = 14;
+    index = 0;
+  } else if (strcmp(path, FACE_EXHAUSTED_TALK_PATH) == 0) {
+    setIndex = 14;
+    index = 1;
+  } else if (strcmp(path, FACE_LOW_POWER_0_PATH) == 0) {
+    setIndex = 15;
+    index = 0;
+  } else if (strcmp(path, FACE_LOW_POWER_TALK_PATH) == 0) {
+    setIndex = 15;
+    index = 1;
   }
 
   if (setIndex < 0 || index < 0 || !talkCacheReady_[setIndex][index]) {
@@ -617,11 +1039,14 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   const int32_t x = (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
   const int32_t y = (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
   talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
+  drawAffectionOverlay(millis());
+  drawBatteryOverlay();
+  drawMicOverlay();
   return true;
 }
 
 void FaceController::prepareTalkCache() {
-  const char* paths[7][2] = {
+  const char* paths[kTalkCacheSetCount][2] = {
     {FACE_TALK_0_PATH, FACE_TALK_1_PATH},
     {FACE_BAD_0_PATH, FACE_BAD_1_PATH},
     {FACE_GOOD_0_PATH, FACE_GOOD_1_PATH},
@@ -629,10 +1054,24 @@ void FaceController::prepareTalkCache() {
     {FACE_PHOTO_MASTER_0_PATH, FACE_PHOTO_MASTER_1_PATH},
     {FACE_NADENADE_0_PATH, FACE_NADENADE_1_PATH},
     {FACE_FURIFURI_0_PATH, FACE_FURIFURI_1_PATH},
+    {fallbackFacePath(FACE_TALK_GUARDED_0_PATH, FACE_IDLE_GUARDED_0_PATH), FACE_TALK_GUARDED_1_PATH},
+    {fallbackFacePath(FACE_TALK_ATTACHED_0_PATH, FACE_IDLE_ATTACHED_0_PATH), FACE_TALK_ATTACHED_1_PATH},
+    {FACE_PET_GUARDED_0_PATH, FACE_PET_GUARDED_1_PATH},
+    {FACE_PET_ATTACHED_0_PATH, FACE_PET_ATTACHED_1_PATH},
+    {FACE_SHAKE_GUARDED_0_PATH, FACE_SHAKE_GUARDED_1_PATH},
+    {FACE_SHAKE_ATTACHED_0_PATH, FACE_SHAKE_ATTACHED_1_PATH},
+    {FACE_TIRED_0_PATH, FACE_TIRED_TALK_PATH},
+    {FACE_EXHAUSTED_0_PATH, FACE_EXHAUSTED_TALK_PATH},
+    {FACE_LOW_POWER_0_PATH, FACE_LOW_POWER_TALK_PATH},
   };
 
-  for (int setIndex = 0; setIndex < 7; ++setIndex) {
+  for (int setIndex = 0; setIndex < kTalkCacheSetCount; ++setIndex) {
     for (int i = 0; i < 2; ++i) {
+      if (!LittleFS.exists(paths[setIndex][i])) {
+        Serial.printf("[face] talk cache %d:%d skipped missing %s\n", setIndex, i, paths[setIndex][i]);
+        talkCacheReady_[setIndex][i] = false;
+        continue;
+      }
       talkCanvas_[setIndex][i].setPsram(true);
       talkCanvas_[setIndex][i].setColorDepth(16);
       if (talkCanvas_[setIndex][i].createSprite(FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT) == nullptr) {

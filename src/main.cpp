@@ -31,11 +31,45 @@ enum class NetworkMode : uint8_t {
   SoftAp = 1,
 };
 
+enum class SettingsPage : uint8_t {
+  Network = 0,
+  Display = 1,
+  Audio = 2,
+  Power = 3,
+};
+
+enum class ThermalLevel : uint8_t {
+  Normal,
+  Warm,
+  Hot,
+};
+
+struct DeviceSettings {
+  uint8_t brightness = DISPLAY_BRIGHTNESS_DEFAULT;
+  uint8_t volume = AUDIO_SPEAKER_VOLUME;
+  bool lowPowerMode = false;
+};
+
+struct ThermalStatus {
+  float chipTempC = NAN;
+  float pmicTempC = NAN;
+  float baselineChipTempC = NAN;
+  float baselinePmicTempC = NAN;
+  ThermalLevel level = ThermalLevel::Normal;
+  unsigned long lastSampleMs = 0;
+  unsigned long hotSinceMs = 0;
+  bool suggestLowPower = false;
+};
+
 ChanState currentState = ChanState::Idle;
 AuthFaceMode currentAuthFaceMode = AuthFaceMode::Unknown;
 NetworkMode networkMode = NetworkMode::Sta;
+SettingsPage settingsPage = SettingsPage::Network;
+DeviceSettings deviceSettings;
+ThermalStatus thermalStatus;
 bool vadActive = false;
 bool infoScreenVisible = false;
+bool displayOn = true;
 bool wsStarted = false;
 bool httpStarted = false;
 bool wsClientConnected = false;
@@ -52,17 +86,21 @@ uint8_t listeningNodPhase = 0;
 bool pettingActive = false;
 unsigned long pettingEndMs = 0;
 unsigned long nextPetMoveMs = 0;
+unsigned long lastPettingRepeatEventMs = 0;
 Pose pettingBasePose = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
 bool shakeActive = false;
 unsigned long shakeEndMs = 0;
 unsigned long nextShakeCheckMs = 0;
 unsigned long lastShakeTriggerMs = 0;
 unsigned long nextShakeMotionMs = 0;
+unsigned long lastShakeRepeatEventMs = 0;
 uint8_t shakeStrongSamples = 0;
-uint8_t backTouchStrongSamples = 0;
 bool backTouchReady = false;
 unsigned long backTouchReleasedSinceMs = 0;
+unsigned long backTouchCandidateSinceMs = 0;
+unsigned long backTouchClearSinceMs = 0;
 unsigned long lastInitializeDrawMs = 0;
+unsigned long lastFaceUpdateMs = 0;
 uint8_t initializeSpinnerFrame = 0;
 unsigned long interactionReadyAtMs = 0;
 struct WifiCredential {
@@ -79,7 +117,12 @@ size_t currentWifiIndex = 0;
 uint8_t wifiConnectAttempts = 0;
 
 void sendAffectionState(const char* requestId = nullptr);
+void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
 bool interactionsReady(unsigned long now);
+void applyListeningPresentation(unsigned long now);
+void drawInfoScreen();
+void applyDisplayBrightness();
+void applyLowPowerMode(bool enabled, bool persist);
 
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
@@ -97,7 +140,7 @@ bool selectNextConfiguredWifi() {
   return false;
 }
 
-void applyAffectionResult(const AffectionApplyResult& result, unsigned long now, bool sendState) {
+void applyAffectionResult(const AffectionApplyResult& result, unsigned long now, bool sendState, const char* requestId = nullptr) {
   if (!result.applied) {
     return;
   }
@@ -106,8 +149,25 @@ void applyAffectionResult(const AffectionApplyResult& result, unsigned long now,
     faceController.showAffectionDelta(result.delta, now);
   }
   if (sendState) {
-    sendAffectionState();
+    sendAffectionState(requestId);
   }
+  if (result.levelChanged && sendState) {
+    sendInteractionEvent(
+      result.levelIndex > result.previousLevelIndex ? "level_up" : "level_down",
+      "instant",
+      now
+    );
+  }
+}
+
+void updateAffectionState(unsigned long now) {
+  if (currentState == ChanState::Speaking ||
+      audioController.state() == ChanState::Speaking ||
+      audioController.isPlaybackDraining()) {
+    return;
+  }
+  const AffectionApplyResult result = affectionController.update(now);
+  applyAffectionResult(result, now, true);
 }
 
 const char* networkModeName() {
@@ -125,6 +185,98 @@ void saveNetworkMode(NetworkMode mode) {
   preferences.begin("stackchan", false);
   preferences.putUChar("net_mode", static_cast<uint8_t>(mode));
   preferences.end();
+}
+
+void loadDeviceSettings() {
+  preferences.begin("stackchan", true);
+  deviceSettings.brightness = preferences.getUChar("brightness", DISPLAY_BRIGHTNESS_DEFAULT);
+  deviceSettings.volume = preferences.getUChar("volume", AUDIO_SPEAKER_VOLUME);
+  deviceSettings.lowPowerMode = preferences.getBool("low_power", false);
+  preferences.end();
+
+  deviceSettings.brightness = constrain(deviceSettings.brightness, DISPLAY_BRIGHTNESS_MIN, DISPLAY_BRIGHTNESS_MAX);
+  deviceSettings.volume = constrain(deviceSettings.volume, AUDIO_SPEAKER_VOLUME_MIN, AUDIO_SPEAKER_VOLUME_MAX);
+}
+
+void saveDeviceSettings() {
+  preferences.begin("stackchan", false);
+  preferences.putUChar("brightness", deviceSettings.brightness);
+  preferences.putUChar("volume", deviceSettings.volume);
+  preferences.putBool("low_power", deviceSettings.lowPowerMode);
+  preferences.end();
+}
+
+uint8_t effectiveBrightness() {
+  if (!displayOn) {
+    return 0;
+  }
+  if (deviceSettings.lowPowerMode) {
+    return min<uint8_t>(deviceSettings.brightness, DISPLAY_LOW_POWER_BRIGHTNESS_MAX);
+  }
+  return deviceSettings.brightness;
+}
+
+uint8_t steppedSettingValue(uint8_t value, int delta, uint8_t minValue, uint8_t maxValue) {
+  if (delta > 0) {
+    if (value >= maxValue) {
+      return maxValue;
+    }
+    const int next = ((static_cast<int>(value) / SETTINGS_STEP_VALUE) + 1) * SETTINGS_STEP_VALUE;
+    return static_cast<uint8_t>(min(next, static_cast<int>(maxValue)));
+  }
+  if (delta < 0) {
+    if (value <= minValue) {
+      return minValue;
+    }
+    const int next = ((static_cast<int>(value) - 1) / SETTINGS_STEP_VALUE) * SETTINGS_STEP_VALUE;
+    return static_cast<uint8_t>(max(next, static_cast<int>(minValue)));
+  }
+  return constrain(value, minValue, maxValue);
+}
+
+void applyDisplayBrightness() {
+  M5.Display.setBrightness(effectiveBrightness());
+}
+
+void setDisplayOn(bool on) {
+  if (displayOn == on) {
+    return;
+  }
+  displayOn = on;
+  faceController.setEnabled(on && !infoScreenVisible);
+  if (displayOn) {
+    M5.Display.wakeup();
+    applyDisplayBrightness();
+    if (infoScreenVisible) {
+      drawInfoScreen();
+    }
+  } else {
+    M5.Display.setBrightness(0);
+    M5.Display.sleep();
+  }
+  Serial.printf("[display] %s\n", displayOn ? "on" : "off");
+}
+
+void applyLowPowerMode(bool enabled, bool persist) {
+  if (deviceSettings.lowPowerMode == enabled && !persist) {
+    return;
+  }
+  deviceSettings.lowPowerMode = enabled;
+  applyDisplayBrightness();
+  if (enabled) {
+    faceController.setThermalFaceMode(ThermalFaceMode::LowPower);
+  } else {
+    faceController.setThermalFaceMode(thermalStatus.level == ThermalLevel::Hot
+                                        ? ThermalFaceMode::Hot
+                                        : (thermalStatus.level == ThermalLevel::Warm ? ThermalFaceMode::Warm : ThermalFaceMode::Normal));
+  }
+  if (persist) {
+    saveDeviceSettings();
+  }
+  if (infoScreenVisible && displayOn) {
+    drawInfoScreen();
+  }
+  Serial.printf("[power] low_power=%d\n", enabled);
 }
 
 void switchNetworkModeAndRestart() {
@@ -189,7 +341,12 @@ void setPettingActive(bool active, unsigned long now) {
       const Pose pose = makePettingPoseFromBase(pettingBasePose, false);
       motionController.setTargetPose(pose.pan, pose.tilt);
       applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
+      sendInteractionEvent("petting", "start", now);
+      lastPettingRepeatEventMs = now;
       Serial.println("[pet] start");
+    } else if (now - lastPettingRepeatEventMs >= 800) {
+      sendInteractionEvent("petting", "repeat", now);
+      lastPettingRepeatEventMs = now;
     }
     return;
   }
@@ -201,11 +358,16 @@ void setPettingActive(bool active, unsigned long now) {
   pettingActive = false;
   pettingEndMs = 0;
   nextPetMoveMs = 0;
+  lastPettingRepeatEventMs = 0;
   faceController.setPetFaceMode(false);
-  motionController.setTargetPose(
-    constrain(pettingBasePose.pan + random(-3, 4), SERVO_PAN_MIN, SERVO_PAN_MAX),
-    constrain(pettingBasePose.tilt + random(-2, 5), SERVO_TILT_MIN, SERVO_TILT_MAX)
-  );
+  if (!shakeActive) {
+    if (currentState == ChanState::Listening) {
+      applyListeningPresentation(now);
+    } else {
+      motionController.setMotion("center");
+    }
+  }
+  sendInteractionEvent("petting", "end", now);
   Serial.println("[pet] end");
 }
 
@@ -245,7 +407,12 @@ void setShakeActive(bool active, unsigned long now) {
       faceController.setShakeFaceMode(true);
       motionController.setTargetPose(SERVO_PAN_CENTER + random(-10, 11), SERVO_TILT_CENTER - random(4, 11));
       applyAffectionResult(affectionController.applyEvent("shake", 1.0f, 1.0f, nullptr, now), now, true);
+      sendInteractionEvent("shake", "start", now);
+      lastShakeRepeatEventMs = now;
       Serial.println("[shake] start");
+    } else if (now - lastShakeRepeatEventMs >= 800) {
+      sendInteractionEvent("shake", "repeat", now);
+      lastShakeRepeatEventMs = now;
     }
     return;
   }
@@ -257,11 +424,13 @@ void setShakeActive(bool active, unsigned long now) {
   shakeActive = false;
   shakeEndMs = 0;
   nextShakeMotionMs = 0;
+  lastShakeRepeatEventMs = 0;
   shakeStrongSamples = 0;
   faceController.setShakeFaceMode(false);
   if (!pettingActive && currentState != ChanState::Listening) {
     motionController.setMotion("center");
   }
+  sendInteractionEvent("shake", "end", now);
   Serial.println("[shake] end");
 }
 
@@ -301,6 +470,10 @@ void updateShake(unsigned long now) {
   if (shakeActive) {
     if (imuUpdated) {
       updateShakeMotion(data, now);
+    }
+    if (now - lastShakeRepeatEventMs >= 800) {
+      sendInteractionEvent("shake", "repeat", now);
+      lastShakeRepeatEventMs = now;
     }
     if (now < shakeEndMs) {
       return;
@@ -409,6 +582,108 @@ bool interactionsReady(unsigned long now) {
   return interactionReadyAtMs != 0 && now >= interactionReadyAtMs;
 }
 
+const char* thermalLevelName(ThermalLevel level) {
+  switch (level) {
+    case ThermalLevel::Warm:
+      return "Warm";
+    case ThermalLevel::Hot:
+      return "Hot";
+    case ThermalLevel::Normal:
+    default:
+      return "Normal";
+  }
+}
+
+float maxValidTemperature(float a, float b) {
+  if (isnan(a)) {
+    return b;
+  }
+  if (isnan(b)) {
+    return a;
+  }
+  return max(a, b);
+}
+
+void updateBatteryStatus() {
+  const int batteryLevel = M5.Power.getBatteryLevel();
+  const bool charging = M5.Power.isCharging() == m5::Power_Class::is_charging;
+  faceController.setBatteryState(batteryLevel, charging);
+}
+
+void updateMicStatusOverlay() {
+  faceController.setMicState(wsClientConnected, audioController.micMuted(), audioController.isMicStreaming());
+}
+
+void updateThermalStatus(unsigned long now) {
+  if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    return;
+  }
+  if (thermalStatus.lastSampleMs != 0 && now - thermalStatus.lastSampleMs < THERMAL_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+  thermalStatus.lastSampleMs = now;
+
+  thermalStatus.chipTempC = temperatureRead();
+  if (M5.Power.getType() == m5::Power_Class::pmic_axp2101) {
+    thermalStatus.pmicTempC = M5.Power.Axp2101.getInternalTemperature();
+  } else {
+    thermalStatus.pmicTempC = NAN;
+  }
+
+  if (now >= THERMAL_BASELINE_CAPTURE_MS) {
+    if (isnan(thermalStatus.baselineChipTempC) && !isnan(thermalStatus.chipTempC)) {
+      thermalStatus.baselineChipTempC = thermalStatus.chipTempC;
+    }
+    if (isnan(thermalStatus.baselinePmicTempC) && !isnan(thermalStatus.pmicTempC)) {
+      thermalStatus.baselinePmicTempC = thermalStatus.pmicTempC;
+    }
+  }
+
+  const float hottest = maxValidTemperature(thermalStatus.chipTempC, thermalStatus.pmicTempC);
+  float maxDelta = NAN;
+  if (!isnan(thermalStatus.chipTempC) && !isnan(thermalStatus.baselineChipTempC)) {
+    maxDelta = thermalStatus.chipTempC - thermalStatus.baselineChipTempC;
+  }
+  if (!isnan(thermalStatus.pmicTempC) && !isnan(thermalStatus.baselinePmicTempC)) {
+    const float pmicDelta = thermalStatus.pmicTempC - thermalStatus.baselinePmicTempC;
+    maxDelta = isnan(maxDelta) ? pmicDelta : max(maxDelta, pmicDelta);
+  }
+
+  ThermalLevel nextLevel = ThermalLevel::Normal;
+  if ((!isnan(hottest) && hottest >= THERMAL_HOT_ABSOLUTE_C) ||
+      (!isnan(maxDelta) && maxDelta >= THERMAL_HOT_DELTA_C)) {
+    nextLevel = ThermalLevel::Hot;
+  } else if ((!isnan(hottest) && hottest >= THERMAL_WARM_ABSOLUTE_C) ||
+             (!isnan(maxDelta) && maxDelta >= THERMAL_WARM_DELTA_C)) {
+    nextLevel = ThermalLevel::Warm;
+  }
+
+  if (nextLevel == ThermalLevel::Hot) {
+    if (thermalStatus.hotSinceMs == 0) {
+      thermalStatus.hotSinceMs = now;
+    }
+    thermalStatus.suggestLowPower = now - thermalStatus.hotSinceMs >= THERMAL_LOW_POWER_SUGGEST_MS;
+  } else {
+    thermalStatus.hotSinceMs = 0;
+    thermalStatus.suggestLowPower = false;
+  }
+
+  if (thermalStatus.level != nextLevel) {
+    thermalStatus.level = nextLevel;
+    if (!deviceSettings.lowPowerMode) {
+      faceController.setThermalFaceMode(nextLevel == ThermalLevel::Hot
+                                          ? ThermalFaceMode::Hot
+                                          : (nextLevel == ThermalLevel::Warm ? ThermalFaceMode::Warm : ThermalFaceMode::Normal));
+    }
+    Serial.printf("[thermal] level=%s chip=%.1f pmic=%.1f\n",
+                  thermalLevelName(thermalStatus.level),
+                  thermalStatus.chipTempC,
+                  thermalStatus.pmicTempC);
+  }
+
+  updateBatteryStatus();
+}
+
 void addCorsHeaders() {
   httpServer.sendHeader("Access-Control-Allow-Origin", "*");
   httpServer.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -465,8 +740,23 @@ void handleStatusRequest() {
   doc["confusion"] = affection.confusion;
   doc["affectionSeq"] = affection.seq;
   doc["affectionLevel"] = affectionController.level();
+  doc["levelIndex"] = affectionController.levelIndex();
+  doc["visualTier"] = affectionController.visualTier();
+  doc["styleId"] = affectionController.styleId();
+  doc["timestampMs"] = millis();
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["freePsram"] = ESP.getFreePsram();
+  doc["displayOn"] = displayOn;
+  doc["brightness"] = deviceSettings.brightness;
+  doc["volume"] = deviceSettings.volume;
+  doc["micMuted"] = audioController.micMuted();
+  doc["micStreaming"] = audioController.isMicStreaming();
+  doc["lowPowerMode"] = deviceSettings.lowPowerMode;
+  doc["thermalLevel"] = thermalLevelName(thermalStatus.level);
+  doc["chipTempC"] = thermalStatus.chipTempC;
+  doc["pmicTempC"] = thermalStatus.pmicTempC;
+  doc["batteryLevel"] = M5.Power.getBatteryLevel();
+  doc["charging"] = M5.Power.isCharging() == m5::Power_Class::is_charging;
   if (networkMode == NetworkMode::SoftAp) {
     doc["ip"] = WiFi.softAPIP().toString();
     doc["stations"] = WiFi.softAPgetStationNum();
@@ -511,14 +801,54 @@ void startServers() {
   startHttpServer();
 }
 
-void drawInfoScreen() {
-  lastInfoDrawMs = millis();
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(12, 16);
-  M5.Display.println("Network");
+const char* settingsPageName(SettingsPage page) {
+  switch (page) {
+    case SettingsPage::Display:
+      return "Display";
+    case SettingsPage::Audio:
+      return "Audio";
+    case SettingsPage::Power:
+      return "Power";
+    case SettingsPage::Network:
+    default:
+      return "Network";
+  }
+}
 
+void drawButton(int32_t x, int32_t y, int32_t w, int32_t h, const char* label, bool active = false) {
+  const uint16_t border = active ? M5.Display.color565(90, 210, 150) : M5.Display.color565(110, 120, 128);
+  const uint16_t fill = active ? M5.Display.color565(20, 52, 38) : TFT_BLACK;
+  M5.Display.fillRoundRect(x, y, w, h, 5, fill);
+  M5.Display.drawRoundRect(x, y, w, h, 5, border);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE, fill);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString(label, x + w / 2, y + h / 2);
+  M5.Display.setTextDatum(top_left);
+}
+
+void drawSlider(int32_t x, int32_t y, int32_t w, const char* label, int value, int minValue, int maxValue) {
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setCursor(x, y);
+  M5.Display.printf("%s: %d", label, value);
+  const int32_t trackY = y + 22;
+  M5.Display.drawRoundRect(x, trackY, w, 12, 4, M5.Display.color565(88, 96, 104));
+  const int32_t fillW = map(constrain(value, minValue, maxValue), minValue, maxValue, 0, w - 4);
+  if (fillW > 0) {
+    M5.Display.fillRoundRect(x + 2, trackY + 2, fillW, 8, 3, M5.Display.color565(90, 190, 245));
+  }
+}
+
+void drawSettingsTabs() {
+  drawButton(8, 206, 72, 26, "Net", settingsPage == SettingsPage::Network);
+  drawButton(86, 206, 72, 26, "Disp", settingsPage == SettingsPage::Display);
+  drawButton(164, 206, 72, 26, "Audio", settingsPage == SettingsPage::Audio);
+  drawButton(242, 206, 70, 26, "Power", settingsPage == SettingsPage::Power);
+}
+
+void drawNetworkSettingsPage() {
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(1);
   M5.Display.setCursor(12, 56);
   M5.Display.printf("Mode: %s\n", networkModeName());
@@ -543,8 +873,70 @@ void drawInfoScreen() {
 
   M5.Display.printf("Client: %s\n", wsClientConnected ? "connected" : "disconnected");
   M5.Display.println();
-  M5.Display.println("Tap to return");
   M5.Display.printf("Hold: switch to %s\n", networkMode == NetworkMode::SoftAp ? "STA" : "SoftAP");
+}
+
+void drawDisplaySettingsPage() {
+  drawSlider(24, 58, 210, "Brightness", deviceSettings.brightness, DISPLAY_BRIGHTNESS_MIN, DISPLAY_BRIGHTNESS_MAX);
+  drawButton(246, 70, 54, 28, "-");
+  drawButton(246, 108, 54, 28, "+");
+  drawButton(24, 150, 128, 32, displayOn ? "Screen Off" : "Screen On", !displayOn);
+  drawButton(170, 150, 128, 32, "Low Power", deviceSettings.lowPowerMode);
+}
+
+void drawAudioSettingsPage() {
+  drawSlider(24, 72, 210, "Volume", deviceSettings.volume, AUDIO_SPEAKER_VOLUME_MIN, AUDIO_SPEAKER_VOLUME_MAX);
+  drawButton(246, 84, 54, 28, "-");
+  drawButton(246, 122, 54, 28, "+");
+}
+
+void drawPowerSettingsPage() {
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(20, 56);
+  M5.Display.printf("Thermal: %s\n", thermalLevelName(thermalStatus.level));
+  M5.Display.printf("Chip: %.1f C\n", thermalStatus.chipTempC);
+  if (!isnan(thermalStatus.pmicTempC)) {
+    M5.Display.printf("PMIC: %.1f C\n", thermalStatus.pmicTempC);
+  } else {
+    M5.Display.println("PMIC: n/a");
+  }
+  M5.Display.printf("Battery: %d %%\n", M5.Power.getBatteryLevel());
+  M5.Display.printf("Charging: %s\n", M5.Power.isCharging() == m5::Power_Class::is_charging ? "yes" : "no");
+  M5.Display.println();
+  M5.Display.printf("Suggest: %s\n", thermalStatus.suggestLowPower ? "Low Power" : "none");
+  drawButton(164, 150, 136, 32, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
+}
+
+void drawInfoScreen() {
+  lastInfoDrawMs = millis();
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(12, 16);
+  M5.Display.println(settingsPageName(settingsPage));
+
+  switch (settingsPage) {
+    case SettingsPage::Display:
+      drawDisplaySettingsPage();
+      break;
+    case SettingsPage::Audio:
+      drawAudioSettingsPage();
+      break;
+    case SettingsPage::Power:
+      drawPowerSettingsPage();
+      break;
+    case SettingsPage::Network:
+    default:
+      drawNetworkSettingsPage();
+      break;
+  }
+
+  drawSettingsTabs();
+}
+
+bool settingsPageNeedsPeriodicRefresh() {
+  return settingsPage == SettingsPage::Network || settingsPage == SettingsPage::Power;
 }
 
 void setInfoScreenVisible(bool visible) {
@@ -552,10 +944,110 @@ void setInfoScreenVisible(bool visible) {
     return;
   }
   infoScreenVisible = visible;
-  faceController.setEnabled(!visible);
+  faceController.setEnabled(displayOn && !visible);
   if (visible) {
     drawInfoScreen();
   }
+}
+
+bool touchIn(const m5::touch_detail_t& touch, int32_t x, int32_t y, int32_t w, int32_t h) {
+  return touch.x >= x && touch.x < x + w && touch.y >= y && touch.y < y + h;
+}
+
+bool isSettingsSwipe(const m5::touch_detail_t& touch) {
+  if (!touch.wasFlicked()) {
+    return false;
+  }
+  const int32_t edge = 44;
+  return touch.x <= edge || touch.x >= M5.Display.width() - edge ||
+         touch.y <= edge || touch.y >= M5.Display.height() - edge;
+}
+
+void adjustBrightness(int delta) {
+  const uint8_t next = steppedSettingValue(deviceSettings.brightness, delta, DISPLAY_BRIGHTNESS_MIN, DISPLAY_BRIGHTNESS_MAX);
+  if (next == deviceSettings.brightness) {
+    return;
+  }
+  deviceSettings.brightness = next;
+  applyDisplayBrightness();
+  saveDeviceSettings();
+  drawInfoScreen();
+}
+
+void adjustVolume(int delta) {
+  const uint8_t next = steppedSettingValue(deviceSettings.volume, delta, AUDIO_SPEAKER_VOLUME_MIN, AUDIO_SPEAKER_VOLUME_MAX);
+  if (next == deviceSettings.volume) {
+    return;
+  }
+  deviceSettings.volume = next;
+  audioController.setVolume(deviceSettings.volume);
+  saveDeviceSettings();
+  drawInfoScreen();
+}
+
+bool handleSettingsTouch(const m5::touch_detail_t& touch) {
+  if (touchIn(touch, 8, 206, 72, 26)) {
+    settingsPage = SettingsPage::Network;
+    drawInfoScreen();
+    return true;
+  }
+  if (touchIn(touch, 86, 206, 72, 26)) {
+    settingsPage = SettingsPage::Display;
+    drawInfoScreen();
+    return true;
+  }
+  if (touchIn(touch, 164, 206, 72, 26)) {
+    settingsPage = SettingsPage::Audio;
+    drawInfoScreen();
+    return true;
+  }
+  if (touchIn(touch, 242, 206, 70, 26)) {
+    settingsPage = SettingsPage::Power;
+    drawInfoScreen();
+    return true;
+  }
+
+  if (settingsPage == SettingsPage::Display) {
+    if (touchIn(touch, 246, 70, 54, 28)) {
+      adjustBrightness(-20);
+      return true;
+    }
+    if (touchIn(touch, 246, 108, 54, 28)) {
+      adjustBrightness(20);
+      return true;
+    }
+    if (touchIn(touch, 24, 150, 128, 32)) {
+      setDisplayOn(!displayOn);
+      return true;
+    }
+    if (touchIn(touch, 170, 150, 128, 32)) {
+      applyLowPowerMode(!deviceSettings.lowPowerMode, true);
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Audio) {
+    if (touchIn(touch, 246, 84, 54, 28)) {
+      adjustVolume(-20);
+      return true;
+    }
+    if (touchIn(touch, 246, 122, 54, 28)) {
+      adjustVolume(20);
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Power) {
+    if (touchIn(touch, 164, 150, 136, 32)) {
+      applyLowPowerMode(!deviceSettings.lowPowerMode, true);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void drawLowPowerPrompt() {
+  if (!displayOn || infoScreenVisible || deviceSettings.lowPowerMode || !thermalStatus.suggestLowPower) {
+    return;
+  }
+  drawButton(M5.Display.width() - 132, M5.Display.height() - 44, 66, 30, "LOW", true);
 }
 
 void setState(ChanState state) {
@@ -594,9 +1086,6 @@ void setState(ChanState state) {
       pendingFaceModeNormalAfterPlayback = false;
       deferredFaceModeReadyMs = 0;
       faceController.setPhotoFaceMode(false);
-    }
-    if (previousState == ChanState::Speaking) {
-      currentAuthFaceMode = AuthFaceMode::Unknown;
     }
     vadActive = false;
     applyListeningPresentation(millis());
@@ -748,17 +1237,25 @@ void handleVadCommand(bool active) {
   Serial.printf("[vad] %s\n", vadActive ? "active" : "inactive");
 }
 
-void writeAffectionState(JsonDocument& doc, const char* requestId) {
+void writeAffectionSnapshot(JsonDocument& doc, unsigned long now) {
   const AffectionState& affection = affectionController.state();
+  doc["seq"] = affection.seq;
+  doc["timestampMs"] = now;
+  doc["affection"] = affection.affection;
+  doc["mood"] = affection.mood;
+  doc["confusion"] = affection.confusion;
+  doc["level"] = affectionController.level();
+  doc["levelIndex"] = affectionController.levelIndex();
+  doc["visualTier"] = affectionController.visualTier();
+  doc["styleId"] = affectionController.styleId();
+}
+
+void writeAffectionState(JsonDocument& doc, const char* requestId, unsigned long now) {
   doc["type"] = "affection.state";
   if (requestId != nullptr && requestId[0] != '\0') {
     doc["requestId"] = requestId;
   }
-  doc["affection"] = affection.affection;
-  doc["mood"] = affection.mood;
-  doc["confusion"] = affection.confusion;
-  doc["seq"] = affection.seq;
-  doc["level"] = affectionController.level();
+  writeAffectionSnapshot(doc, now);
 }
 
 void sendAffectionState(const char* requestId) {
@@ -767,21 +1264,56 @@ void sendAffectionState(const char* requestId) {
   }
 
   JsonDocument doc;
-  writeAffectionState(doc, requestId);
+  writeAffectionState(doc, requestId, millis());
 
   String body;
   serializeJson(doc, body);
   wsServer.sendText(body.c_str());
 }
 
+void sendInteractionEvent(const char* event, const char* phase, unsigned long now) {
+  if (!wsServer.hasClient() || event == nullptr || phase == nullptr) {
+    return;
+  }
+
+  JsonDocument doc;
+  doc["type"] = "interaction.event";
+  doc["event"] = event;
+  doc["phase"] = phase;
+  doc["source"] = "device";
+  writeAffectionSnapshot(doc, now);
+
+  String body;
+  serializeJson(doc, body);
+  wsServer.sendText(body.c_str());
+}
+
+const char* normalizeAffectionSource(const char* source) {
+  if (source == nullptr || source[0] == '\0') {
+    return "phone";
+  }
+  if (strcmp(source, "app") == 0 || strcmp(source, "phone") == 0) {
+    return "phone";
+  }
+  if (strcmp(source, "device") == 0) {
+    return "device";
+  }
+  if (strcmp(source, "debug") == 0) {
+    return "debug";
+  }
+  return "phone";
+}
+
 void handleAffectionEventCommand(JsonDocument& doc) {
   const char* eventName = doc["event"] | "";
   const char* eventId = doc["id"] | "";
+  const char* source = normalizeAffectionSource(doc["source"] | "phone");
   const float confidence = doc["confidence"] | 1.0f;
   const float intensity = doc["intensity"] | 1.0f;
   const unsigned long now = millis();
+  (void)source;
   const AffectionApplyResult result = affectionController.applyEvent(eventName, confidence, intensity, eventId, now);
-  applyAffectionResult(result, now, true);
+  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
   if (result.duplicate) {
     sendAffectionState(doc["requestId"] | nullptr);
   }
@@ -795,14 +1327,43 @@ void handleAffectionResetCommand(JsonDocument& doc) {
   const int value = doc["value"] | 500;
   const unsigned long now = millis();
   const AffectionApplyResult result = affectionController.reset(value);
-  applyAffectionResult(result, now, true);
+  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
 }
 
 void handleAffectionDebugAdjustCommand(JsonDocument& doc) {
   const int delta = doc["delta"] | 0;
   const unsigned long now = millis();
   const AffectionApplyResult result = affectionController.debugAdjust(delta);
-  applyAffectionResult(result, now, true);
+  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+}
+
+void handleAffectionDebugSetCommand(JsonDocument& doc) {
+  const bool hasLevelIndex = !doc["levelIndex"].isNull();
+  const bool hasAffection = !doc["affection"].isNull() || !doc["value"].isNull();
+  const bool hasMood = !doc["mood"].isNull();
+  const bool hasConfusion = !doc["confusion"].isNull();
+  const uint8_t levelIndex = doc["levelIndex"] | 3;
+  const int affection = doc["affection"] | doc["value"] | 500;
+  const int mood = doc["mood"] | 0;
+  const int confusion = doc["confusion"] | 0;
+  const bool persist = doc["persist"] | false;
+  const unsigned long now = millis();
+
+  const AffectionApplyResult result = affectionController.debugSet(
+    hasAffection,
+    affection,
+    hasLevelIndex,
+    levelIndex,
+    hasMood,
+    mood,
+    hasConfusion,
+    confusion,
+    persist
+  );
+  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+  if (!result.applied) {
+    sendAffectionState(doc["requestId"] | nullptr);
+  }
 }
 
 void handleJsonCommand(const uint8_t* payload, size_t length) {
@@ -825,6 +1386,8 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
     handleAffectionResetCommand(doc);
   } else if (strcmp(type, "affection.debug_adjust") == 0) {
     handleAffectionDebugAdjustCommand(doc);
+  } else if (strcmp(type, "affection.debug_set") == 0) {
+    handleAffectionDebugSetCommand(doc);
   } else if (strcmp(type, "auth") == 0) {
     const char* result = doc["result"] | "";
     handleAuthCommand(result);
@@ -875,6 +1438,13 @@ void onWsBinary(uint8_t clientId, uint8_t* payload, size_t length) {
 void onWsConnection(uint8_t clientId, bool connected) {
   (void)clientId;
   wsClientConnected = connected;
+  updateMicStatusOverlay();
+  if (connected) {
+    const unsigned long now = millis();
+    applyAffectionResult(affectionController.resetTransient(), now, false);
+    sendAffectionState();
+    sendInteractionEvent("session_start", "instant", now);
+  }
   if (infoScreenVisible) {
     drawInfoScreen();
   }
@@ -922,9 +1492,6 @@ void updateWiFi(unsigned long now) {
   lastWifiCheckMs = now;
 
   if (networkMode == NetworkMode::SoftAp) {
-    if (infoScreenVisible) {
-      drawInfoScreen();
-    }
     return;
   }
 
@@ -933,9 +1500,6 @@ void updateWiFi(unsigned long now) {
     if (!wsStarted) {
       Serial.printf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       startServers();
-      if (infoScreenVisible) {
-        drawInfoScreen();
-      }
     }
     return;
   }
@@ -953,9 +1517,6 @@ void updateWiFi(unsigned long now) {
   Serial.println("[wifi] disconnected, reconnecting");
   WiFi.disconnect();
   WiFi.begin(wifiCredentials[currentWifiIndex].ssid, wifiCredentials[currentWifiIndex].password);
-  if (infoScreenVisible) {
-    drawInfoScreen();
-  }
 }
 
 void updateTouch(unsigned long now) {
@@ -964,14 +1525,43 @@ void updateTouch(unsigned long now) {
   }
 
   auto touch = M5.Touch.getDetail();
-  if (infoScreenVisible && touch.wasHold()) {
+  if (!displayOn) {
+    return;
+  }
+
+  if (infoScreenVisible && settingsPage == SettingsPage::Network && touch.wasHold()) {
     switchNetworkModeAndRestart();
     return;
   }
 
-  if (touch.wasClicked() || touch.wasFlicked()) {
+  if (touch.wasClicked()) {
+    if (!infoScreenVisible && wsClientConnected &&
+        touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 80, 40, 80)) {
+      audioController.setMicMuted(!audioController.micMuted());
+      updateMicStatusOverlay();
+      return;
+    }
+    if (!infoScreenVisible && thermalStatus.suggestLowPower && !deviceSettings.lowPowerMode &&
+        touchIn(touch, M5.Display.width() - 132, M5.Display.height() - 44, 66, 30)) {
+      applyLowPowerMode(true, true);
+      return;
+    }
+    if (infoScreenVisible) {
+      handleSettingsTouch(touch);
+      return;
+    }
+  }
+
+  if (isSettingsSwipe(touch)) {
     setInfoScreenVisible(!infoScreenVisible);
     return;
+  }
+}
+
+void updateButtons(unsigned long now) {
+  (void)now;
+  if (M5.BtnPWR.wasClicked()) {
+    setDisplayOn(!displayOn);
   }
 }
 
@@ -983,14 +1573,12 @@ void updateBackTouch(unsigned long now) {
   // This is the physical touch sensor on Stack-chan's back, not the CoreS3 screen.
   auto& touchSensor = M5StackChan.TouchSensor;
   const auto& intensities = touchSensor.getIntensities();
-  const bool touchingBack = intensities[0] >= BACK_TOUCH_INTENSITY_THRESHOLD ||
-                            intensities[1] >= BACK_TOUCH_INTENSITY_THRESHOLD ||
-                            intensities[2] >= BACK_TOUCH_INTENSITY_THRESHOLD;
-  const bool backTouchDetected = touchSensor.wasPressed() || touchSensor.wasClicked() ||
-                                 touchSensor.wasSwipedForward() || touchSensor.wasSwipedBackward() || touchingBack;
+  const uint8_t maxIntensity = max(intensities[0], max(intensities[1], intensities[2]));
+  const bool backTouchDetected = maxIntensity >= BACK_TOUCH_INTENSITY_THRESHOLD;
 
   if (!backTouchReady) {
-    backTouchStrongSamples = 0;
+    backTouchCandidateSinceMs = 0;
+    backTouchClearSinceMs = 0;
     if (!interactionsReady(now) || backTouchDetected) {
       backTouchReleasedSinceMs = 0;
       return;
@@ -1008,15 +1596,23 @@ void updateBackTouch(unsigned long now) {
   }
 
   if (backTouchDetected) {
-    if (backTouchStrongSamples < BACK_TOUCH_REQUIRED_SAMPLES) {
-      ++backTouchStrongSamples;
+    backTouchClearSinceMs = 0;
+    if (backTouchCandidateSinceMs == 0) {
+      backTouchCandidateSinceMs = now;
+      return;
     }
-  } else if (backTouchStrongSamples > 0) {
-    --backTouchStrongSamples;
+    if (now - backTouchCandidateSinceMs >= BACK_TOUCH_REQUIRED_MS) {
+      setPettingActive(true, now);
+    }
+    return;
   }
 
-  if (backTouchStrongSamples >= BACK_TOUCH_REQUIRED_SAMPLES) {
-    setPettingActive(true, now);
+  backTouchCandidateSinceMs = 0;
+  if (backTouchClearSinceMs == 0) {
+    backTouchClearSinceMs = now;
+  }
+  if (now - backTouchClearSinceMs >= BACK_TOUCH_RELEASE_MS) {
+    backTouchClearSinceMs = 0;
   }
 }
 
@@ -1061,6 +1657,8 @@ void setup() {
 
   randomSeed(esp_random());
   networkMode = loadNetworkMode();
+  loadDeviceSettings();
+  applyDisplayBrightness();
   drawBootScreen("Starting...");
   Serial.printf("[network] mode=%s\n", networkModeName());
 
@@ -1072,10 +1670,14 @@ void setup() {
   }
 
   faceController.begin();
+  if (deviceSettings.lowPowerMode) {
+    faceController.setThermalFaceMode(ThermalFaceMode::LowPower);
+  }
   affectionController.begin(&preferences);
   faceController.setAffectionState(affectionController.state());
   motionController.begin();
   audioController.begin(&wsServer);
+  audioController.setVolume(deviceSettings.volume);
 
   wsServer.onText(onWsText);
   wsServer.onBinary(onWsBinary);
@@ -1091,6 +1693,9 @@ void loop() {
   M5StackChan.update();
 
   unsigned long now = millis();
+  updateButtons(now);
+  updateThermalStatus(now);
+  updateMicStatusOverlay();
   updateTouch(now);
   updateBackTouch(now);
   updateShake(now);
@@ -1104,19 +1709,21 @@ void loop() {
   }
 
   if (!interactionsReady(now)) {
-    drawInitializeScreen(now);
+    if (displayOn) {
+      drawInitializeScreen(now);
+    }
     audioController.update(now);
-    affectionController.update(now);
+    updateAffectionState(now);
     motionController.update(now);
     return;
   }
 
-  if (infoScreenVisible) {
-    if (now - lastInfoDrawMs >= 1000) {
+  if (infoScreenVisible && displayOn) {
+    if (settingsPage == SettingsPage::Power && now - lastInfoDrawMs >= 3000) {
       drawInfoScreen();
     }
     audioController.update(now);
-    affectionController.update(now);
+    updateAffectionState(now);
     updateDeferredFaceState();
     updateDeferredFaceMode();
     updatePetting(now);
@@ -1126,11 +1733,22 @@ void loop() {
   }
 
   audioController.update(now);
-  affectionController.update(now);
+  updateAffectionState(now);
   updateDeferredFaceState();
   updateDeferredFaceMode();
-  faceController.update(now);
+  if (displayOn) {
+    const bool speaking = currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
+    if (speaking || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
+      lastFaceUpdateMs = now;
+      faceController.update(now);
+      drawLowPowerPrompt();
+    }
+  }
   updatePetting(now);
-  updateListeningNod(now);
+  if (deviceSettings.lowPowerMode) {
+    cancelListeningNod(false);
+  } else {
+    updateListeningNod(now);
+  }
   motionController.update(now);
 }

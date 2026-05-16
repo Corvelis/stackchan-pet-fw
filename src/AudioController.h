@@ -17,6 +17,11 @@ public:
   bool pauseMicForCapture();
   void resumeMicAfterCapture(bool wasPaused);
   void deferNextSpeakerStartUntil(unsigned long timestampMs);
+  void setVolume(uint8_t volume);
+  uint8_t volume() const;
+  void setMicMuted(bool muted);
+  bool micMuted() const;
+  bool isMicStreaming() const;
   void onBinaryReceived(uint8_t* payload, size_t length);
   void update(unsigned long now);
 
@@ -43,6 +48,7 @@ private:
   ChanState state_ = ChanState::Idle;
   unsigned long lastMicSendMs_ = 0;
   bool micEnabled_ = false;
+  bool micMuted_ = false;
   bool speakerEnabled_ = false;
   bool speakerStartPending_ = false;
   bool playbackStarted_ = false;
@@ -50,6 +56,7 @@ private:
   unsigned long idleDrainEmptySinceMs_ = 0;
   unsigned long speakerStartNotBeforeMs_ = 0;
   unsigned long lastMicStatsMs_ = 0;
+  uint8_t volume_ = AUDIO_SPEAKER_VOLUME;
   uint32_t micStatsSamples_ = 0;
   uint32_t micStatsClipCount_ = 0;
   int32_t micStatsPeak_ = 0;
