@@ -104,15 +104,16 @@ unsigned long lastFaceUpdateMs = 0;
 uint8_t initializeSpinnerFrame = 0;
 unsigned long interactionReadyAtMs = 0;
 struct WifiCredential {
-  const char* ssid;
-  const char* password;
+  String ssid;
+  String password;
 };
 
-WifiCredential wifiCredentials[] = {
+constexpr size_t kMaxWifiCredentials = 5;
+WifiCredential wifiCredentials[kMaxWifiCredentials] = {
   {WIFI_SSID, WIFI_PASSWORD},
   {WIFI_SSID_2, WIFI_PASSWORD_2},
 };
-constexpr size_t wifiCredentialCount = sizeof(wifiCredentials) / sizeof(wifiCredentials[0]);
+size_t wifiCredentialCount = 0;
 size_t currentWifiIndex = 0;
 uint8_t wifiConnectAttempts = 0;
 
@@ -126,8 +127,7 @@ void applyLowPowerMode(bool enabled, bool persist);
 
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
-         wifiCredentials[index].ssid != nullptr &&
-         wifiCredentials[index].ssid[0] != '\0';
+         wifiCredentials[index].ssid.length() > 0;
 }
 
 bool selectNextConfiguredWifi() {
@@ -179,6 +179,131 @@ NetworkMode loadNetworkMode() {
   const uint8_t value = preferences.getUChar("net_mode", static_cast<uint8_t>(NetworkMode::Sta));
   preferences.end();
   return value == static_cast<uint8_t>(NetworkMode::SoftAp) ? NetworkMode::SoftAp : NetworkMode::Sta;
+}
+
+void loadWifiCredentials() {
+  for (size_t i = 0; i < kMaxWifiCredentials; ++i) {
+    wifiCredentials[i].ssid = "";
+    wifiCredentials[i].password = "";
+  }
+
+  preferences.begin("stackchan", true);
+  const uint8_t storedCount = preferences.getUChar("wifi_count", 255);
+  if (storedCount != 255) {
+    wifiCredentialCount = min<size_t>(storedCount, kMaxWifiCredentials);
+    for (size_t i = 0; i < wifiCredentialCount; ++i) {
+      char ssidKey[12];
+      char passKey[12];
+      snprintf(ssidKey, sizeof(ssidKey), "wifi_ssid%u", static_cast<unsigned>(i));
+      snprintf(passKey, sizeof(passKey), "wifi_pass%u", static_cast<unsigned>(i));
+      wifiCredentials[i].ssid = preferences.getString(ssidKey, "");
+      wifiCredentials[i].password = preferences.getString(passKey, "");
+    }
+    preferences.end();
+    return;
+  }
+  preferences.end();
+
+  wifiCredentialCount = 0;
+  if (String(WIFI_SSID).length() > 0 && wifiCredentialCount < kMaxWifiCredentials) {
+    wifiCredentials[wifiCredentialCount++] = {WIFI_SSID, WIFI_PASSWORD};
+  }
+  if (String(WIFI_SSID_2).length() > 0 && wifiCredentialCount < kMaxWifiCredentials) {
+    wifiCredentials[wifiCredentialCount++] = {WIFI_SSID_2, WIFI_PASSWORD_2};
+  }
+}
+
+void saveWifiCredentials() {
+  preferences.begin("stackchan", false);
+  preferences.putUChar("wifi_count", static_cast<uint8_t>(wifiCredentialCount));
+  for (size_t i = 0; i < kMaxWifiCredentials; ++i) {
+    char ssidKey[12];
+    char passKey[12];
+    snprintf(ssidKey, sizeof(ssidKey), "wifi_ssid%u", static_cast<unsigned>(i));
+    snprintf(passKey, sizeof(passKey), "wifi_pass%u", static_cast<unsigned>(i));
+    if (i < wifiCredentialCount) {
+      preferences.putString(ssidKey, wifiCredentials[i].ssid);
+      preferences.putString(passKey, wifiCredentials[i].password);
+    } else {
+      preferences.remove(ssidKey);
+      preferences.remove(passKey);
+    }
+  }
+  preferences.end();
+}
+
+bool upsertWifiCredential(const String& ssid, const String& password, size_t preferredIndex) {
+  if (ssid.length() == 0) {
+    return false;
+  }
+
+  size_t index = kMaxWifiCredentials;
+  for (size_t i = 0; i < wifiCredentialCount; ++i) {
+    if (wifiCredentials[i].ssid == ssid) {
+      index = i;
+      break;
+    }
+  }
+
+  if (index == kMaxWifiCredentials) {
+    if (wifiCredentialCount >= kMaxWifiCredentials) {
+      return false;
+    }
+    index = wifiCredentialCount++;
+  }
+
+  wifiCredentials[index].ssid = ssid;
+  if (password.length() > 0 || wifiCredentials[index].password.length() == 0) {
+    wifiCredentials[index].password = password;
+  }
+
+  preferredIndex = min(preferredIndex, wifiCredentialCount - 1);
+  while (index > preferredIndex) {
+    WifiCredential tmp = wifiCredentials[index - 1];
+    wifiCredentials[index - 1] = wifiCredentials[index];
+    wifiCredentials[index] = tmp;
+    --index;
+  }
+  while (index < preferredIndex) {
+    WifiCredential tmp = wifiCredentials[index + 1];
+    wifiCredentials[index + 1] = wifiCredentials[index];
+    wifiCredentials[index] = tmp;
+    ++index;
+  }
+  currentWifiIndex = preferredIndex;
+  return true;
+}
+
+bool deleteWifiCredential(size_t index) {
+  if (index >= wifiCredentialCount) {
+    return false;
+  }
+  for (size_t i = index; i + 1 < wifiCredentialCount; ++i) {
+    wifiCredentials[i] = wifiCredentials[i + 1];
+  }
+  --wifiCredentialCount;
+  if (currentWifiIndex >= wifiCredentialCount) {
+    currentWifiIndex = 0;
+  }
+  return true;
+}
+
+bool moveWifiCredential(size_t index, int delta) {
+  if (index >= wifiCredentialCount) {
+    return false;
+  }
+  if (delta < 0 && index == 0) {
+    return false;
+  }
+  if (delta > 0 && index + 1 >= wifiCredentialCount) {
+    return false;
+  }
+  const size_t other = delta < 0 ? index - 1 : index + 1;
+  WifiCredential tmp = wifiCredentials[other];
+  wifiCredentials[other] = wifiCredentials[index];
+  wifiCredentials[index] = tmp;
+  currentWifiIndex = other;
+  return true;
 }
 
 void saveNetworkMode(NetworkMode mode) {
@@ -696,6 +821,184 @@ void sendJson(int code, const char* body) {
   httpServer.send(code, "application/json", body);
 }
 
+String htmlEscape(const String& value) {
+  String escaped;
+  escaped.reserve(value.length() + 8);
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c == '&') {
+      escaped += F("&amp;");
+    } else if (c == '<') {
+      escaped += F("&lt;");
+    } else if (c == '>') {
+      escaped += F("&gt;");
+    } else if (c == '"') {
+      escaped += F("&quot;");
+    } else if (c == '\'') {
+      escaped += F("&#39;");
+    } else {
+      escaped += c;
+    }
+  }
+  return escaped;
+}
+
+void sendWifiPage(const String& message = "") {
+  addCorsHeaders();
+  httpServer.sendHeader("Cache-Control", "no-store");
+
+  String body;
+  body.reserve(9000);
+  body += F("<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">");
+  body += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  body += F("<title>Stack-chan Wi-Fi Setup</title>");
+  body += F("<style>");
+  body += F("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f7f7f4;color:#1f2328}");
+  body += F("main{max-width:720px;margin:0 auto;padding:20px}h1{font-size:24px;margin:0 0 16px}");
+  body += F("section{background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px;margin:14px 0}");
+  body += F("label{display:block;font-weight:600;margin:12px 0 6px}input,select{box-sizing:border-box;width:100%;padding:10px;border:1px solid #bbb;border-radius:6px;font-size:16px}");
+  body += F("button,a.btn{display:inline-block;margin:8px 6px 0 0;padding:9px 12px;border:1px solid #777;border-radius:6px;background:#222;color:#fff;text-decoration:none;font-size:14px}");
+  body += F("button.secondary{background:#fff;color:#222}.row{border-top:1px solid #eee;padding:10px 0}.muted{color:#666;font-size:13px}.msg{background:#eaf6ef;border-color:#b9dfc8}");
+  body += F("</style></head><body><main><h1>Stack-chan Wi-Fi Setup</h1>");
+  body += F("<p class=\"muted\">SSIDを選択または入力して保存します。保存済みWi-Fiは上から順に接続を試します。</p>");
+
+  if (message.length() > 0) {
+    body += F("<section class=\"msg\">");
+    body += htmlEscape(message);
+    body += F("</section>");
+  }
+
+  body += F("<section><h2>見つかったSSID</h2>");
+  body += F("<button class=\"secondary\" type=\"button\" onclick=\"scanWifi()\">再スキャン</button>");
+  body += F("<div id=\"scan\" class=\"muted\">読み込み中...</div></section>");
+
+  body += F("<section><h2>保存 / 変更</h2>");
+  body += F("<form method=\"post\" action=\"/wifi/save\">");
+  body += F("<label for=\"ssid\">SSID</label><input id=\"ssid\" name=\"ssid\" autocomplete=\"off\" required>");
+  body += F("<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\">");
+  body += F("<p class=\"muted\">保存済みSSIDを選んでパスワード欄を空にすると、既存パスワードを維持します。</p>");
+  body += F("<label for=\"priority\">優先度</label><select id=\"priority\" name=\"priority\">");
+  for (size_t i = 0; i < kMaxWifiCredentials; ++i) {
+    body += F("<option value=\"");
+    body += String(i);
+    body += F("\">");
+    body += String(i + 1);
+    body += F("</option>");
+  }
+  body += F("</select><button type=\"submit\">保存</button></form></section>");
+
+  body += F("<section><h2>保存済みWi-Fi</h2>");
+  if (wifiCredentialCount == 0) {
+    body += F("<p class=\"muted\">保存済みWi-Fiはありません。</p>");
+  }
+  for (size_t i = 0; i < wifiCredentialCount; ++i) {
+    body += F("<div class=\"row\"><strong>");
+    body += String(i + 1);
+    body += F(". ");
+    body += htmlEscape(wifiCredentials[i].ssid);
+    body += F("</strong><div>");
+    body += F("<button class=\"secondary\" data-ssid=\"");
+    body += htmlEscape(wifiCredentials[i].ssid);
+    body += F("\" data-index=\"");
+    body += String(i);
+    body += F("\" onclick=\"editSaved(this.dataset.ssid,this.dataset.index)\">編集</button>");
+    body += F("<form method=\"post\" action=\"/wifi/move\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
+    body += String(i);
+    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"up\"><button class=\"secondary\" type=\"submit\">上へ</button></form>");
+    body += F("<form method=\"post\" action=\"/wifi/move\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
+    body += String(i);
+    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"down\"><button class=\"secondary\" type=\"submit\">下へ</button></form>");
+    body += F("<form method=\"post\" action=\"/wifi/delete\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
+    body += String(i);
+    body += F("\"><button class=\"secondary\" type=\"submit\">削除</button></form>");
+    body += F("</div></div>");
+  }
+  body += F("</section>");
+
+  body += F("<section><h2>接続</h2>");
+  body += F("<p class=\"muted\">設定を保存したら、再起動してSTA接続を試します。</p>");
+  body += F("<form method=\"post\" action=\"/wifi/restart\"><button type=\"submit\">保存済みWi-Fiで再起動</button></form>");
+  body += F("</section>");
+
+  body += F("<script>");
+  body += F("function esc(s){return String(s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})}");
+  body += F("function selectSsid(s){document.getElementById('ssid').value=s;document.getElementById('password').focus()}");
+  body += F("function editSaved(s,i){document.getElementById('ssid').value=s;document.getElementById('priority').value=i;document.getElementById('password').focus()}");
+  body += F("async function scanWifi(){let box=document.getElementById('scan');box.textContent='スキャン中...';try{let r=await fetch('/wifi/scan');let d=await r.json();if(!d.networks.length){box.textContent='SSIDが見つかりませんでした';return}box.innerHTML=d.networks.map(n=>'<div class=\"row\"><button class=\"secondary\" onclick=\"selectSsid(\\''+String(n.ssid).replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\")+'\\')\">選択</button> '+esc(n.ssid)+' <span class=\"muted\">'+n.rssi+' dBm '+esc(n.auth)+'</span></div>').join('')}catch(e){box.textContent='スキャンに失敗しました'}}");
+  body += F("scanWifi();</script></main></body></html>");
+
+  httpServer.send(200, "text/html; charset=utf-8", body);
+}
+
+void handleWifiScanRequest() {
+  WiFiMode_t previousMode = WiFi.getMode();
+  if (previousMode == WIFI_AP) {
+    WiFi.mode(WIFI_AP_STA);
+  }
+  const int count = WiFi.scanNetworks(false, true);
+
+  JsonDocument doc;
+  JsonArray networks = doc["networks"].to<JsonArray>();
+  for (int i = 0; i < count; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) {
+      continue;
+    }
+    JsonObject item = networks.add<JsonObject>();
+    item["ssid"] = ssid;
+    item["rssi"] = WiFi.RSSI(i);
+    item["auth"] = WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "secured";
+  }
+  WiFi.scanDelete();
+  if (previousMode == WIFI_AP) {
+    WiFi.mode(WIFI_AP);
+  }
+
+  String body;
+  serializeJson(doc, body);
+  sendJson(200, body.c_str());
+}
+
+void handleWifiSaveRequest() {
+  String ssid = httpServer.arg("ssid");
+  ssid.trim();
+  String password = httpServer.arg("password");
+  const size_t priority = static_cast<size_t>(httpServer.arg("priority").toInt());
+  if (!upsertWifiCredential(ssid, password, priority)) {
+    sendWifiPage("保存できませんでした。SSIDが空、または保存件数が上限です。");
+    return;
+  }
+  saveWifiCredentials();
+  sendWifiPage("Wi-Fi設定を保存しました。必要なら再起動して接続を試してください。");
+}
+
+void handleWifiDeleteRequest() {
+  if (deleteWifiCredential(static_cast<size_t>(httpServer.arg("index").toInt()))) {
+    saveWifiCredentials();
+    sendWifiPage("Wi-Fi設定を削除しました。");
+    return;
+  }
+  sendWifiPage("削除できませんでした。");
+}
+
+void handleWifiMoveRequest() {
+  const size_t index = static_cast<size_t>(httpServer.arg("index").toInt());
+  const int delta = httpServer.arg("dir") == "up" ? -1 : 1;
+  if (moveWifiCredential(index, delta)) {
+    saveWifiCredentials();
+    sendWifiPage("優先度を変更しました。");
+    return;
+  }
+  sendWifiPage("優先度を変更できませんでした。");
+}
+
+void handleWifiRestartRequest() {
+  saveNetworkMode(NetworkMode::Sta);
+  sendWifiPage("再起動します。保存済みWi-Fiへの接続を試します。");
+  delay(500);
+  ESP.restart();
+}
+
 void handleCaptureRequest() {
   faceController.setPhotoFaceMode(true);
   faceController.showFace("photo_0");
@@ -785,6 +1088,17 @@ void startHttpServer() {
     httpServer.send(204);
   });
   httpServer.on("/status", HTTP_GET, handleStatusRequest);
+  httpServer.on("/wifi", HTTP_GET, []() {
+    sendWifiPage();
+  });
+  httpServer.on("/setup", HTTP_GET, []() {
+    sendWifiPage();
+  });
+  httpServer.on("/wifi/scan", HTTP_GET, handleWifiScanRequest);
+  httpServer.on("/wifi/save", HTTP_POST, handleWifiSaveRequest);
+  httpServer.on("/wifi/delete", HTTP_POST, handleWifiDeleteRequest);
+  httpServer.on("/wifi/move", HTTP_POST, handleWifiMoveRequest);
+  httpServer.on("/wifi/restart", HTTP_POST, handleWifiRestartRequest);
   httpServer.onNotFound([]() {
     sendJson(404, "{\"error\":\"not_found\"}");
   });
@@ -858,15 +1172,17 @@ void drawNetworkSettingsPage() {
     M5.Display.printf("SSID: %s\n", AP_SSID);
     M5.Display.printf("PASS: %s\n", AP_PASSWORD);
     M5.Display.printf("IP: %s\n", ip.c_str());
+    M5.Display.printf("Setup: http://%s/wifi\n", ip.c_str());
     M5.Display.printf("WS: ws://%s:%d%s\n", ip.c_str(), WS_PORT, WS_PATH);
     M5.Display.printf("Stations: %d\n", WiFi.softAPgetStationNum());
   } else if (WiFi.status() == WL_CONNECTED) {
     const String ip = WiFi.localIP().toString();
-    M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid);
+    M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
     M5.Display.printf("IP: %s\n", ip.c_str());
     M5.Display.printf("WS: ws://%s:%d%s\n", ip.c_str(), WS_PORT, WS_PATH);
+    M5.Display.printf("Setup: http://%s/wifi\n", ip.c_str());
   } else {
-    M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid);
+    M5.Display.printf("SSID: %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
     M5.Display.println("IP: not connected");
     M5.Display.println("WS: not ready");
   }
@@ -1477,12 +1793,14 @@ void connectWiFi() {
   WiFi.setSleep(false);
   if (!isWifiCredentialConfigured(currentWifiIndex) && !selectNextConfiguredWifi()) {
     Serial.println("[wifi] no STA credentials configured");
-    drawBootScreen("WiFi not configured");
+    drawBootScreen("WiFi setup AP");
+    networkMode = NetworkMode::SoftAp;
+    connectWiFi();
     return;
   }
 
-  WiFi.begin(wifiCredentials[currentWifiIndex].ssid, wifiCredentials[currentWifiIndex].password);
-  Serial.printf("[wifi] connecting to %s\n", wifiCredentials[currentWifiIndex].ssid);
+  WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
+  Serial.printf("[wifi] connecting to %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
 }
 
 void updateWiFi(unsigned long now) {
@@ -1511,12 +1829,12 @@ void updateWiFi(unsigned long now) {
       Serial.println("[wifi] no STA credentials configured");
       return;
     }
-    Serial.printf("[wifi] switching candidate to %s\n", wifiCredentials[currentWifiIndex].ssid);
+    Serial.printf("[wifi] switching candidate to %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
   }
 
   Serial.println("[wifi] disconnected, reconnecting");
   WiFi.disconnect();
-  WiFi.begin(wifiCredentials[currentWifiIndex].ssid, wifiCredentials[currentWifiIndex].password);
+  WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
 }
 
 void updateTouch(unsigned long now) {
@@ -1657,6 +1975,7 @@ void setup() {
 
   randomSeed(esp_random());
   networkMode = loadNetworkMode();
+  loadWifiCredentials();
   loadDeviceSettings();
   applyDisplayBrightness();
   drawBootScreen("Starting...");
