@@ -172,7 +172,7 @@ idle 顔と分けたい場合だけ用意してください。存在しない場
 ローカル画像セットのクレジット:
 
 ```text
-フリー素材キャラクター「つくよみちゃん」
+フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
 https://tyc.rei-yumesaki.net/
 つくよみちゃん万能立ち絵素材（花兎*様）
 https://tyc.rei-yumesaki.net/material/illust/

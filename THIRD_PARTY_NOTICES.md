@@ -31,7 +31,7 @@ This repository does not include third-party character image files.
 The local development image set was prepared from:
 
 ```text
-フリー素材キャラクター「つくよみちゃん」
+フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
 https://tyc.rei-yumesaki.net/
 つくよみちゃん万能立ち絵素材（花兎*様）
 https://tyc.rei-yumesaki.net/material/illust/

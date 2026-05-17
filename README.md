@@ -179,7 +179,7 @@ page, follow its terms, export the required 240 x 240 PNGs, and place them in
 Credit for the local image set:
 
 ```text
-フリー素材キャラクター「つくよみちゃん」
+フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
 https://tyc.rei-yumesaki.net/
 つくよみちゃん万能立ち絵素材（花兎*様）
 https://tyc.rei-yumesaki.net/material/illust/

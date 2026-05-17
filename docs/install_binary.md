@@ -30,10 +30,10 @@ Used with Stack-chan CoreS3 Controller
 
 ## Tsukuyomi-chan Credit
 
-This firmware uses the free character "Tsukuyomi-chan" and Tsukuyomi-chan standing illustration material.
+This firmware uses standing illustration material for the free character "Tsukuyomi-chan" (© Rei Yumesaki).
 
 ```text
-フリー素材キャラクター「つくよみちゃん」
+フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
 https://tyc.rei-yumesaki.net/
 
 つくよみちゃん万能立ち絵素材（花兎*様）
