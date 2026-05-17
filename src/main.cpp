@@ -36,7 +36,8 @@ enum class SettingsPage : uint8_t {
   Network = 0,
   Display = 1,
   Audio = 2,
-  Power = 3,
+  Servo = 3,
+  Power = 4,
 };
 
 enum class NetworkQrType : uint8_t {
@@ -88,6 +89,13 @@ ChanState deferredStateAfterPlayback = ChanState::Idle;
 unsigned long deferredStateReadyMs = 0;
 bool pendingFaceModeNormalAfterPlayback = false;
 unsigned long deferredFaceModeReadyMs = 0;
+unsigned long wsAudioSettleUntilMs = 0;
+int16_t pendingAffectionDelta = 0;
+AffectionState pendingAffectionVisualState;
+bool pendingAffectionVisualStateValid = false;
+unsigned long pendingAffectionDeltaReadyMs = 0;
+unsigned long pendingAffectionDeltaQueuedMs = 0;
+bool pendingAffectionDeltaSawAudio = false;
 unsigned long nextListeningNodMs = 0;
 unsigned long listeningNodPhaseEndMs = 0;
 uint8_t listeningNodPhase = 0;
@@ -131,9 +139,12 @@ void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
 bool interactionsReady(unsigned long now);
 void applyListeningPresentation(unsigned long now);
+bool audioBusyForUiEffects();
+void updatePendingAffectionDelta();
 void drawInfoScreen();
 void applyDisplayBrightness();
 void applyLowPowerMode(bool enabled, bool persist);
+bool audioBusyForServoCalibration();
 
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
@@ -150,13 +161,26 @@ bool selectNextConfiguredWifi() {
   return false;
 }
 
-void applyAffectionResult(const AffectionApplyResult& result, unsigned long now, bool sendState, const char* requestId = nullptr) {
+void applyAffectionResult(const AffectionApplyResult& result, unsigned long now, bool sendState,
+                          const char* requestId = nullptr, bool deferDeltaUntilAudioSettles = false) {
   if (!result.applied) {
     return;
   }
-  faceController.setAffectionState(result.state);
-  if (result.delta != 0) {
-    faceController.showAffectionDelta(result.delta, now);
+  const bool deferVisualUntilAudioSettles = audioBusyForUiEffects() || deferDeltaUntilAudioSettles;
+  if (deferVisualUntilAudioSettles) {
+    pendingAffectionVisualState = result.state;
+    pendingAffectionVisualStateValid = true;
+    pendingAffectionDeltaReadyMs = 0;
+    pendingAffectionDeltaQueuedMs = now;
+    pendingAffectionDeltaSawAudio = pendingAffectionDeltaSawAudio || audioBusyForUiEffects();
+    if (result.delta != 0) {
+      pendingAffectionDelta = constrain(static_cast<int>(pendingAffectionDelta) + result.delta, -999, 999);
+    }
+  } else {
+    faceController.setAffectionState(result.state);
+    if (result.delta != 0) {
+      faceController.showAffectionDelta(result.delta, now);
+    }
   }
   if (sendState) {
     sendAffectionState(requestId);
@@ -168,6 +192,48 @@ void applyAffectionResult(const AffectionApplyResult& result, unsigned long now,
       now
     );
   }
+}
+
+bool audioBusyForUiEffects() {
+  return currentState == ChanState::Speaking ||
+         audioController.state() == ChanState::Speaking ||
+         audioController.isPlaybackDraining();
+}
+
+void updatePendingAffectionDelta() {
+  if (!pendingAffectionVisualStateValid && pendingAffectionDelta == 0) {
+    return;
+  }
+  if (audioBusyForUiEffects()) {
+    pendingAffectionDeltaReadyMs = 0;
+    pendingAffectionDeltaSawAudio = true;
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (!pendingAffectionDeltaSawAudio && now - pendingAffectionDeltaQueuedMs < 2500) {
+    return;
+  }
+  if (pendingAffectionDeltaReadyMs == 0) {
+    pendingAffectionDeltaReadyMs = now + AUDIO_SPEAKER_TO_MIC_DELAY_MS;
+    return;
+  }
+  if (now < pendingAffectionDeltaReadyMs) {
+    return;
+  }
+
+  if (pendingAffectionVisualStateValid) {
+    faceController.setAffectionState(pendingAffectionVisualState);
+    pendingAffectionVisualStateValid = false;
+  }
+  if (pendingAffectionDelta != 0) {
+    faceController.showAffectionDelta(pendingAffectionDelta, now);
+    Serial.printf("[affection] deferred delta shown %+d\n", pendingAffectionDelta);
+  }
+  pendingAffectionDelta = 0;
+  pendingAffectionDeltaReadyMs = 0;
+  pendingAffectionDeltaQueuedMs = 0;
+  pendingAffectionDeltaSawAudio = false;
 }
 
 void updateAffectionState(unsigned long now) {
@@ -509,6 +575,10 @@ Pose makePettingPoseFromBase(const Pose& base, bool bigMove) {
 }
 
 void setPettingActive(bool active, unsigned long now) {
+  if (active && !displayOn) {
+    return;
+  }
+
   if (active) {
     pettingEndMs = now + PET_TOUCH_RELEASE_GRACE_MS;
     if (!pettingActive) {
@@ -551,6 +621,11 @@ void setPettingActive(bool active, unsigned long now) {
 }
 
 void updatePetting(unsigned long now) {
+  if (!displayOn) {
+    setPettingActive(false, now);
+    return;
+  }
+
   if (!pettingActive) {
     return;
   }
@@ -575,6 +650,10 @@ void updatePetting(unsigned long now) {
 }
 
 void setShakeActive(bool active, unsigned long now) {
+  if (active && !displayOn) {
+    return;
+  }
+
   if (active) {
     shakeEndMs = now + SHAKE_FACE_HOLD_MS;
     lastShakeTriggerMs = now;
@@ -635,6 +714,13 @@ void updateShakeMotion(const m5::imu_data_t& data, unsigned long now) {
 }
 
 void updateShake(unsigned long now) {
+  if (!displayOn) {
+    setShakeActive(false, now);
+    shakeStrongSamples = 0;
+    nextShakeMotionMs = 0;
+    return;
+  }
+
   if (now < nextShakeCheckMs) {
     return;
   }
@@ -897,12 +983,12 @@ String htmlEscape(const String& value) {
   return escaped;
 }
 
-void sendWifiPage(const String& message = "") {
+void sendWifiPage(const String& messageJa = "", const String& messageEn = "") {
   addCorsHeaders();
   httpServer.sendHeader("Cache-Control", "no-store");
 
   String body;
-  body.reserve(9000);
+  body.reserve(13000);
   body += F("<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">");
   body += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
   body += F("<title>Stack-chan Wi-Fi Setup</title>");
@@ -912,26 +998,31 @@ void sendWifiPage(const String& message = "") {
   body += F("section{background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px;margin:14px 0}");
   body += F("label{display:block;font-weight:600;margin:12px 0 6px}input,select{box-sizing:border-box;width:100%;padding:10px;border:1px solid #bbb;border-radius:6px;font-size:16px}");
   body += F("button,a.btn{display:inline-block;margin:8px 6px 0 0;padding:9px 12px;border:1px solid #777;border-radius:6px;background:#222;color:#fff;text-decoration:none;font-size:14px}");
-  body += F("button.secondary{background:#fff;color:#222}.row{border-top:1px solid #eee;padding:10px 0}.muted{color:#666;font-size:13px}.msg{background:#eaf6ef;border-color:#b9dfc8}");
+  body += F("button.secondary{background:#fff;color:#222}.row{border-top:1px solid #eee;padding:10px 0}.muted{color:#666;font-size:13px}.msg{background:#eaf6ef;border-color:#b9dfc8}.lang{float:right}.lang button{margin-top:0}.lang button.active{background:#0b6bcb;color:#fff;border-color:#0b6bcb}");
   body += F("</style></head><body><main><h1>Stack-chan Wi-Fi Setup</h1>");
-  body += F("<p class=\"muted\">SSIDを選択または入力して保存します。保存済みWi-Fiは上から順に接続を試します。</p>");
+  body += F("<div class=\"lang\"><button class=\"secondary\" id=\"lang-ja\" type=\"button\" onclick=\"setLang('ja')\">日本語</button><button class=\"secondary\" id=\"lang-en\" type=\"button\" onclick=\"setLang('en')\">English</button></div>");
+  body += F("<p class=\"muted\" data-ja=\"SSIDを選択または入力して保存します。保存済みWi-Fiは上から順に接続を試します。\" data-en=\"Select or enter an SSID and save it. Saved Wi-Fi networks are tried from top to bottom.\">SSIDを選択または入力して保存します。保存済みWi-Fiは上から順に接続を試します。</p>");
 
-  if (message.length() > 0) {
-    body += F("<section class=\"msg\">");
-    body += htmlEscape(message);
+  if (messageJa.length() > 0 || messageEn.length() > 0) {
+    body += F("<section class=\"msg\" data-ja=\"");
+    body += htmlEscape(messageJa);
+    body += F("\" data-en=\"");
+    body += htmlEscape(messageEn.length() > 0 ? messageEn : messageJa);
+    body += F("\">");
+    body += htmlEscape(messageJa);
     body += F("</section>");
   }
 
-  body += F("<section><h2>見つかったSSID</h2>");
-  body += F("<button class=\"secondary\" type=\"button\" onclick=\"scanWifi()\">再スキャン</button>");
+  body += F("<section><h2 data-ja=\"見つかったSSID\" data-en=\"Found SSIDs\">見つかったSSID</h2>");
+  body += F("<button class=\"secondary\" type=\"button\" onclick=\"scanWifi()\" data-ja=\"再スキャン\" data-en=\"Rescan\">再スキャン</button>");
   body += F("<div id=\"scan\" class=\"muted\">読み込み中...</div></section>");
 
-  body += F("<section><h2>保存 / 変更</h2>");
+  body += F("<section><h2 data-ja=\"保存 / 変更\" data-en=\"Save / Edit\">保存 / 変更</h2>");
   body += F("<form method=\"post\" action=\"/wifi/save\">");
   body += F("<label for=\"ssid\">SSID</label><input id=\"ssid\" name=\"ssid\" autocomplete=\"off\" required>");
   body += F("<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\">");
-  body += F("<p class=\"muted\">保存済みSSIDを選んでパスワード欄を空にすると、既存パスワードを維持します。</p>");
-  body += F("<label for=\"priority\">優先度</label><select id=\"priority\" name=\"priority\">");
+  body += F("<p class=\"muted\" data-ja=\"保存済みSSIDを選んでパスワード欄を空にすると、既存パスワードを維持します。\" data-en=\"Select a saved SSID and leave Password empty to keep the existing password.\">保存済みSSIDを選んでパスワード欄を空にすると、既存パスワードを維持します。</p>");
+  body += F("<label for=\"priority\" data-ja=\"優先度\" data-en=\"Priority\">優先度</label><select id=\"priority\" name=\"priority\">");
   for (size_t i = 0; i < kMaxWifiCredentials; ++i) {
     body += F("<option value=\"");
     body += String(i);
@@ -939,11 +1030,11 @@ void sendWifiPage(const String& message = "") {
     body += String(i + 1);
     body += F("</option>");
   }
-  body += F("</select><button type=\"submit\">保存</button></form></section>");
+  body += F("</select><button type=\"submit\" data-ja=\"保存\" data-en=\"Save\">保存</button></form></section>");
 
-  body += F("<section><h2>保存済みWi-Fi</h2>");
+  body += F("<section><h2 data-ja=\"保存済みWi-Fi\" data-en=\"Saved Wi-Fi\">保存済みWi-Fi</h2>");
   if (wifiCredentialCount == 0) {
-    body += F("<p class=\"muted\">保存済みWi-Fiはありません。</p>");
+    body += F("<p class=\"muted\" data-ja=\"保存済みWi-Fiはありません。\" data-en=\"No saved Wi-Fi networks.\">保存済みWi-Fiはありません。</p>");
   }
   for (size_t i = 0; i < wifiCredentialCount; ++i) {
     body += F("<div class=\"row\"><strong>");
@@ -955,31 +1046,34 @@ void sendWifiPage(const String& message = "") {
     body += htmlEscape(wifiCredentials[i].ssid);
     body += F("\" data-index=\"");
     body += String(i);
-    body += F("\" onclick=\"editSaved(this.dataset.ssid,this.dataset.index)\">編集</button>");
+    body += F("\" onclick=\"editSaved(this.dataset.ssid,this.dataset.index)\" data-ja=\"編集\" data-en=\"Edit\">編集</button>");
     body += F("<form method=\"post\" action=\"/wifi/move\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
     body += String(i);
-    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"up\"><button class=\"secondary\" type=\"submit\">上へ</button></form>");
+    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"up\"><button class=\"secondary\" type=\"submit\" data-ja=\"上へ\" data-en=\"Up\">上へ</button></form>");
     body += F("<form method=\"post\" action=\"/wifi/move\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
     body += String(i);
-    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"down\"><button class=\"secondary\" type=\"submit\">下へ</button></form>");
+    body += F("\"><input type=\"hidden\" name=\"dir\" value=\"down\"><button class=\"secondary\" type=\"submit\" data-ja=\"下へ\" data-en=\"Down\">下へ</button></form>");
     body += F("<form method=\"post\" action=\"/wifi/delete\" style=\"display:inline\"><input type=\"hidden\" name=\"index\" value=\"");
     body += String(i);
-    body += F("\"><button class=\"secondary\" type=\"submit\">削除</button></form>");
+    body += F("\"><button class=\"secondary\" type=\"submit\" data-ja=\"削除\" data-en=\"Delete\">削除</button></form>");
     body += F("</div></div>");
   }
   body += F("</section>");
 
-  body += F("<section><h2>接続</h2>");
-  body += F("<p class=\"muted\">設定を保存したら、再起動してSTA接続を試します。</p>");
-  body += F("<form method=\"post\" action=\"/wifi/restart\"><button type=\"submit\">保存済みWi-Fiで再起動</button></form>");
+  body += F("<section><h2 data-ja=\"接続\" data-en=\"Connect\">接続</h2>");
+  body += F("<p class=\"muted\" data-ja=\"設定を保存したら、再起動してSTA接続を試します。\" data-en=\"After saving settings, restart to try STA connection.\">設定を保存したら、再起動してSTA接続を試します。</p>");
+  body += F("<form method=\"post\" action=\"/wifi/restart\"><button type=\"submit\" data-ja=\"保存済みWi-Fiで再起動\" data-en=\"Restart with saved Wi-Fi\">保存済みWi-Fiで再起動</button></form>");
   body += F("</section>");
 
   body += F("<script>");
+  body += F("let lang=localStorage.getItem('stackchanWifiLang')||((navigator.language||'').toLowerCase().startsWith('ja')?'ja':'en');");
+  body += F("const txt={ja:{loading:'読み込み中...',scanning:'スキャン中...',none:'SSIDが見つかりませんでした',failed:'スキャンに失敗しました',select:'選択'},en:{loading:'Loading...',scanning:'Scanning...',none:'No SSIDs found',failed:'Scan failed',select:'Select'}};");
+  body += F("function setLang(l){lang=l;localStorage.setItem('stackchanWifiLang',l);document.documentElement.lang=l;document.querySelectorAll('[data-ja][data-en]').forEach(function(e){e.textContent=e.dataset[l]});document.getElementById('lang-ja').classList.toggle('active',l==='ja');document.getElementById('lang-en').classList.toggle('active',l==='en');}");
   body += F("function esc(s){return String(s).replace(/[&<>\"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})}");
   body += F("function selectSsid(s){document.getElementById('ssid').value=s;document.getElementById('password').focus()}");
   body += F("function editSaved(s,i){document.getElementById('ssid').value=s;document.getElementById('priority').value=i;document.getElementById('password').focus()}");
-  body += F("async function scanWifi(){let box=document.getElementById('scan');box.textContent='スキャン中...';try{let r=await fetch('/wifi/scan');let d=await r.json();if(!d.networks.length){box.textContent='SSIDが見つかりませんでした';return}box.innerHTML=d.networks.map(n=>'<div class=\"row\"><button class=\"secondary\" onclick=\"selectSsid(\\''+String(n.ssid).replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\")+'\\')\">選択</button> '+esc(n.ssid)+' <span class=\"muted\">'+n.rssi+' dBm '+esc(n.auth)+'</span></div>').join('')}catch(e){box.textContent='スキャンに失敗しました'}}");
-  body += F("scanWifi();</script></main></body></html>");
+  body += F("async function scanWifi(){let box=document.getElementById('scan');box.textContent=txt[lang].scanning;try{let r=await fetch('/wifi/scan');let d=await r.json();if(!d.networks.length){box.textContent=txt[lang].none;return}box.innerHTML=d.networks.map(n=>'<div class=\"row\"><button class=\"secondary\" onclick=\"selectSsid(\\''+String(n.ssid).replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\")+'\\')\">'+txt[lang].select+'</button> '+esc(n.ssid)+' <span class=\"muted\">'+n.rssi+' dBm '+esc(n.auth)+'</span></div>').join('')}catch(e){box.textContent=txt[lang].failed}}");
+  body += F("setLang(lang);scanWifi();</script></main></body></html>");
 
   httpServer.send(200, "text/html; charset=utf-8", body);
 }
@@ -1019,20 +1113,24 @@ void handleWifiSaveRequest() {
   String password = httpServer.arg("password");
   const size_t priority = static_cast<size_t>(httpServer.arg("priority").toInt());
   if (!upsertWifiCredential(ssid, password, priority)) {
-    sendWifiPage("保存できませんでした。SSIDが空、または保存件数が上限です。");
+    sendWifiPage("保存できませんでした。SSIDが空、または保存件数が上限です。",
+                 "Could not save. SSID is empty or the saved network list is full.");
     return;
   }
   saveWifiCredentials();
-  sendWifiPage("Wi-Fi設定を保存しました。必要なら再起動して接続を試してください。");
+  sendWifiPage("Wi-Fi設定を保存しました。必要なら再起動して接続を試してください。",
+               "Wi-Fi settings saved. Restart to try connecting if needed.");
 }
 
 void handleWifiDeleteRequest() {
   if (deleteWifiCredential(static_cast<size_t>(httpServer.arg("index").toInt()))) {
     saveWifiCredentials();
-    sendWifiPage("Wi-Fi設定を削除しました。");
+    sendWifiPage("Wi-Fi設定を削除しました。",
+                 "Wi-Fi settings deleted.");
     return;
   }
-  sendWifiPage("削除できませんでした。");
+  sendWifiPage("削除できませんでした。",
+               "Could not delete.");
 }
 
 void handleWifiMoveRequest() {
@@ -1040,15 +1138,18 @@ void handleWifiMoveRequest() {
   const int delta = httpServer.arg("dir") == "up" ? -1 : 1;
   if (moveWifiCredential(index, delta)) {
     saveWifiCredentials();
-    sendWifiPage("優先度を変更しました。");
+    sendWifiPage("優先度を変更しました。",
+                 "Priority changed.");
     return;
   }
-  sendWifiPage("優先度を変更できませんでした。");
+  sendWifiPage("優先度を変更できませんでした。",
+               "Could not change priority.");
 }
 
 void handleWifiRestartRequest() {
   saveNetworkMode(NetworkMode::Sta);
-  sendWifiPage("再起動します。保存済みWi-Fiへの接続を試します。");
+  sendWifiPage("再起動します。保存済みWi-Fiへの接続を試します。",
+               "Restarting. The device will try saved Wi-Fi networks.");
   delay(500);
   ESP.restart();
 }
@@ -1175,6 +1276,8 @@ const char* settingsPageName(SettingsPage page) {
       return "Display";
     case SettingsPage::Audio:
       return "Audio";
+    case SettingsPage::Servo:
+      return "Servo";
     case SettingsPage::Power:
       return "Power";
     case SettingsPage::Network:
@@ -1209,10 +1312,11 @@ void drawSlider(int32_t x, int32_t y, int32_t w, const char* label, int value, i
 }
 
 void drawSettingsTabs() {
-  drawButton(8, 206, 72, 26, "Net", settingsPage == SettingsPage::Network);
-  drawButton(86, 206, 72, 26, "Disp", settingsPage == SettingsPage::Display);
-  drawButton(164, 206, 72, 26, "Audio", settingsPage == SettingsPage::Audio);
-  drawButton(242, 206, 70, 26, "Power", settingsPage == SettingsPage::Power);
+  drawButton(6, 206, 58, 26, "Net", settingsPage == SettingsPage::Network);
+  drawButton(68, 206, 58, 26, "Disp", settingsPage == SettingsPage::Display);
+  drawButton(130, 206, 58, 26, "Audio", settingsPage == SettingsPage::Audio);
+  drawButton(192, 206, 58, 26, "Servo", settingsPage == SettingsPage::Servo);
+  drawButton(254, 206, 60, 26, "Pwr", settingsPage == SettingsPage::Power);
 }
 
 void drawNetworkSettingsPage() {
@@ -1315,13 +1419,27 @@ void drawDisplaySettingsPage() {
   drawButton(246, 70, 54, 28, "-");
   drawButton(246, 108, 54, 28, "+");
   drawButton(24, 150, 128, 32, displayOn ? "Screen Off" : "Screen On", !displayOn);
-  drawButton(170, 150, 128, 32, "Low Power", deviceSettings.lowPowerMode);
 }
 
 void drawAudioSettingsPage() {
   drawSlider(24, 72, 210, "Volume", deviceSettings.volume, AUDIO_SPEAKER_VOLUME_MIN, AUDIO_SPEAKER_VOLUME_MAX);
   drawButton(246, 84, 54, 28, "-");
   drawButton(246, 122, 54, 28, "+");
+}
+
+void drawServoSettingsPage() {
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(20, 64);
+  M5.Display.println("Face direction");
+  M5.Display.setCursor(20, 86);
+  M5.Display.printf("Saved yaw: %+d\n", motionController.savedYawOffset());
+  M5.Display.setCursor(20, 104);
+  M5.Display.printf("Saved pitch: %+d\n", motionController.savedPitchOffset());
+  M5.Display.setCursor(20, 124);
+  M5.Display.println(audioBusyForServoCalibration() ? "Save disabled during audio." : "Adjust face by hand, then save.");
+  drawButton(24, 150, 132, 32, "Go to Saved");
+  drawButton(164, 150, 132, 32, "Save Direction", audioBusyForServoCalibration());
 }
 
 void drawPowerSettingsPage() {
@@ -1337,9 +1455,8 @@ void drawPowerSettingsPage() {
   }
   M5.Display.printf("Battery: %d %%\n", M5.Power.getBatteryLevel());
   M5.Display.printf("Charging: %s\n", M5.Power.isCharging() == m5::Power_Class::is_charging ? "yes" : "no");
-  M5.Display.println();
   M5.Display.printf("Suggest: %s\n", thermalStatus.suggestLowPower ? "Low Power" : "none");
-  drawButton(164, 150, 136, 32, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
+  drawButton(150, 144, 150, 28, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
 }
 
 void drawInfoScreen() {
@@ -1360,6 +1477,9 @@ void drawInfoScreen() {
       break;
     case SettingsPage::Audio:
       drawAudioSettingsPage();
+      break;
+    case SettingsPage::Servo:
+      drawServoSettingsPage();
       break;
     case SettingsPage::Power:
       drawPowerSettingsPage();
@@ -1426,6 +1546,10 @@ void adjustVolume(int delta) {
   drawInfoScreen();
 }
 
+bool audioBusyForServoCalibration() {
+  return audioController.state() != ChanState::Idle || audioController.isPlaybackDraining();
+}
+
 bool handleSettingsTouch(const m5::touch_detail_t& touch) {
   if (activeNetworkQr != NetworkQrType::None) {
     activeNetworkQr = NetworkQrType::None;
@@ -1433,25 +1557,31 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
     return true;
   }
 
-  if (touchIn(touch, 8, 206, 72, 26)) {
+  if (touchIn(touch, 6, 206, 58, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Network;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 86, 206, 72, 26)) {
+  if (touchIn(touch, 68, 206, 58, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Display;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 164, 206, 72, 26)) {
+  if (touchIn(touch, 130, 206, 58, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Audio;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 242, 206, 70, 26)) {
+  if (touchIn(touch, 192, 206, 58, 26)) {
+    activeNetworkQr = NetworkQrType::None;
+    settingsPage = SettingsPage::Servo;
+    drawInfoScreen();
+    return true;
+  }
+  if (touchIn(touch, 254, 206, 60, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Power;
     drawInfoScreen();
@@ -1482,10 +1612,6 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
       setDisplayOn(!displayOn);
       return true;
     }
-    if (touchIn(touch, 170, 150, 128, 32)) {
-      applyLowPowerMode(!deviceSettings.lowPowerMode, true);
-      return true;
-    }
   } else if (settingsPage == SettingsPage::Audio) {
     if (touchIn(touch, 246, 84, 54, 28)) {
       adjustVolume(-20);
@@ -1495,8 +1621,22 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
       adjustVolume(20);
       return true;
     }
+  } else if (settingsPage == SettingsPage::Servo) {
+    if (touchIn(touch, 24, 150, 132, 32)) {
+      motionController.moveToSavedHome();
+      return true;
+    }
+    if (touchIn(touch, 164, 150, 132, 32)) {
+      if (audioBusyForServoCalibration()) {
+        Serial.println("[motion] servo home save ignored during audio");
+        return true;
+      }
+      motionController.saveCurrentPoseAsHome();
+      drawInfoScreen();
+      return true;
+    }
   } else if (settingsPage == SettingsPage::Power) {
-    if (touchIn(touch, 164, 150, 136, 32)) {
+    if (touchIn(touch, 150, 144, 150, 28)) {
       applyLowPowerMode(!deviceSettings.lowPowerMode, true);
       return true;
     }
@@ -1532,6 +1672,13 @@ void setState(ChanState state) {
   currentState = state;
   pendingStateAfterPlayback = false;
   deferredStateReadyMs = 0;
+  if (state == ChanState::Speaking && wsAudioSettleUntilMs != 0 &&
+      static_cast<long>(wsAudioSettleUntilMs - millis()) > 0) {
+    audioController.deferNextSpeakerStartUntil(wsAudioSettleUntilMs);
+    Serial.printf("[audio] first speaker start deferred until websocket settles (%ld ms)\n",
+                  static_cast<long>(wsAudioSettleUntilMs - millis()));
+    wsAudioSettleUntilMs = 0;
+  }
   faceController.setState(state);
   audioController.setState(state);
 
@@ -1660,9 +1807,17 @@ void handleFaceModeCommand(const char* value) {
     setShakeActive(false, millis());
     Serial.println("[face] mode=normal");
   } else if (strcmp(value, "nadenade") == 0 || strcmp(value, "pet") == 0) {
+    if (!displayOn) {
+      Serial.println("[face] mode=nadenade ignored while display off");
+      return;
+    }
     setPettingActive(true, millis());
     Serial.println("[face] mode=nadenade");
   } else if (strcmp(value, "furifuri") == 0 || strcmp(value, "shake") == 0) {
+    if (!displayOn) {
+      Serial.println("[face] mode=furifuri ignored while display off");
+      return;
+    }
     setShakeActive(true, millis());
     Serial.println("[face] mode=furifuri");
   } else {
@@ -1773,9 +1928,12 @@ void handleAffectionEventCommand(JsonDocument& doc) {
   const float confidence = doc["confidence"] | 1.0f;
   const float intensity = doc["intensity"] | 1.0f;
   const unsigned long now = millis();
-  (void)source;
   const AffectionApplyResult result = affectionController.applyEvent(eventName, confidence, intensity, eventId, now);
-  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+  const bool deferDelta = strcmp(source, "phone") == 0 &&
+                          (strcmp(eventName, "talk") == 0 ||
+                           strcmp(eventName, "positive_talk") == 0 ||
+                           strcmp(eventName, "negative_talk") == 0);
+  applyAffectionResult(result, now, true, doc["requestId"] | nullptr, deferDelta);
   if (result.duplicate) {
     sendAffectionState(doc["requestId"] | nullptr);
   }
@@ -1903,9 +2061,14 @@ void onWsConnection(uint8_t clientId, bool connected) {
   updateMicStatusOverlay();
   if (connected) {
     const unsigned long now = millis();
+    wsAudioSettleUntilMs = now + AUDIO_WS_CONNECT_SETTLE_MS;
+    audioController.deferMicCaptureUntil(wsAudioSettleUntilMs);
+    Serial.printf("[ws] audio settle %u ms\n", AUDIO_WS_CONNECT_SETTLE_MS);
     applyAffectionResult(affectionController.resetTransient(), now, false);
     sendAffectionState();
     sendInteractionEvent("session_start", "instant", now);
+  } else {
+    wsAudioSettleUntilMs = 0;
   }
   if (infoScreenVisible) {
     drawInfoScreen();
@@ -2031,6 +2194,15 @@ void updateButtons(unsigned long now) {
 }
 
 void updateBackTouch(unsigned long now) {
+  if (!displayOn) {
+    setPettingActive(false, now);
+    backTouchReady = false;
+    backTouchReleasedSinceMs = 0;
+    backTouchCandidateSinceMs = 0;
+    backTouchClearSinceMs = 0;
+    return;
+  }
+
   if (infoScreenVisible) {
     return;
   }
@@ -2192,6 +2364,7 @@ void loop() {
     updateAffectionState(now);
     updateDeferredFaceState();
     updateDeferredFaceMode();
+    updatePendingAffectionDelta();
     updatePetting(now);
     updateListeningNod(now);
     motionController.update(now);
@@ -2202,6 +2375,7 @@ void loop() {
   updateAffectionState(now);
   updateDeferredFaceState();
   updateDeferredFaceMode();
+  updatePendingAffectionDelta();
   if (displayOn) {
     const bool speaking = currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
     if (speaking || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {

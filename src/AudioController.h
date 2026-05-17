@@ -17,6 +17,7 @@ public:
   bool pauseMicForCapture();
   void resumeMicAfterCapture(bool wasPaused);
   void deferNextSpeakerStartUntil(unsigned long timestampMs);
+  void deferMicCaptureUntil(unsigned long timestampMs);
   void setVolume(uint8_t volume);
   uint8_t volume() const;
   void setMicMuted(bool muted);
@@ -55,6 +56,7 @@ private:
   bool pendingIdleAfterPlayback_ = false;
   unsigned long idleDrainEmptySinceMs_ = 0;
   unsigned long speakerStartNotBeforeMs_ = 0;
+  unsigned long micCaptureNotBeforeMs_ = 0;
   unsigned long lastMicStatsMs_ = 0;
   uint8_t volume_ = AUDIO_SPEAKER_VOLUME;
   uint32_t micStatsSamples_ = 0;

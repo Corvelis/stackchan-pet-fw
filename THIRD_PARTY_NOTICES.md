@@ -39,6 +39,11 @@ https://tyc.rei-yumesaki.net/material/illust/
 
 Prepare runtime images locally and follow the terms of the material you use.
 
+Binary releases may include runtime image data in the generated firmware image.
+Those images are included only for use inside this firmware. Do not extract or
+reuse them as standalone material assets. If you post screenshots, capture
+videos, or demo videos, identify the firmware/app used in the post.
+
 ## Firmware License
 
 The firmware source code in this repository is licensed under the MIT License.

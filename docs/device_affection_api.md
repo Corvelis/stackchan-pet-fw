@@ -47,8 +47,11 @@ suppression, clamping, persistence, and display updates.
 `10` about every 10 seconds, while `mood` decays toward `0` by `2` about every
 10 seconds. During TTS playback or playback-buffer draining, natural decay and
 the resulting `affection.state` broadcasts are paused to prioritize smooth audio
-playback. When short-term state changes through natural decay or reconnect
-reset, `seq` increments and the firmware broadcasts `affection.state`.
+playback. Conversation-driven affection changes are applied immediately to the
+internal state and `affection.state` responses, while the on-screen heart meter
+and delta indicator are refreshed after TTS playback. When short-term state
+changes through natural decay or reconnect reset, `seq` increments and the
+firmware broadcasts `affection.state`.
 
 `seq` is the primary ordering signal for state freshness. `timestampMs` is the
 device uptime from `millis()`; it is not a Unix timestamp. Use it for logs,
@@ -83,7 +86,9 @@ Reference colors:
 ```
 
 When affection changes, the display may show a temporary delta such as `+8` or
-`-3` next to the heart meter.
+`-3` next to the heart meter. For conversation events from a phone app, the
+heart meter and delta indicator are applied after TTS playback to avoid display
+work during audio playback.
 
 ## Message: Affection Event
 

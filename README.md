@@ -113,6 +113,9 @@ pio device monitor
 
 The device prints the Wi-Fi mode and IP address on boot.
 
+For ready-to-flash `.bin` installation, see the [Binary Installation Guide](docs/install_binary.md).
+Release builds should define `STACKCHAN_RELEASE_BUILD` so `src/config_private.h` local Wi-Fi credentials are not included.
+
 ## Face Images
 
 The firmware loads face images from LittleFS using the paths in `src/config.h`.
@@ -227,14 +230,19 @@ The on-device Network screen can show QR codes for Wi-Fi setup.
 ## On-Device Controls
 
 - Flick from an edge of the touch screen to show or hide the settings screen.
-- Use the settings tabs for Network, Display, Audio, and Power.
+- Use the settings tabs for Network, Display, Audio, Servo, and Pwr.
+- If Wi-Fi is not configured, the device starts a setup Wi-Fi network named
+  `StackChan-Direct`. Connect a phone or PC to it, then open
+  `http://192.168.4.1/wifi` to configure Wi-Fi.
 - Hold the Network settings page to switch between STA and SoftAP.
-- Use Display settings to adjust brightness, turn the screen off, or enable low
-  power mode.
+- Use Display settings to adjust brightness or turn the screen off.
 - Use Audio settings to adjust speaker volume.
-- Use Power settings to check thermal state, battery state, and low-power
-  suggestion.
+- Use Servo settings to save the face reference position or return to the saved position.
+- Use Power settings to check thermal state, battery state, and low-power mode.
+- Low-power mode caps display brightness and reduces idle face updates and nodding motion.
+  Audio playback and lip-sync during speech continue.
 - Press the power button to toggle the display.
+- While the screen is off, petting and shake interactions are disabled.
 - When a WebSocket client is connected, tap the microphone overlay on the right
   side of the face screen to mute or unmute mic streaming.
 
@@ -463,6 +471,9 @@ Short-term state behavior:
 - During TTS playback and playback-buffer draining, natural decay and
   decay-driven `affection.state` broadcasts are paused to prioritize smooth
   audio playback.
+- Conversation-driven affection changes update the internal state and WebSocket
+  response immediately, while the on-screen heart meter and delta indicator are
+  refreshed after TTS playback.
 - Shake detection raises `confusion` to `100`.
 
 Reset request:

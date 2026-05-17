@@ -1039,10 +1039,20 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   const int32_t x = (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
   const int32_t y = (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
   talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
-  drawAffectionOverlay(millis());
-  drawBatteryOverlay();
-  drawMicOverlay();
+  const unsigned long now = millis();
+  if (overlaysNeedRefresh(now)) {
+    drawAffectionOverlay(now);
+    drawBatteryOverlay();
+    drawMicOverlay();
+  }
   return true;
+}
+
+bool FaceController::overlaysNeedRefresh(unsigned long now) const {
+  return affectionOverlayDirty_ ||
+         batteryOverlayDirty_ ||
+         micOverlayDirty_ ||
+         (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_);
 }
 
 void FaceController::prepareTalkCache() {
