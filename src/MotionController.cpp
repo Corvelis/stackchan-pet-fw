@@ -1,10 +1,12 @@
 #include "MotionController.h"
 
 #include <M5StackChan.h>
+#include <Preferences.h>
 
 #include "config.h"
 
 void MotionController::begin() {
+  loadCalibration();
   currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
   targetPose_ = currentPose_;
   servoOutputEnabled_ = SERVO_OUTPUT_ENABLED != 0;
@@ -59,6 +61,30 @@ void MotionController::setImmediatePose(int pan, int tilt) {
   logPose("immediate", currentPose_);
 }
 
+void MotionController::saveCurrentPoseAsHome() {
+  const auto angles = M5StackChan.Motion.getCurrentAngles();
+  if (!physicalAnglesLookValid(angles.x, angles.y)) {
+    Serial.printf("[motion] servo home save ignored yaw=%d pitch=%d\n", angles.x, angles.y);
+    return;
+  }
+  yawOffset_ = constrain(angles.x - nominalCenterYaw(), -500, 500);
+  pitchOffset_ = constrain(angles.y - nominalCenterPitch(), -500, 500);
+  saveCalibration();
+  currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
+  targetPose_ = currentPose_;
+  disableAutoAngleSyncAfterFirstMove_ = true;
+  writeServoPose(currentPose_);
+  Serial.printf("[motion] saved servo home offset yaw=%d pitch=%d\n", yawOffset_, pitchOffset_);
+}
+
+void MotionController::moveToSavedHome() {
+  currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
+  targetPose_ = currentPose_;
+  disableAutoAngleSyncAfterFirstMove_ = true;
+  writeServoPose(currentPose_);
+  logPose("saved home", currentPose_);
+}
+
 void MotionController::update(unsigned long now) {
   if (now - lastUpdateMs_ < SERVO_UPDATE_INTERVAL_MS) {
     return;
@@ -97,6 +123,14 @@ Pose MotionController::targetPose() const {
   return targetPose_;
 }
 
+int MotionController::savedYawOffset() const {
+  return yawOffset_;
+}
+
+int MotionController::savedPitchOffset() const {
+  return pitchOffset_;
+}
+
 int MotionController::clampPan(int pan) const {
   return constrain(pan, SERVO_PAN_MIN, SERVO_PAN_MAX);
 }
@@ -115,22 +149,52 @@ int MotionController::approach(int current, int target) const {
   return current;
 }
 
+void MotionController::loadCalibration() {
+  Preferences prefs;
+  prefs.begin("motion", true);
+  yawOffset_ = prefs.getInt("yaw_offset", 0);
+  pitchOffset_ = prefs.getInt("pitch_offset", 0);
+  prefs.end();
+  yawOffset_ = constrain(yawOffset_, -500, 500);
+  pitchOffset_ = constrain(pitchOffset_, -500, 500);
+  Serial.printf("[motion] calibration yaw_offset=%d pitch_offset=%d\n", yawOffset_, pitchOffset_);
+}
+
+void MotionController::saveCalibration() {
+  Preferences prefs;
+  prefs.begin("motion", false);
+  prefs.putInt("yaw_offset", yawOffset_);
+  prefs.putInt("pitch_offset", pitchOffset_);
+  prefs.end();
+}
+
 int MotionController::toStackChanYaw(int pan) const {
   const int clampedPan = clampPan(pan);
-  return constrain((SERVO_PAN_CENTER - clampedPan) * 10, -1280, 1280);
+  return constrain((SERVO_PAN_CENTER - clampedPan) * 10 + yawOffset_, -1280, 1280);
 }
 
 int MotionController::toStackChanPitch(int tilt) const {
   const int clampedTilt = clampTilt(tilt);
   const long pitch = map(clampedTilt, SERVO_TILT_MIN, SERVO_TILT_MAX, 0, 900);
-  return constrain(static_cast<int>(pitch), 0, 900);
+  return constrain(static_cast<int>(pitch) + pitchOffset_, 0, 900);
 }
 
 Pose MotionController::fromStackChanAngles(int yaw, int pitch) const {
-  const int roundedYawDegrees = yaw >= 0 ? (yaw + 5) / 10 : (yaw - 5) / 10;
+  const int adjustedYaw = yaw - yawOffset_;
+  const int adjustedPitch = pitch - pitchOffset_;
+  const int roundedYawDegrees = adjustedYaw >= 0 ? (adjustedYaw + 5) / 10 : (adjustedYaw - 5) / 10;
   const int pan = SERVO_PAN_CENTER - roundedYawDegrees;
-  const long tilt = map(constrain(pitch, 0, 900), 0, 900, SERVO_TILT_MIN, SERVO_TILT_MAX);
+  const long tilt = map(constrain(adjustedPitch, 0, 900), 0, 900, SERVO_TILT_MIN, SERVO_TILT_MAX);
   return {clampPan(pan), clampTilt(static_cast<int>(tilt))};
+}
+
+int MotionController::nominalCenterYaw() const {
+  return (SERVO_PAN_CENTER - clampPan(SERVO_PAN_CENTER)) * 10;
+}
+
+int MotionController::nominalCenterPitch() const {
+  const long pitch = map(clampTilt(SERVO_TILT_CENTER), SERVO_TILT_MIN, SERVO_TILT_MAX, 0, 900);
+  return constrain(static_cast<int>(pitch), 0, 900);
 }
 
 bool MotionController::physicalAnglesLookValid(int yaw, int pitch) const {
@@ -145,7 +209,6 @@ void MotionController::syncCurrentPoseFromServos() {
   const auto angles = M5StackChan.Motion.getCurrentAngles();
   if (physicalAnglesLookValid(angles.x, angles.y)) {
     currentPose_ = fromStackChanAngles(angles.x, angles.y);
-    targetPose_ = currentPose_;
     Serial.printf("[motion] startup pose sync yaw=%d pitch=%d\n", angles.x, angles.y);
     logPose("startup physical", currentPose_);
   } else {

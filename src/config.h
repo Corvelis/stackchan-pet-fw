@@ -1,6 +1,6 @@
 #pragma once
 
-#if __has_include("config_private.h")
+#if !defined(STACKCHAN_RELEASE_BUILD) && __has_include("config_private.h")
 #include "config_private.h"
 #endif
 
@@ -82,7 +82,7 @@
 #define FACE_IMAGE_WIDTH 240
 #define FACE_IMAGE_HEIGHT 240
 
-#define LIP_SYNC_INTERVAL_MS 220
+#define LIP_SYNC_INTERVAL_MS 300
 #define BLINK_MIN_INTERVAL_MS 3000
 #define BLINK_MAX_INTERVAL_MS 7000
 #define BLINK_DURATION_MS 120
@@ -164,6 +164,7 @@
 #define AUDIO_IDLE_DRAIN_GRACE_MS 300
 #define AUDIO_SPEAKER_TO_MIC_DELAY_MS 250
 #define AUDIO_AFTER_CAPTURE_SPEAKER_DELAY_MS 250
+#define AUDIO_WS_CONNECT_SETTLE_MS 1200
 
 #define HTTP_PORT 80
 #define CAMERA_JPEG_QUALITY 80

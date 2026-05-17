@@ -88,6 +88,13 @@ void AudioController::deferNextSpeakerStartUntil(unsigned long timestampMs) {
   speakerStartNotBeforeMs_ = timestampMs;
 }
 
+void AudioController::deferMicCaptureUntil(unsigned long timestampMs) {
+  micCaptureNotBeforeMs_ = timestampMs;
+  if (lastMicSendMs_ < timestampMs) {
+    lastMicSendMs_ = timestampMs;
+  }
+}
+
 void AudioController::setVolume(uint8_t volume) {
   volume_ = volume;
   M5.Speaker.setVolume(volume_);
@@ -276,6 +283,12 @@ void AudioController::updateMicCapture() {
   if (micMuted_ || !micEnabled_ || wsServer_ == nullptr || !wsServer_->hasClient()) {
     return;
   }
+
+  const unsigned long now = millis();
+  if (micCaptureNotBeforeMs_ != 0 && static_cast<long>(micCaptureNotBeforeMs_ - now) > 0) {
+    return;
+  }
+  micCaptureNotBeforeMs_ = 0;
 
   int16_t* recordBuffer = micBuffers_[micRecordIndex_];
   if (!M5.Mic.record(recordBuffer, AUDIO_CHUNK_SAMPLES, AUDIO_SAMPLE_RATE, false)) {

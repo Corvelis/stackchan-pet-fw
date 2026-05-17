@@ -63,6 +63,7 @@ private:
   void drawBatteryOverlayOnCanvas();
   void drawMicOverlay();
   void drawMicOverlayOnCanvas();
+  bool overlaysNeedRefresh(unsigned long now) const;
   void drawHeart(M5GFX& target, int32_t cx, int32_t cy, int32_t size, uint16_t color);
   void drawHeart(M5Canvas& target, int32_t cx, int32_t cy, int32_t size, uint16_t color);
   uint16_t affectionColor() const;
