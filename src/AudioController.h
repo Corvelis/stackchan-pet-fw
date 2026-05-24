@@ -25,6 +25,7 @@ public:
   void setMicMuted(bool muted);
   bool micMuted() const;
   bool isMicStreaming() const;
+  void setRemoteVadActive(bool active);
   void onBinaryReceived(uint8_t* payload, size_t length);
   void update(unsigned long now);
 
@@ -43,7 +44,10 @@ private:
   bool enqueueMicPacket(const int16_t* samples, size_t sampleCount, unsigned long timestampMs, uint16_t flags);
   bool copyNextMicPacket(uint8_t* out);
   void clearMicPacketQueue();
-  void processMicChunk(int16_t* samples, size_t sampleCount);
+  void storeMicPreRollChunk(const int16_t* samples, unsigned long timestampMs);
+  bool enqueueMicPreRoll(uint16_t firstFlags);
+  void clearMicPreRoll();
+  int32_t processMicChunk(int16_t* samples, size_t sampleCount);
   void writeMicPacket(uint8_t* packet, const int16_t* samples, size_t sampleCount, unsigned long timestampMs, uint16_t flags);
   void updateMicDiagnostics(unsigned long now);
   void updateSpeakerPlayback();
@@ -74,6 +78,7 @@ private:
   unsigned long micTxMaxIntervalMs_ = 0;
   unsigned long micCaptureTimestampMs_ = 0;
   unsigned long lastMicCaptureStartMs_ = 0;
+  unsigned long micGateOpenUntilMs_ = 0;
   unsigned long micCaptureGapMaxMs_ = 0;
   unsigned long micCaptureGapLastMs_ = 0;
   uint8_t volume_ = AUDIO_SPEAKER_VOLUME;
@@ -104,6 +109,8 @@ private:
   size_t micTxQueueWriteIndex_ = 0;
   size_t micTxQueueCount_ = 0;
   size_t micTxQueueCapacity_ = 0;
+  size_t micPreRollWriteIndex_ = 0;
+  size_t micPreRollCount_ = 0;
   uint32_t micTxSeq_ = 0;
   size_t speakerBufferIndex_ = 0;
   size_t rxReadIndex_ = 0;
@@ -117,7 +124,12 @@ private:
   volatile bool micCaptureActive_ = false;
   volatile bool micCaptureRecording_ = false;
   volatile bool micCaptureStartPending_ = true;
+  volatile bool remoteVadActive_ = false;
+  bool micGateSending_ = false;
+  bool micLastRemoteVadActive_ = false;
   int16_t micBuffers_[AUDIO_MIC_BUFFER_COUNT][AUDIO_CHUNK_SAMPLES] = {};
+  int16_t micPreRollBuffers_[AUDIO_MIC_GATE_PREROLL_CHUNKS][AUDIO_CHUNK_SAMPLES] = {};
+  unsigned long micPreRollTimestamps_[AUDIO_MIC_GATE_PREROLL_CHUNKS] = {};
   uint8_t micSendScratch_[AUDIO_MIC_PACKET_BYTES] = {};
   int16_t speakerBuffers_[AUDIO_SPEAKER_BUFFER_COUNT][AUDIO_PLAYBACK_CHUNK_SAMPLES] = {};
 };

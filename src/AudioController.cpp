@@ -162,6 +162,10 @@ bool AudioController::isMicStreaming() const {
   return state_ == ChanState::Listening && micEnabled_ && !micMuted_ && wsServer_ != nullptr && wsServer_->hasClient();
 }
 
+void AudioController::setRemoteVadActive(bool active) {
+  remoteVadActive_ = active;
+}
+
 void AudioController::onBinaryReceived(uint8_t* payload, size_t length) {
   if (state_ != ChanState::Speaking || (!speakerEnabled_ && !speakerStartPending_)) {
     Serial.printf("[audio] dropped %u bytes; not speaking\n", static_cast<unsigned>(length));
@@ -352,7 +356,6 @@ void AudioController::updateMicSend() {
 
   while (copyNextMicPacket(micSendScratch_)) {
     const unsigned long now = millis();
-    processMicChunk(reinterpret_cast<int16_t*>(micSendScratch_ + AUDIO_MIC_PACKET_HEADER_BYTES), AUDIO_CHUNK_SAMPLES);
     if (wsServer_->sendBinary(micSendScratch_, AUDIO_MIC_PACKET_BYTES)) {
       ++micTxStatsChunks_;
       micTxStatsBytes_ += AUDIO_CHUNK_BYTES;
@@ -466,21 +469,80 @@ void AudioController::micCaptureTaskLoop() {
       micCaptureTimestampMs_ = recordStartMs;
     }
 
-    uint16_t flags = 0;
-    if (micCaptureStartPending_) {
-      flags |= AUDIO_MIC_PACKET_FLAG_START;
-      micCaptureStartPending_ = false;
-    }
-
     if (wsServer_ != nullptr && wsServer_->hasClient()) {
+      const int32_t chunkPeak = processMicChunk(captureBuffer, AUDIO_CHUNK_SAMPLES);
+#if AUDIO_MIC_GATE_ENABLED
+      const bool remoteVadActive = remoteVadActive_;
+      if (remoteVadActive != micLastRemoteVadActive_) {
+        micLastRemoteVadActive_ = remoteVadActive;
+        clearMicPreRoll();
+        micGateOpenUntilMs_ = 0;
+        if (remoteVadActive) {
+          micGateSending_ = true;
+        } else {
+          micGateSending_ = false;
+          micCaptureStartPending_ = true;
+        }
+      }
+
+      bool shouldSend = remoteVadActive;
+
+      if (!remoteVadActive) {
+        if (chunkPeak >= AUDIO_MIC_GATE_PEAK_THRESHOLD) {
+          micGateOpenUntilMs_ = recordEndMs + AUDIO_MIC_GATE_OPEN_HOLD_MS;
+        }
+        shouldSend = micGateOpenUntilMs_ != 0 && static_cast<long>(micGateOpenUntilMs_ - recordEndMs) >= 0;
+      }
+
+      if (!shouldSend) {
+        micGateSending_ = false;
+        micGateOpenUntilMs_ = 0;
+        micCaptureStartPending_ = true;
+        storeMicPreRollChunk(captureBuffer, micCaptureTimestampMs_);
+      } else if (!remoteVadActive && !micGateSending_) {
+        storeMicPreRollChunk(captureBuffer, micCaptureTimestampMs_);
+        const uint16_t flags = micCaptureStartPending_ ? AUDIO_MIC_PACKET_FLAG_START : 0;
+        if (!enqueueMicPreRoll(flags)) {
+          ++micTxStatsRingOverflow_;
+          ++micTxStatsSendQueueOverflow_;
+          ++micTxStatsDroppedChunks_;
+          micCaptureStartPending_ = true;
+        } else {
+          micCaptureStartPending_ = false;
+          micGateSending_ = true;
+        }
+      } else {
+        uint16_t flags = 0;
+        if (micCaptureStartPending_) {
+          flags |= AUDIO_MIC_PACKET_FLAG_START;
+          micCaptureStartPending_ = false;
+        }
+        if (!enqueueMicPacket(captureBuffer, AUDIO_CHUNK_SAMPLES, micCaptureTimestampMs_, flags)) {
+          ++micTxStatsRingOverflow_;
+          ++micTxStatsSendQueueOverflow_;
+          ++micTxStatsDroppedChunks_;
+          micCaptureStartPending_ = true;
+        }
+      }
+#else
+      (void)chunkPeak;
+      uint16_t flags = 0;
+      if (micCaptureStartPending_) {
+        flags |= AUDIO_MIC_PACKET_FLAG_START;
+        micCaptureStartPending_ = false;
+      }
       if (!enqueueMicPacket(captureBuffer, AUDIO_CHUNK_SAMPLES, micCaptureTimestampMs_, flags)) {
         ++micTxStatsRingOverflow_;
         ++micTxStatsSendQueueOverflow_;
         ++micTxStatsDroppedChunks_;
         micCaptureStartPending_ = true;
       }
+#endif
     } else {
       clearMicPacketQueue();
+      clearMicPreRoll();
+      micGateSending_ = false;
+      micGateOpenUntilMs_ = 0;
       micCaptureStartPending_ = true;
     }
 
@@ -535,9 +597,46 @@ void AudioController::clearMicPacketQueue() {
   portEXIT_CRITICAL(&micMux_);
 }
 
-void AudioController::processMicChunk(int16_t* samples, size_t sampleCount) {
-  if (sampleCount == 0) {
+void AudioController::storeMicPreRollChunk(const int16_t* samples, unsigned long timestampMs) {
+  if (samples == nullptr || AUDIO_MIC_GATE_PREROLL_CHUNKS == 0) {
     return;
+  }
+
+  memcpy(micPreRollBuffers_[micPreRollWriteIndex_], samples, AUDIO_CHUNK_BYTES);
+  micPreRollTimestamps_[micPreRollWriteIndex_] = timestampMs;
+  micPreRollWriteIndex_ = (micPreRollWriteIndex_ + 1) % AUDIO_MIC_GATE_PREROLL_CHUNKS;
+  if (micPreRollCount_ < AUDIO_MIC_GATE_PREROLL_CHUNKS) {
+    ++micPreRollCount_;
+  }
+}
+
+bool AudioController::enqueueMicPreRoll(uint16_t firstFlags) {
+  if (micPreRollCount_ == 0) {
+    return true;
+  }
+
+  const size_t start = (micPreRollWriteIndex_ + AUDIO_MIC_GATE_PREROLL_CHUNKS - micPreRollCount_) % AUDIO_MIC_GATE_PREROLL_CHUNKS;
+  for (size_t i = 0; i < micPreRollCount_; ++i) {
+    const size_t index = (start + i) % AUDIO_MIC_GATE_PREROLL_CHUNKS;
+    const uint16_t flags = i == 0 ? firstFlags : 0;
+    if (!enqueueMicPacket(micPreRollBuffers_[index], AUDIO_CHUNK_SAMPLES, micPreRollTimestamps_[index], flags)) {
+      clearMicPreRoll();
+      return false;
+    }
+  }
+
+  clearMicPreRoll();
+  return true;
+}
+
+void AudioController::clearMicPreRoll() {
+  micPreRollWriteIndex_ = 0;
+  micPreRollCount_ = 0;
+}
+
+int32_t AudioController::processMicChunk(int16_t* samples, size_t sampleCount) {
+  if (sampleCount == 0) {
+    return 0;
   }
 
   int64_t sum = 0;
@@ -546,6 +645,7 @@ void AudioController::processMicChunk(int16_t* samples, size_t sampleCount) {
   }
   const int32_t dc = static_cast<int32_t>(sum / static_cast<int64_t>(sampleCount));
 
+  int32_t chunkPeak = 0;
   for (size_t i = 0; i < sampleCount; ++i) {
     int32_t value = samples[i] - dc;
     value = (value * AUDIO_MIC_SOFTWARE_GAIN_Q8) >> 8;
@@ -556,6 +656,9 @@ void AudioController::processMicChunk(int16_t* samples, size_t sampleCount) {
     }
 
     const int32_t absValue = abs(value);
+    if (absValue > chunkPeak) {
+      chunkPeak = absValue;
+    }
     if (absValue > micStatsPeak_) {
       micStatsPeak_ = absValue;
     }
@@ -582,6 +685,8 @@ void AudioController::processMicChunk(int16_t* samples, size_t sampleCount) {
     micStatsPeak_ = 0;
     lastMicStatsMs_ = now;
   }
+
+  return chunkPeak;
 }
 
 void AudioController::updateMicDiagnostics(unsigned long now) {
@@ -776,6 +881,7 @@ void AudioController::resetMicBuffers() {
   micTxMaxIntervalMs_ = 0;
   micCaptureTimestampMs_ = 0;
   lastMicCaptureStartMs_ = 0;
+  micGateOpenUntilMs_ = 0;
   micCaptureGapMaxMs_ = 0;
   micCaptureGapLastMs_ = 0;
   micCaptureStartPending_ = true;
@@ -799,6 +905,10 @@ void AudioController::resetMicBuffers() {
   micPauseCamera_ = 0;
   micPauseWsSettle_ = 0;
   micPauseOther_ = 0;
+  micGateSending_ = false;
+  micLastRemoteVadActive_ = false;
+  remoteVadActive_ = false;
+  clearMicPreRoll();
 }
 
 void AudioController::clearRxRing() {

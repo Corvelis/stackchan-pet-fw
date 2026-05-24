@@ -1750,6 +1750,7 @@ void setState(ChanState state) {
     faceController.setPhotoFaceMode(false);
     currentAuthFaceMode = AuthFaceMode::Unknown;
     vadActive = false;
+    audioController.setRemoteVadActive(false);
     cancelListeningNod(true);
     motionController.setMotion("center");
   } else if (state == ChanState::Listening) {
@@ -1759,9 +1760,11 @@ void setState(ChanState state) {
       faceController.setPhotoFaceMode(false);
     }
     vadActive = false;
+    audioController.setRemoteVadActive(false);
     applyListeningPresentation(millis());
   } else if (state == ChanState::Speaking) {
     vadActive = false;
+    audioController.setRemoteVadActive(false);
     cancelListeningNod(false);
     motionController.holdCurrentPose();
     faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
@@ -1799,11 +1802,13 @@ void updateDeferredFaceState() {
   if (state == ChanState::Idle) {
     currentAuthFaceMode = AuthFaceMode::Unknown;
     vadActive = false;
+    audioController.setRemoteVadActive(false);
     cancelListeningNod(true);
     motionController.setMotion("center");
   } else if (state == ChanState::Listening) {
     currentAuthFaceMode = AuthFaceMode::Unknown;
     vadActive = false;
+    audioController.setRemoteVadActive(false);
     applyListeningPresentation(now);
     audioController.setState(ChanState::Listening);
   }
@@ -1920,6 +1925,7 @@ void handleAuthCommand(const char* result) {
 
 void handleVadCommand(bool active) {
   vadActive = active;
+  audioController.setRemoteVadActive(active);
   applyListeningPresentation(millis());
 #if VERBOSE_LOG_ENABLED
   Serial.printf("[vad] %s\n", vadActive ? "active" : "inactive");
@@ -2168,6 +2174,7 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
       currentAuthFaceMode = AuthFaceMode::NotMaster;
       if (currentState == ChanState::Listening) {
         vadActive = true;
+        audioController.setRemoteVadActive(true);
         applyListeningPresentation(millis());
       } else {
         cancelListeningNod(false);
