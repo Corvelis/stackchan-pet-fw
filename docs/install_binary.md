@@ -4,20 +4,24 @@ This document explains how to install the M5Stack CoreS3 binary distributed thro
 
 ## Release Assets
 
-Download this file from the GitHub Release:
+Download the file that matches the intended use from the GitHub Release:
 
 ```text
+stackchan_cores3_firmware.bin
 stackchan_cores3_factory.bin
 ```
 
-`stackchan_cores3_factory.bin` is a factory image for M5Stack CoreS3. It combines the bootloader,
-partition table, firmware, and LittleFS runtime image data.
+| File | Use |
+| --- | --- |
+| `stackchan_cores3_firmware.bin` | Firmware update for existing installs. Preserves Wi-Fi settings, servo calibration, and LittleFS images. |
+| `stackchan_cores3_factory.bin` | Factory image for first-time installs. Combines bootloader, partition table, firmware, and LittleFS runtime image data. |
 
 ## Important Notes
 
 - This binary is only for M5Stack CoreS3. Do not flash it to other devices.
 - Conversation does not work with this firmware alone.
 - Conversation, speech recognition, TTS, and response generation require a compatible phone app or WebSocket client.
+- Existing users should normally update with `stackchan_cores3_firmware.bin`.
 - Flashing the factory image resets saved Wi-Fi settings and servo home calibration on the device.
 - Images included in the binary must not be extracted and reused as material assets.
 - If users post screenshots, capture videos, or demo videos, they must identify this firmware/app in the post.
@@ -61,7 +65,42 @@ a phone or PC to `StackChan-Direct`, then open `http://192.168.4.1/wifi` in a br
 The setup page supports SSID scanning, saving SSID/password pairs, editing saved networks,
 deleting saved networks, and changing connection priority.
 
-## Installation
+## Updating an Existing Install
+
+To keep Wi-Fi settings, servo calibration, and image data, flash only the firmware bin.
+
+### 1. Requirements
+
+- M5Stack CoreS3
+- USB-C cable that supports data transfer
+- PC or Mac
+- `stackchan_cores3_firmware.bin` downloaded from the GitHub Release
+
+### 2. Prepare esptool.py and the serial port
+
+See "Install esptool.py" and "Connect the CoreS3 over USB" in the first-time installation steps below.
+
+### 3. Flash the firmware
+
+Flash `stackchan_cores3_firmware.bin` at offset `0x10000`:
+
+```sh
+esptool.py --chip esp32s3 --port <PORT> --baud 921600 write_flash 0x10000 stackchan_cores3_firmware.bin
+```
+
+macOS example:
+
+```sh
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 write_flash 0x10000 stackchan_cores3_firmware.bin
+```
+
+Windows example:
+
+```sh
+esptool.py --chip esp32s3 --port COM3 --baud 921600 write_flash 0x10000 stackchan_cores3_firmware.bin
+```
+
+## First-Time Installation
 
 First-time users can flash the binary with the steps below.
 
@@ -107,7 +146,8 @@ Check Device Manager if you are not sure.
 
 ### 4. Flash the binary
 
-Use `esptool.py` to flash the factory image at offset `0x0`:
+Use `esptool.py` to flash the factory image at offset `0x0`.
+For first-time installation, use `stackchan_cores3_factory.bin`.
 
 ```sh
 esptool.py --chip esp32s3 --port <PORT> --baud 921600 write_flash 0x0 stackchan_cores3_factory.bin
@@ -166,6 +206,8 @@ If you want to connect your own WebSocket client, see the API documentation in
 - Short-press the power button to turn the screen on or off.
 - While the screen is off, petting and shake interactions are disabled. They resume when the screen is turned on.
 - When a WebSocket client is connected, tap the microphone overlay on the right side of the face screen to mute or unmute mic streaming.
+- When a WebSocket client is connected, tap the camera overlay above the microphone overlay to send a `camera_button` event.
+  The device does not send image data over WebSocket; the client should call HTTP `POST /capture` to fetch the JPEG.
 
 ### 7. Calibrate servo home
 

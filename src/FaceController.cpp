@@ -21,6 +21,16 @@ void FaceController::setState(ChanState state) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  if (state_ == ChanState::Speaking || state == ChanState::Speaking) {
+    Serial.printf("[face_diag] setState %d->%d lip=%d age=%lu current=%s\n",
+                  static_cast<int>(state_),
+                  static_cast<int>(state),
+                  lipOpen_,
+                  millis() - lastLipSyncMs_,
+                  currentPath_.c_str());
+  }
+#endif
   state_ = state;
   if (state_ == ChanState::Idle) {
     authFaceMode_ = AuthFaceMode::Unknown;
@@ -37,7 +47,33 @@ void FaceController::setState(ChanState state) {
   }
 }
 
+void FaceController::restartSpeakingAnimation() {
+#if FACE_DIAG_LOG_ENABLED
+  Serial.printf("[face_diag] restartSpeaking lip=%d age=%lu current=%s\n",
+                lipOpen_,
+                millis() - lastLipSyncMs_,
+                currentPath_.c_str());
+#endif
+  state_ = ChanState::Speaking;
+  lipOpen_ = false;
+  blinking_ = false;
+  smiling_ = false;
+  lastLipSyncMs_ = millis() - LIP_SYNC_INTERVAL_MS;
+  currentPath_ = "";
+  if (enabled_) {
+    showBaseFace();
+  }
+}
+
 void FaceController::showFace(const char* name) {
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("showFace", name ? name[0] : 0);
+  if (state_ == ChanState::Speaking) {
+    Serial.printf("[face_diag] speaking showFace name=%s current=%s\n",
+                  name ? name : "(null)",
+                  currentPath_.c_str());
+  }
+#endif
   if (strcmp(name, "idle") == 0) {
     drawFace(FACE_IDLE_PATH);
   } else if (strcmp(name, "listen") == 0) {
@@ -148,6 +184,9 @@ void FaceController::setPhotoFaceMode(bool enabled) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setPhoto", enabled ? 1 : 0);
+#endif
   photoFaceMode_ = enabled;
   photoMasterFaceMode_ = false;
   lipOpen_ = false;
@@ -167,6 +206,9 @@ void FaceController::setPhotoMasterFaceMode(bool enabled) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setPhotoMaster", enabled ? 1 : 0);
+#endif
   photoMasterFaceMode_ = enabled;
   photoFaceMode_ = false;
   lipOpen_ = false;
@@ -186,6 +228,9 @@ void FaceController::setPetFaceMode(bool enabled) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setPet", enabled ? 1 : 0);
+#endif
   petFaceMode_ = enabled;
   lipOpen_ = false;
   blinking_ = false;
@@ -204,6 +249,9 @@ void FaceController::setShakeFaceMode(bool enabled) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setShake", enabled ? 1 : 0);
+#endif
   shakeFaceMode_ = enabled;
   lipOpen_ = false;
   blinking_ = false;
@@ -222,7 +270,14 @@ void FaceController::setAuthFaceMode(AuthFaceMode mode) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setAuth", static_cast<int>(mode));
+#endif
   authFaceMode_ = mode;
+  if (state_ == ChanState::Speaking) {
+    return;
+  }
+
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -240,6 +295,14 @@ void FaceController::setEnabled(bool enabled) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  if (state_ == ChanState::Speaking) {
+    Serial.printf("[face_diag] speaking setEnabled=%d age=%lu current=%s\n",
+                  enabled ? 1 : 0,
+                  millis() - lastLipSyncMs_,
+                  currentPath_.c_str());
+  }
+#endif
   enabled_ = enabled;
   if (enabled_) {
     currentPath_ = "";
@@ -252,6 +315,9 @@ void FaceController::setThermalFaceMode(ThermalFaceMode mode) {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setThermal", static_cast<int>(mode));
+#endif
   thermalFaceMode_ = mode;
   lipOpen_ = false;
   blinking_ = false;
@@ -283,8 +349,21 @@ void FaceController::setMicState(bool connected, bool muted, bool streaming) {
   micMuted_ = muted;
   micStreaming_ = streaming;
   micOverlayDirty_ = true;
+  cameraOverlayDirty_ = true;
   if (enabled_) {
+    drawCameraOverlay();
     drawMicOverlay();
+  }
+}
+
+void FaceController::setCameraButtonPending(bool pending) {
+  if (cameraButtonPending_ == pending) {
+    return;
+  }
+  cameraButtonPending_ = pending;
+  cameraOverlayDirty_ = true;
+  if (enabled_) {
+    drawCameraOverlay();
   }
 }
 
@@ -324,21 +403,46 @@ void FaceController::showAffectionDelta(int delta, unsigned long now) {
 
 void FaceController::update(unsigned long now) {
   if (!enabled_) {
+#if FACE_DIAG_LOG_ENABLED
+    if (state_ == ChanState::Speaking) {
+      Serial.printf("[face_diag] speaking update skipped disabled age=%lu current=%s\n",
+                    now - lastLipSyncMs_,
+                    currentPath_.c_str());
+    }
+#endif
     return;
   }
 
   if (state_ == ChanState::Speaking) {
+#if FACE_DIAG_LOG_ENABLED
+    if (lastSpeakingUpdateMs_ != 0 && now - lastSpeakingUpdateMs_ > 700) {
+      Serial.printf("[face_diag] speaking update gap=%lu age=%lu lip=%d current=%s\n",
+                    now - lastSpeakingUpdateMs_,
+                    now - lastLipSyncMs_,
+                    lipOpen_,
+                    currentPath_.c_str());
+    }
+    lastSpeakingUpdateMs_ = now;
+#endif
     if (now - lastLipSyncMs_ >= LIP_SYNC_INTERVAL_MS) {
       lastLipSyncMs_ = now;
       lipOpen_ = !lipOpen_;
-      drawFace(talkFacePath(lipOpen_ ? 1 : 0));
+      const char* path = talkFacePath(lipOpen_ ? 1 : 0);
+#if FACE_DIAG_LOG_ENABLED
+      Serial.printf("[face_diag] lip path=%s lip=%d\n", path, lipOpen_);
+#endif
+      drawFace(path);
     }
     return;
   }
+#if FACE_DIAG_LOG_ENABLED
+  lastSpeakingUpdateMs_ = 0;
+#endif
 
-  if (affectionOverlayDirty_ || batteryOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
+  if (affectionOverlayDirty_ || batteryOverlayDirty_ || cameraOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
     drawAffectionOverlay(now);
     drawBatteryOverlay();
+    drawCameraOverlay();
     drawMicOverlay();
   }
 
@@ -572,6 +676,27 @@ uint8_t FaceController::visualTierIndex() const {
   return 2;
 }
 
+void FaceController::logSpeakingInterference(const char* source, int value) const {
+#if FACE_DIAG_LOG_ENABLED
+  if (state_ != ChanState::Speaking) {
+    return;
+  }
+  const unsigned long now = millis();
+  Serial.printf("[face_diag] speaking %s=%d lip=%d age=%lu current=%s modes photo=%d master=%d pet=%d shake=%d thermal=%d auth=%d\n",
+                source,
+                value,
+                lipOpen_,
+                now - lastLipSyncMs_,
+                currentPath_.c_str(),
+                photoFaceMode_ ? 1 : 0,
+                photoMasterFaceMode_ ? 1 : 0,
+                petFaceMode_ ? 1 : 0,
+                shakeFaceMode_ ? 1 : 0,
+                static_cast<int>(thermalFaceMode_),
+                static_cast<int>(authFaceMode_));
+#endif
+}
+
 void FaceController::showBaseFace() {
   switch (state_) {
     case ChanState::Idle:
@@ -588,9 +713,26 @@ void FaceController::showBaseFace() {
 
 void FaceController::drawFace(const char* path) {
   if (currentPath_ == path) {
+#if FACE_DIAG_LOG_ENABLED
+    if (state_ == ChanState::Speaking) {
+      Serial.printf("[face_diag] draw skip same path=%s lip=%d age=%lu\n",
+                    path,
+                    lipOpen_,
+                    millis() - lastLipSyncMs_);
+    }
+#endif
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  if (state_ == ChanState::Speaking) {
+    Serial.printf("[face_diag] draw path=%s prev=%s lip=%d age=%lu\n",
+                  path,
+                  currentPath_.c_str(),
+                  lipOpen_,
+                  millis() - lastLipSyncMs_);
+  }
+#endif
   if (drawCachedTalkFace(path)) {
     currentPath_ = path;
     return;
@@ -622,6 +764,7 @@ void FaceController::drawFace(const char* path) {
     if (ok) {
       drawAffectionOverlayOnCanvas(millis());
       drawBatteryOverlayOnCanvas();
+      drawCameraOverlayOnCanvas();
       drawMicOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
     }
@@ -635,6 +778,7 @@ void FaceController::drawFace(const char* path) {
   } else if (!canvasReady_) {
     drawAffectionOverlay(millis());
     drawBatteryOverlay();
+    drawCameraOverlay();
     drawMicOverlay();
   }
 }
@@ -820,6 +964,58 @@ void FaceController::drawMicOverlay() {
     M5.Display.drawLine(x + 8, y + 14, x + 24, y + 50, border);
   }
   micOverlayDirty_ = false;
+}
+
+void FaceController::drawCameraOverlay() {
+  const int32_t w = 30;
+  const int32_t h = 64;
+  const int32_t x = M5.Display.width() - w - 5;
+  const int32_t y = M5.Display.height() - 140;
+  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
+  if (!micConnected_) {
+    cameraOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = cameraButtonPending_ ? M5.Display.color565(150, 150, 150) : M5.Display.color565(90, 170, 230);
+  const uint16_t fill = cameraButtonPending_ ? M5.Display.color565(32, 32, 36) : M5.Display.color565(14, 32, 46);
+  const uint16_t icon = cameraButtonPending_ ? M5.Display.color565(145, 150, 155) : M5.Display.color565(205, 232, 255);
+  M5.Display.fillRoundRect(x, y, w, h, 8, fill);
+  M5.Display.drawRoundRect(x, y, w, h, 8, border);
+  M5.Display.fillRect(x + 6, y + 27, 18, 12, icon);
+  M5.Display.fillRect(x + 10, y + 23, 8, 5, icon);
+  M5.Display.fillCircle(x + 15, y + 33, 5, fill);
+  M5.Display.drawCircle(x + 15, y + 33, 5, icon);
+  if (cameraButtonPending_) {
+    M5.Display.drawArc(x + 15, y + 47, 5, 4, 30, 330, border);
+  }
+  cameraOverlayDirty_ = false;
+}
+
+void FaceController::drawCameraOverlayOnCanvas() {
+  const int32_t w = 30;
+  const int32_t h = 64;
+  const int32_t x = M5.Display.width() - w - 5;
+  const int32_t y = M5.Display.height() - 140;
+  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
+  if (!micConnected_) {
+    cameraOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = cameraButtonPending_ ? M5.Display.color565(150, 150, 150) : M5.Display.color565(90, 170, 230);
+  const uint16_t fill = cameraButtonPending_ ? M5.Display.color565(32, 32, 36) : M5.Display.color565(14, 32, 46);
+  const uint16_t icon = cameraButtonPending_ ? M5.Display.color565(145, 150, 155) : M5.Display.color565(205, 232, 255);
+  canvas_.fillRoundRect(x, y, w, h, 8, fill);
+  canvas_.drawRoundRect(x, y, w, h, 8, border);
+  canvas_.fillRect(x + 6, y + 27, 18, 12, icon);
+  canvas_.fillRect(x + 10, y + 23, 8, 5, icon);
+  canvas_.fillCircle(x + 15, y + 33, 5, fill);
+  canvas_.drawCircle(x + 15, y + 33, 5, icon);
+  if (cameraButtonPending_) {
+    canvas_.drawArc(x + 15, y + 47, 5, 4, 30, 330, border);
+  }
+  cameraOverlayDirty_ = false;
 }
 
 void FaceController::drawMicOverlayOnCanvas() {
@@ -1043,6 +1239,7 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   if (overlaysNeedRefresh(now)) {
     drawAffectionOverlay(now);
     drawBatteryOverlay();
+    drawCameraOverlay();
     drawMicOverlay();
   }
   return true;
@@ -1051,6 +1248,7 @@ bool FaceController::drawCachedTalkFace(const char* path) {
 bool FaceController::overlaysNeedRefresh(unsigned long now) const {
   return affectionOverlayDirty_ ||
          batteryOverlayDirty_ ||
+         cameraOverlayDirty_ ||
          micOverlayDirty_ ||
          (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_);
 }

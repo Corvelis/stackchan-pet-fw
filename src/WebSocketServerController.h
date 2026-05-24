@@ -16,8 +16,8 @@ public:
   void onConnection(WebSocketConnectionHandler handler);
   bool hasClient() const;
   uint8_t activeClientId() const;
-  void sendText(const char* payload);
-  void sendBinary(const uint8_t* payload, size_t length);
+  bool sendText(const char* payload);
+  bool sendBinary(const uint8_t* payload, size_t length);
 
 private:
   static esp_err_t handleWsRequest(httpd_req_t* request);

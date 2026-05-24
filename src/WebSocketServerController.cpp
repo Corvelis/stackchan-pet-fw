@@ -62,15 +62,15 @@ uint8_t WebSocketServerController::activeClientId() const {
   return activeClientFd_ >= 0 ? static_cast<uint8_t>(activeClientFd_) : 0;
 }
 
-void WebSocketServerController::sendText(const char* payload) {
+bool WebSocketServerController::sendText(const char* payload) {
   if (payload == nullptr) {
-    return;
+    return false;
   }
-  sendFrame(HTTPD_WS_TYPE_TEXT, reinterpret_cast<const uint8_t*>(payload), std::strlen(payload));
+  return sendFrame(HTTPD_WS_TYPE_TEXT, reinterpret_cast<const uint8_t*>(payload), std::strlen(payload));
 }
 
-void WebSocketServerController::sendBinary(const uint8_t* payload, size_t length) {
-  sendFrame(HTTPD_WS_TYPE_BINARY, payload, length);
+bool WebSocketServerController::sendBinary(const uint8_t* payload, size_t length) {
+  return sendFrame(HTTPD_WS_TYPE_BINARY, payload, length);
 }
 
 esp_err_t WebSocketServerController::handleWsRequest(httpd_req_t* request) {

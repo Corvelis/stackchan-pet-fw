@@ -16,7 +16,13 @@ WebSocket エンドポイント:
 ws://<stack-chan-ip>:8080/
 ```
 
-text frame は UTF-8 JSON です。binary frame は raw PCM 音声用で、好感度メッセージには使いません。
+text frame は UTF-8 JSON です。binary frame は音声用で、好感度メッセージには使いません。
+クライアントから本体への binary frame はスピーカー再生用の raw signed 16-bit PCM です。
+本体からクライアントへのマイク frame は 16 byte の `MIC1` header を持ちます:
+little-endian の `uint32 seq`、`uint32 timestampMs`、`uint16 sampleCount`、
+`uint16 flags` の後ろに 40 ms の signed 16-bit PCM が続きます。`timestampMs` は
+WebSocket 送信時刻ではなく、録音された PCM segment の先頭時刻です。`flags` の bit 0 は
+新しいマイク stream segment の開始を示します。
 
 HTTP `/status` でも本体状態の一部として現在の好感度値を確認できますが、
 制御の主経路は WebSocket JSON です。
@@ -224,6 +230,7 @@ Event values:
 ```text
 petting
 shake
+camera_button
 session_start
 level_up
 level_down
@@ -237,9 +244,16 @@ Phase values:
 | `repeat` | 継続中または再検知。アプリ側は通常 TTS を間引きます。 |
 | `end` | 継続イベントの終了。 |
 | `instant` | `session_start`, `level_up`, `level_down` などの単発イベント。 |
+| `pressed` | `camera_button` などの本体側ボタン押下。 |
 
 `interaction.event.source` は `device` 固定です。`level_up` / `level_down` は、
 先に `affection.state` を broadcast してから送信します。
+
+`camera_button` は WebSocket クライアント接続中だけ送信します。ボタンイベント用の
+単調増加する `seq` を含み、画像 binary は含みません。クライアント側で HTTP
+`POST /capture` を呼んで JPEG を取得してください。送信後は、クライアントから次の
+WebSocket text/binary 応答を受けるか 30 秒タイムアウトするまで、本体側で再押下を
+無視します。
 
 ## TTS と接続モード
 

@@ -17,8 +17,13 @@ WebSocket endpoint:
 ws://<stack-chan-ip>:8080/
 ```
 
-Text frames are UTF-8 JSON. Binary frames are reserved for raw PCM audio and are
-not used for affection messages.
+Text frames are UTF-8 JSON. Binary frames are reserved for audio and are not used
+for affection messages. Client-to-device binary frames are raw signed 16-bit PCM
+for playback. Device-to-client microphone frames use a 16-byte `MIC1` header:
+`uint32 seq`, `uint32 timestampMs`, `uint16 sampleCount`, and `uint16 flags`,
+all little-endian, followed by 40 ms of signed 16-bit PCM. `timestampMs` is the
+recorded PCM segment start time, not the WebSocket send time. `flags` bit 0
+marks the start of a new microphone stream segment.
 
 HTTP `/status` also exposes the current affection values as part of the device
 status, but WebSocket JSON is the main control path.
@@ -233,6 +238,7 @@ Event values:
 ```text
 petting
 shake
+camera_button
 session_start
 level_up
 level_down
@@ -246,10 +252,17 @@ Phase values:
 | `repeat` | Continued or repeated detection. Clients usually throttle TTS here. |
 | `end` | End of a continuous interaction. |
 | `instant` | One-shot events such as `session_start`, `level_up`, and `level_down`. |
+| `pressed` | A device-side button press such as `camera_button`. |
 
 `interaction.event.source` is always `device`. For `level_up` / `level_down`,
 the firmware broadcasts `affection.state` first, then sends the interaction
 event.
+
+`camera_button` is sent only while a WebSocket client is connected. It carries a
+monotonically increasing `seq` for button events and no image binary; clients
+should call HTTP `POST /capture` to fetch the JPEG. After sending
+`camera_button`, the device ignores further camera button presses until the next
+WebSocket text/binary response from the client or a 30-second timeout.
 
 ## TTS and Connection Modes
 

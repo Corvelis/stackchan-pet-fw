@@ -26,9 +26,9 @@ bool CameraManager::init() {
   cameraConfig.xclk_freq_hz = 20000000;
   cameraConfig.ledc_timer = LEDC_TIMER_0;
   cameraConfig.ledc_channel = LEDC_CHANNEL_0;
-  cameraConfig.pixel_format = PIXFORMAT_RGB565;
-  cameraConfig.frame_size = FRAMESIZE_QQVGA;
-  cameraConfig.jpeg_quality = 0;
+  cameraConfig.pixel_format = CAMERA_PIXEL_FORMAT;
+  cameraConfig.frame_size = CAMERA_FRAME_SIZE;
+  cameraConfig.jpeg_quality = CAMERA_JPEG_QUALITY;
   cameraConfig.fb_count = 1;
   cameraConfig.fb_location = CAMERA_FB_IN_DRAM;
   cameraConfig.grab_mode = CAMERA_GRAB_LATEST;
@@ -43,7 +43,7 @@ bool CameraManager::init() {
 
   sensor_t* sensor = esp_camera_sensor_get();
   if (sensor != nullptr) {
-    sensor->set_framesize(sensor, FRAMESIZE_QQVGA);
+    sensor->set_framesize(sensor, CAMERA_FRAME_SIZE);
   }
 
   ready_ = true;
@@ -77,14 +77,17 @@ bool CameraManager::captureJpeg(uint8_t** buffer, size_t* length) {
   *buffer = nullptr;
   *length = 0;
 
+  const unsigned long captureStartMs = millis();
   camera_fb_t* frame = esp_camera_fb_get();
   if (frame == nullptr) {
     Serial.println("[camera] capture failed");
     return false;
   }
+  const unsigned long frameMs = millis() - captureStartMs;
+  const pixformat_t frameFormat = frame->format;
 
   bool ok = false;
-  if (frame->format == PIXFORMAT_JPEG) {
+  if (frameFormat == PIXFORMAT_JPEG) {
     *buffer = static_cast<uint8_t*>(malloc(frame->len));
     if (*buffer != nullptr) {
       memcpy(*buffer, frame->buf, frame->len);
@@ -92,7 +95,11 @@ bool CameraManager::captureJpeg(uint8_t** buffer, size_t* length) {
       ok = true;
     }
   } else {
+    const unsigned long convertStartMs = millis();
     ok = frame2jpg(frame, CAMERA_JPEG_QUALITY, buffer, length);
+#if CAMERA_DIAG_LOG_ENABLED
+    Serial.printf("[camera] jpeg conversion took %lu ms\n", millis() - convertStartMs);
+#endif
   }
 
   esp_camera_fb_return(frame);
@@ -107,7 +114,15 @@ bool CameraManager::captureJpeg(uint8_t** buffer, size_t* length) {
     return false;
   }
 
+#if CAMERA_DIAG_LOG_ENABLED
+  Serial.printf("[camera] captured jpeg: %u bytes frame=%lu ms total=%lu ms format=%u\n",
+                static_cast<unsigned>(*length),
+                frameMs,
+                millis() - captureStartMs,
+                static_cast<unsigned>(frameFormat));
+#else
   Serial.printf("[camera] captured jpeg: %u bytes\n", static_cast<unsigned>(*length));
+#endif
   return true;
 }
 

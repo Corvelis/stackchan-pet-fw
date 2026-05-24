@@ -111,6 +111,9 @@ unsigned long lastShakeTriggerMs = 0;
 unsigned long nextShakeMotionMs = 0;
 unsigned long lastShakeRepeatEventMs = 0;
 uint8_t shakeStrongSamples = 0;
+uint32_t cameraButtonEventSeq = 0;
+unsigned long lastCameraButtonEventMs = 0;
+bool cameraButtonPending = false;
 bool backTouchReady = false;
 unsigned long backTouchReleasedSinceMs = 0;
 unsigned long backTouchCandidateSinceMs = 0;
@@ -125,6 +128,9 @@ struct WifiCredential {
 };
 
 constexpr size_t kMaxWifiCredentials = 5;
+constexpr unsigned long CAMERA_BUTTON_COOLDOWN_MS = 2000;
+constexpr unsigned long CAMERA_BUTTON_RESPONSE_TIMEOUT_MS = 30000;
+constexpr bool AUTH_FACE_BASE_SWITCH_ENABLED = false;
 WifiCredential wifiCredentials[kMaxWifiCredentials] = {
   {WIFI_SSID, WIFI_PASSWORD},
   {WIFI_SSID_2, WIFI_PASSWORD_2},
@@ -137,8 +143,12 @@ uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
 
 void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
+bool sendCameraButtonEvent(unsigned long now);
+void updateCameraButtonPending(unsigned long now);
+void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
 void applyListeningPresentation(unsigned long now);
+AuthFaceMode displayAuthFaceMode(AuthFaceMode mode);
 bool audioBusyForUiEffects();
 void updatePendingAffectionDelta();
 void drawInfoScreen();
@@ -458,7 +468,29 @@ uint8_t effectiveBrightness() {
   if (deviceSettings.lowPowerMode) {
     return min<uint8_t>(deviceSettings.brightness, DISPLAY_LOW_POWER_BRIGHTNESS_MAX);
   }
+  if (!infoScreenVisible && wsClientConnected &&
+      (currentState == ChanState::Listening || currentState == ChanState::Speaking ||
+       audioController.state() == ChanState::Listening || audioController.state() == ChanState::Speaking)) {
+    const uint16_t dimmed = static_cast<uint16_t>(deviceSettings.brightness) * DISPLAY_CONVERSATION_BRIGHTNESS_PERCENT / 100;
+    return max<uint8_t>(DISPLAY_BRIGHTNESS_MIN, static_cast<uint8_t>(dimmed));
+  }
   return deviceSettings.brightness;
+}
+
+ThermalFaceMode thermalFaceModeForLevel(ThermalLevel level) {
+  if (level == ThermalLevel::Hot) {
+    return ThermalFaceMode::Hot;
+  }
+  if (level == ThermalLevel::Warm && !wsClientConnected) {
+    return ThermalFaceMode::Warm;
+  }
+  return ThermalFaceMode::Normal;
+}
+
+void applyThermalFaceMode() {
+  faceController.setThermalFaceMode(deviceSettings.lowPowerMode
+                                      ? ThermalFaceMode::LowPower
+                                      : thermalFaceModeForLevel(thermalStatus.level));
 }
 
 uint8_t steppedSettingValue(uint8_t value, int delta, uint8_t minValue, uint8_t maxValue) {
@@ -508,13 +540,7 @@ void applyLowPowerMode(bool enabled, bool persist) {
   }
   deviceSettings.lowPowerMode = enabled;
   applyDisplayBrightness();
-  if (enabled) {
-    faceController.setThermalFaceMode(ThermalFaceMode::LowPower);
-  } else {
-    faceController.setThermalFaceMode(thermalStatus.level == ThermalLevel::Hot
-                                        ? ThermalFaceMode::Hot
-                                        : (thermalStatus.level == ThermalLevel::Warm ? ThermalFaceMode::Warm : ThermalFaceMode::Normal));
-  }
+  applyThermalFaceMode();
   if (persist) {
     saveDeviceSettings();
   }
@@ -542,10 +568,18 @@ void switchNetworkModeAndRestart() {
 }
 
 void scheduleNextListeningNod(unsigned long now) {
+  if (!LISTENING_NOD_ENABLED) {
+    nextListeningNodMs = 0;
+    return;
+  }
   nextListeningNodMs = now + random(LISTENING_NOD_MIN_INTERVAL_MS, LISTENING_NOD_MAX_INTERVAL_MS + 1);
 }
 
 void scheduleFirstListeningNod(unsigned long now) {
+  if (!LISTENING_NOD_ENABLED) {
+    nextListeningNodMs = 0;
+    return;
+  }
   nextListeningNodMs = now + random(LISTENING_NOD_FIRST_MIN_INTERVAL_MS, LISTENING_NOD_FIRST_MAX_INTERVAL_MS + 1);
 }
 
@@ -800,7 +834,7 @@ void applyListeningPresentation(unsigned long now) {
     return;
   }
 
-  faceController.setAuthFaceMode(currentAuthFaceMode);
+  faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
   if (currentAuthFaceMode == AuthFaceMode::NotMaster) {
     motionController.setMotion("not_master");
     return;
@@ -808,6 +842,10 @@ void applyListeningPresentation(unsigned long now) {
 
   motionController.setMotion("center");
   scheduleFirstListeningNod(now);
+}
+
+AuthFaceMode displayAuthFaceMode(AuthFaceMode mode) {
+  return AUTH_FACE_BASE_SWITCH_ENABLED ? mode : AuthFaceMode::Unknown;
 }
 
 void drawBootScreen(const char* message) {
@@ -869,10 +907,17 @@ float maxValidTemperature(float a, float b) {
   return max(a, b);
 }
 
+bool externalPowerPresent() {
+  if (M5.Power.isCharging() == m5::Power_Class::is_charging) {
+    return true;
+  }
+  const int16_t vbusMv = M5.Power.getVBUSVoltage();
+  return vbusMv >= 4500;
+}
+
 void updateBatteryStatus() {
   const int batteryLevel = M5.Power.getBatteryLevel();
-  const bool charging = M5.Power.isCharging() == m5::Power_Class::is_charging;
-  faceController.setBatteryState(batteryLevel, charging);
+  faceController.setBatteryState(batteryLevel, externalPowerPresent());
 }
 
 void updateMicStatusOverlay() {
@@ -905,6 +950,9 @@ void updateThermalStatus(unsigned long now) {
   }
 
   const float hottest = maxValidTemperature(thermalStatus.chipTempC, thermalStatus.pmicTempC);
+  const bool externallyPowered = externalPowerPresent();
+  const float warmAbsoluteC = externallyPowered ? THERMAL_CHARGING_WARM_ABSOLUTE_C : THERMAL_WARM_ABSOLUTE_C;
+  const float hotAbsoluteC = externallyPowered ? THERMAL_CHARGING_HOT_ABSOLUTE_C : THERMAL_HOT_ABSOLUTE_C;
   float maxDelta = NAN;
   if (!isnan(thermalStatus.chipTempC) && !isnan(thermalStatus.baselineChipTempC)) {
     maxDelta = thermalStatus.chipTempC - thermalStatus.baselineChipTempC;
@@ -915,11 +963,11 @@ void updateThermalStatus(unsigned long now) {
   }
 
   ThermalLevel nextLevel = ThermalLevel::Normal;
-  if ((!isnan(hottest) && hottest >= THERMAL_HOT_ABSOLUTE_C) ||
+  if ((!isnan(hottest) && hottest >= hotAbsoluteC) ||
       (!isnan(maxDelta) && maxDelta >= THERMAL_HOT_DELTA_C)) {
     nextLevel = ThermalLevel::Hot;
-  } else if ((!isnan(hottest) && hottest >= THERMAL_WARM_ABSOLUTE_C) ||
-             (!isnan(maxDelta) && maxDelta >= THERMAL_WARM_DELTA_C)) {
+  } else if ((!isnan(hottest) && hottest >= warmAbsoluteC) ||
+             (!externallyPowered && !isnan(maxDelta) && maxDelta >= THERMAL_WARM_DELTA_C)) {
     nextLevel = ThermalLevel::Warm;
   }
 
@@ -936,9 +984,7 @@ void updateThermalStatus(unsigned long now) {
   if (thermalStatus.level != nextLevel) {
     thermalStatus.level = nextLevel;
     if (!deviceSettings.lowPowerMode) {
-      faceController.setThermalFaceMode(nextLevel == ThermalLevel::Hot
-                                          ? ThermalFaceMode::Hot
-                                          : (nextLevel == ThermalLevel::Warm ? ThermalFaceMode::Warm : ThermalFaceMode::Normal));
+      applyThermalFaceMode();
     }
     Serial.printf("[thermal] level=%s chip=%.1f pmic=%.1f\n",
                   thermalLevelName(thermalStatus.level),
@@ -1157,7 +1203,12 @@ void handleWifiRestartRequest() {
 void handleCaptureRequest() {
   faceController.setPhotoFaceMode(true);
   faceController.showFace("photo_0");
-  const bool micPausedForCapture = audioController.pauseMicForCapture();
+  const bool micPausedForCapture = CAMERA_PAUSE_MIC_DURING_CAPTURE
+                                     ? audioController.pauseMicForCapture()
+                                     : false;
+  if (VERBOSE_LOG_ENABLED && !CAMERA_PAUSE_MIC_DURING_CAPTURE && audioController.isMicStreaming()) {
+    Serial.println("[camera] capture while mic streaming");
+  }
 
   if (!cameraManager.isReady() && !cameraManager.init()) {
     audioController.resumeMicAfterCapture(micPausedForCapture);
@@ -1214,7 +1265,7 @@ void handleStatusRequest() {
   doc["chipTempC"] = thermalStatus.chipTempC;
   doc["pmicTempC"] = thermalStatus.pmicTempC;
   doc["batteryLevel"] = M5.Power.getBatteryLevel();
-  doc["charging"] = M5.Power.isCharging() == m5::Power_Class::is_charging;
+  doc["charging"] = externalPowerPresent();
   if (networkMode == NetworkMode::SoftAp) {
     doc["ip"] = WiFi.softAPIP().toString();
     doc["stations"] = WiFi.softAPgetStationNum();
@@ -1454,7 +1505,7 @@ void drawPowerSettingsPage() {
     M5.Display.println("PMIC: n/a");
   }
   M5.Display.printf("Battery: %d %%\n", M5.Power.getBatteryLevel());
-  M5.Display.printf("Charging: %s\n", M5.Power.isCharging() == m5::Power_Class::is_charging ? "yes" : "no");
+  M5.Display.printf("Charging: %s\n", externalPowerPresent() ? "yes" : "no");
   M5.Display.printf("Suggest: %s\n", thermalStatus.suggestLowPower ? "Low Power" : "none");
   drawButton(150, 144, 150, 28, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
 }
@@ -1506,6 +1557,7 @@ void setInfoScreenVisible(bool visible) {
   }
   infoScreenVisible = visible;
   faceController.setEnabled(displayOn && !visible);
+  applyDisplayBrightness();
   if (visible) {
     drawInfoScreen();
   }
@@ -1654,6 +1706,15 @@ void drawLowPowerPrompt() {
 
 void setState(ChanState state) {
   if (currentState == state) {
+    if (state == ChanState::Speaking && audioController.state() != ChanState::Speaking) {
+      pendingStateAfterPlayback = false;
+      deferredStateReadyMs = 0;
+      wsAudioSettleUntilMs = 0;
+      faceController.restartSpeakingAnimation();
+      audioController.setState(ChanState::Speaking);
+      applyDisplayBrightness();
+      Serial.println("[state] speaking resynced");
+    }
     return;
   }
   const ChanState previousState = currentState;
@@ -1681,6 +1742,7 @@ void setState(ChanState state) {
   }
   faceController.setState(state);
   audioController.setState(state);
+  applyDisplayBrightness();
 
   if (state == ChanState::Idle) {
     pendingFaceModeNormalAfterPlayback = false;
@@ -1700,8 +1762,9 @@ void setState(ChanState state) {
     applyListeningPresentation(millis());
   } else if (state == ChanState::Speaking) {
     vadActive = false;
-    cancelListeningNod(currentAuthFaceMode != AuthFaceMode::NotMaster);
-    faceController.setAuthFaceMode(currentAuthFaceMode);
+    cancelListeningNod(false);
+    motionController.holdCurrentPose();
+    faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
   }
 
   Serial.printf("[state] changed to %d\n", static_cast<int>(state));
@@ -1731,6 +1794,7 @@ void updateDeferredFaceState() {
     faceController.setPhotoFaceMode(false);
   }
   faceController.setState(state);
+  applyDisplayBrightness();
 
   if (state == ChanState::Idle) {
     currentAuthFaceMode = AuthFaceMode::Unknown;
@@ -1834,15 +1898,21 @@ void handleAuthCommand(const char* result) {
   if (strcmp(result, "master") == 0) {
     currentAuthFaceMode = AuthFaceMode::Master;
     applyListeningPresentation(millis());
+#if VERBOSE_LOG_ENABLED
     Serial.println("[auth] master");
+#endif
   } else if (strcmp(result, "not_master") == 0) {
     currentAuthFaceMode = AuthFaceMode::NotMaster;
     applyListeningPresentation(millis());
+#if VERBOSE_LOG_ENABLED
     Serial.println("[auth] not_master");
+#endif
   } else if (strcmp(result, "unknown") == 0 || strcmp(result, "none") == 0) {
     currentAuthFaceMode = AuthFaceMode::Unknown;
     applyListeningPresentation(millis());
+#if VERBOSE_LOG_ENABLED
     Serial.println("[auth] unknown");
+#endif
   } else {
     Serial.printf("[auth] unsupported result: %s\n", result);
   }
@@ -1851,7 +1921,9 @@ void handleAuthCommand(const char* result) {
 void handleVadCommand(bool active) {
   vadActive = active;
   applyListeningPresentation(millis());
+#if VERBOSE_LOG_ENABLED
   Serial.printf("[vad] %s\n", vadActive ? "active" : "inactive");
+#endif
 }
 
 void writeAffectionSnapshot(JsonDocument& doc, unsigned long now) {
@@ -1903,6 +1975,59 @@ void sendInteractionEvent(const char* event, const char* phase, unsigned long no
   String body;
   serializeJson(doc, body);
   wsServer.sendText(body.c_str());
+}
+
+bool sendCameraButtonEvent(unsigned long now) {
+  if (!wsServer.hasClient()) {
+    return false;
+  }
+  updateCameraButtonPending(now);
+  if (cameraButtonPending) {
+    return false;
+  }
+  if (lastCameraButtonEventMs != 0 && now - lastCameraButtonEventMs < CAMERA_BUTTON_COOLDOWN_MS) {
+    return false;
+  }
+
+  lastCameraButtonEventMs = now;
+  cameraButtonPending = true;
+  faceController.setCameraButtonPending(true);
+
+  JsonDocument doc;
+  doc["type"] = "interaction.event";
+  doc["event"] = "camera_button";
+  doc["phase"] = "pressed";
+  doc["source"] = "device";
+  doc["seq"] = ++cameraButtonEventSeq;
+
+  String body;
+  serializeJson(doc, body);
+  wsServer.sendText(body.c_str());
+  Serial.printf("[interaction] camera_button pressed seq=%lu\n",
+                static_cast<unsigned long>(cameraButtonEventSeq));
+  return true;
+}
+
+void updateCameraButtonPending(unsigned long now) {
+  if (!cameraButtonPending) {
+    return;
+  }
+  if (!wsServer.hasClient()) {
+    clearCameraButtonPending("disconnect");
+    return;
+  }
+  if (now - lastCameraButtonEventMs >= CAMERA_BUTTON_RESPONSE_TIMEOUT_MS) {
+    clearCameraButtonPending("timeout");
+  }
+}
+
+void clearCameraButtonPending(const char* reason) {
+  if (!cameraButtonPending) {
+    return;
+  }
+  cameraButtonPending = false;
+  faceController.setCameraButtonPending(false);
+  Serial.printf("[interaction] camera_button ready: %s\n", reason == nullptr ? "response" : reason);
 }
 
 const char* normalizeAffectionSource(const char* source) {
@@ -1995,6 +2120,21 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
   }
 
   const char* type = doc["type"] | "";
+#if FACE_DIAG_LOG_ENABLED
+  if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    if (strcmp(type, "state") == 0 || strcmp(type, "face_mode") == 0 ||
+        strcmp(type, "face") == 0 || strcmp(type, "motion") == 0 ||
+        strcmp(type, "pet") == 0 || strcmp(type, "nadenade") == 0 ||
+        strcmp(type, "auth") == 0 || strcmp(type, "vad") == 0) {
+      const char* value = doc["value"] | doc["name"] | doc["result"] | "";
+      Serial.printf("[face_diag] ws type=%s value=%s current=%d audio=%d\n",
+                    type,
+                    value,
+                    static_cast<int>(currentState),
+                    static_cast<int>(audioController.state()));
+    }
+  }
+#endif
   if (strcmp(type, "state") == 0) {
     const char* value = doc["value"] | "";
     handleStateCommand(value);
@@ -2031,7 +2171,7 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
         applyListeningPresentation(millis());
       } else {
         cancelListeningNod(false);
-        faceController.setAuthFaceMode(AuthFaceMode::NotMaster);
+        faceController.setAuthFaceMode(displayAuthFaceMode(AuthFaceMode::NotMaster));
       }
     }
     motionController.setMotion(name);
@@ -2046,12 +2186,16 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
 
 void onWsText(uint8_t clientId, const uint8_t* payload, size_t length) {
   (void)clientId;
+#if VERBOSE_LOG_ENABLED
   Serial.printf("[ws] text %u bytes\n", static_cast<unsigned>(length));
+#endif
+  clearCameraButtonPending("text");
   handleJsonCommand(payload, length);
 }
 
 void onWsBinary(uint8_t clientId, uint8_t* payload, size_t length) {
   (void)clientId;
+  clearCameraButtonPending("binary");
   audioController.onBinaryReceived(payload, length);
 }
 
@@ -2059,6 +2203,8 @@ void onWsConnection(uint8_t clientId, bool connected) {
   (void)clientId;
   wsClientConnected = connected;
   updateMicStatusOverlay();
+  applyDisplayBrightness();
+  applyThermalFaceMode();
   if (connected) {
     const unsigned long now = millis();
     wsAudioSettleUntilMs = now + AUDIO_WS_CONNECT_SETTLE_MS;
@@ -2069,6 +2215,7 @@ void onWsConnection(uint8_t clientId, bool connected) {
     sendInteractionEvent("session_start", "instant", now);
   } else {
     wsAudioSettleUntilMs = 0;
+    clearCameraButtonPending("disconnect");
   }
   if (infoScreenVisible) {
     drawInfoScreen();
@@ -2164,6 +2311,11 @@ void updateTouch(unsigned long now) {
 
   if (touch.wasClicked()) {
     if (!infoScreenVisible && wsClientConnected &&
+        touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 144, 40, 72)) {
+      sendCameraButtonEvent(now);
+      return;
+    }
+    if (!infoScreenVisible && wsClientConnected &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 80, 40, 80)) {
       audioController.setMicMuted(!audioController.micMuted());
       updateMicStatusOverlay();
@@ -2254,6 +2406,10 @@ void updateBackTouch(unsigned long now) {
 }
 
 void updateListeningNod(unsigned long now) {
+  if (!LISTENING_NOD_ENABLED) {
+    cancelListeningNod(false);
+    return;
+  }
   if (shakeActive || pettingActive || currentState != ChanState::Listening || !vadActive || currentAuthFaceMode == AuthFaceMode::NotMaster) {
     cancelListeningNod(currentState == ChanState::Idle);
     return;
@@ -2331,6 +2487,20 @@ void loop() {
   M5StackChan.update();
 
   unsigned long now = millis();
+  const bool diagSpeakingAtLoopStart =
+    currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
+#if FACE_DIAG_LOG_ENABLED
+  auto logFaceDiagStep = [&](const char* name, unsigned long startedAt) {
+    const unsigned long elapsed = millis() - startedAt;
+    if (diagSpeakingAtLoopStart && elapsed > 100) {
+      Serial.printf("[face_diag] loop step %s took=%lu current=%d audio=%d\n",
+                    name,
+                    elapsed,
+                    static_cast<int>(currentState),
+                    static_cast<int>(audioController.state()));
+    }
+  };
+#endif
   updateButtons(now);
   updateThermalStatus(now);
   updateMicStatusOverlay();
@@ -2340,11 +2510,24 @@ void loop() {
   updateWiFi(now);
 
   if (wsStarted) {
+#if FACE_DIAG_LOG_ENABLED
+    const unsigned long stepStartedAt = millis();
+#endif
     wsServer.loop();
+#if FACE_DIAG_LOG_ENABLED
+    logFaceDiagStep("wsServer.loop", stepStartedAt);
+#endif
   }
   if (httpStarted) {
+#if FACE_DIAG_LOG_ENABLED
+    const unsigned long stepStartedAt = millis();
+#endif
     httpServer.handleClient();
+#if FACE_DIAG_LOG_ENABLED
+    logFaceDiagStep("httpServer.handleClient", stepStartedAt);
+#endif
   }
+  updateCameraButtonPending(now);
 
   if (!interactionsReady(now)) {
     if (displayOn) {
@@ -2357,6 +2540,19 @@ void loop() {
   }
 
   if (infoScreenVisible && displayOn) {
+#if FACE_DIAG_LOG_ENABLED
+    static bool loggedInfoScreenSpeakingSkip = false;
+    if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+      if (!loggedInfoScreenSpeakingSkip) {
+        Serial.printf("[face_diag] face update skipped infoScreen current=%d audio=%d\n",
+                      static_cast<int>(currentState),
+                      static_cast<int>(audioController.state()));
+        loggedInfoScreenSpeakingSkip = true;
+      }
+    } else {
+      loggedInfoScreenSpeakingSkip = false;
+    }
+#endif
     if (settingsPage == SettingsPage::Power && now - lastInfoDrawMs >= 3000) {
       drawInfoScreen();
     }
@@ -2371,11 +2567,21 @@ void loop() {
     return;
   }
 
+#if FACE_DIAG_LOG_ENABLED
+  unsigned long stepStartedAt = millis();
+#endif
   audioController.update(now);
+#if FACE_DIAG_LOG_ENABLED
+  logFaceDiagStep("audioController.update", stepStartedAt);
+  stepStartedAt = millis();
+#endif
   updateAffectionState(now);
   updateDeferredFaceState();
   updateDeferredFaceMode();
   updatePendingAffectionDelta();
+#if FACE_DIAG_LOG_ENABLED
+  logFaceDiagStep("deferred/affection", stepStartedAt);
+#endif
   if (displayOn) {
     const bool speaking = currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
     if (speaking || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
@@ -2383,6 +2589,16 @@ void loop() {
       faceController.update(now);
       drawLowPowerPrompt();
     }
+#if FACE_DIAG_LOG_ENABLED
+  } else if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    static unsigned long lastDisplayOffFaceSkipLogMs = 0;
+    if (now - lastDisplayOffFaceSkipLogMs > 700) {
+      Serial.printf("[face_diag] face update skipped displayOff current=%d audio=%d\n",
+                    static_cast<int>(currentState),
+                    static_cast<int>(audioController.state()));
+      lastDisplayOffFaceSkipLogMs = now;
+    }
+#endif
   }
   updatePetting(now);
   if (deviceSettings.lowPowerMode) {
