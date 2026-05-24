@@ -303,8 +303,10 @@ ws://<stack-chan-ip>:8080/
 text frame は UTF-8 JSON コマンドです。クライアントから本体へ送る binary frame は
 スピーカー再生用の signed 16-bit PCM 音声です。本体からクライアントへ送るマイク
 binary frame は 16 byte header の後ろに signed 16-bit PCM を入れ、listening 状態
-かつマイク送信がミュートされていない間だけ送ります。マイクのミュートは送信だけを止め、
-WebSocket 接続は切断しません。
+かつマイク送信がミュートされていない間に送ります。remote VAD が inactive の間は、
+本体側で無音と判定したときにマイク frame 送信を休止することがあります。WebSocket
+接続は維持し、音量が戻ると短い pre-roll 付きで送信を再開します。マイクのミュートは
+送信だけを止め、WebSocket 接続は切断しません。
 
 音声設定:
 

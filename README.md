@@ -313,7 +313,9 @@ ws://<stack-chan-ip>:8080/
 Text frames are UTF-8 JSON commands. Client-to-device binary frames are signed
 16-bit PCM audio for speaker playback. Device-to-client microphone binary frames
 use a 16-byte header followed by signed 16-bit PCM while the device is in
-listening state and mic streaming is not muted.
+listening state and mic streaming is not muted. While the remote VAD is inactive,
+the device may pause microphone frame transmission during local silence; it keeps
+the WebSocket connected and resumes with a short pre-roll when local input rises.
 Muting the microphone stops only the outgoing microphone audio stream; it does
 not disconnect the WebSocket client.
 

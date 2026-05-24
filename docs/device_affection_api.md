@@ -21,9 +21,11 @@ Text frames are UTF-8 JSON. Binary frames are reserved for audio and are not use
 for affection messages. Client-to-device binary frames are raw signed 16-bit PCM
 for playback. Device-to-client microphone frames use a 16-byte `MIC1` header:
 `uint32 seq`, `uint32 timestampMs`, `uint16 sampleCount`, and `uint16 flags`,
-all little-endian, followed by 40 ms of signed 16-bit PCM. `timestampMs` is the
-recorded PCM segment start time, not the WebSocket send time. `flags` bit 0
-marks the start of a new microphone stream segment.
+all little-endian, followed by 40 ms of signed 16-bit PCM. When the remote VAD is
+inactive, the device may pause these microphone frames during local silence and
+resume with buffered pre-roll when local input rises. `timestampMs` is the
+recorded PCM segment start time, not the WebSocket send time. `flags` bit 0 marks
+the start of a new microphone stream segment.
 
 HTTP `/status` also exposes the current affection values as part of the device
 status, but WebSocket JSON is the main control path.
