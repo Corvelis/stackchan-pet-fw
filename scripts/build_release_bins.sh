@@ -34,9 +34,9 @@ rm -f "${DIST_DIR}/stackchan_cores3_firmware.bin" \
 cp "${BUILD_DIR}/firmware.bin" "${DIST_DIR}/stackchan_cores3_firmware.bin"
 
 "${PYTHON_BIN}" "${ESPTOOL_PY}" --chip esp32s3 merge_bin \
-  --flash_mode qio \
-  --flash_freq 80m \
-  --flash_size 16MB \
+  --flash_mode keep \
+  --flash_freq keep \
+  --flash_size keep \
   -o "${DIST_DIR}/stackchan_cores3_factory.bin" \
   0x0000 "${BUILD_DIR}/bootloader.bin" \
   0x8000 "${BUILD_DIR}/partitions.bin" \
