@@ -25,6 +25,7 @@ class FaceController {
 public:
   void begin();
   void setState(ChanState state);
+  void restartSpeakingAnimation();
   void showFace(const char* name);
   void setBadSpeakingFace(bool enabled);
   void setAuthFaceMode(AuthFaceMode mode);
@@ -36,6 +37,7 @@ public:
   void setThermalFaceMode(ThermalFaceMode mode);
   void setBatteryState(int level, bool charging);
   void setMicState(bool connected, bool muted, bool streaming);
+  void setCameraButtonPending(bool pending);
   void setAffectionState(const AffectionState& state);
   void showAffectionDelta(int delta, unsigned long now);
   void update(unsigned long now);
@@ -54,6 +56,7 @@ private:
   const char* shakeFacePath(uint8_t index) const;
   const char* fallbackFacePath(const char* preferred, const char* fallback) const;
   uint8_t visualTierIndex() const;
+  void logSpeakingInterference(const char* source, int value) const;
   void showBaseFace();
   void drawFace(const char* path);
   bool drawCachedTalkFace(const char* path);
@@ -61,6 +64,8 @@ private:
   void drawAffectionOverlayOnCanvas(unsigned long now);
   void drawBatteryOverlay();
   void drawBatteryOverlayOnCanvas();
+  void drawCameraOverlay();
+  void drawCameraOverlayOnCanvas();
   void drawMicOverlay();
   void drawMicOverlayOnCanvas();
   bool overlaysNeedRefresh(unsigned long now) const;
@@ -89,6 +94,7 @@ private:
   bool blinking_ = false;
   bool smiling_ = false;
   unsigned long lastLipSyncMs_ = 0;
+  unsigned long lastSpeakingUpdateMs_ = 0;
   unsigned long nextBlinkMs_ = 0;
   unsigned long blinkEndMs_ = 0;
   unsigned long nextSmileMs_ = 0;
@@ -105,5 +111,7 @@ private:
   bool micMuted_ = false;
   bool micStreaming_ = false;
   bool micOverlayDirty_ = true;
+  bool cameraButtonPending_ = false;
+  bool cameraOverlayDirty_ = true;
   String currentPath_;
 };

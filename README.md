@@ -15,13 +15,14 @@ implementations are out of scope.
 - M5Stack CoreS3 firmware built with PlatformIO and Arduino.
 - LittleFS-based face image rendering.
 - WebSocket JSON control channel.
-- WebSocket binary PCM audio channel.
+- WebSocket binary PCM playback and microphone streaming.
 - HTTP camera capture and status endpoints.
+- On-face camera button event for requesting client-side capture handling.
 - STA Wi-Fi mode and SoftAP direct-connection mode.
 - Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
 - Local petting and shake reactions.
 - Persistent affection state controlled through WebSocket events.
-- Device-side interaction events for petting, shake, session start, and level changes.
+- Device-side interaction events for petting, shake, camera button, session start, and level changes.
 - On-device settings screen for network, display, audio, and power controls.
 - Battery, microphone, affection, thermal, and low-power visual overlays.
 
@@ -245,6 +246,9 @@ The on-device Network screen can show QR codes for Wi-Fi setup.
 - While the screen is off, petting and shake interactions are disabled.
 - When a WebSocket client is connected, tap the microphone overlay on the right
   side of the face screen to mute or unmute mic streaming.
+- When a WebSocket client is connected, tap the camera overlay above the
+  microphone overlay to send a `camera_button` event. The device does not send
+  image data over WebSocket; clients should call HTTP `POST /capture`.
 
 ## Connection Points
 
@@ -260,7 +264,7 @@ Endpoints:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/status` | Returns device status as JSON. |
+| `GET` | `/status` | Returns device status as JSON. `charging` is `true` while charging or externally powered over USB/VBUS. |
 | `POST` | `/capture` | Captures a JPEG image from the camera. |
 | `OPTIONS` | `/status`, `/capture` | CORS preflight support. |
 
@@ -306,9 +310,10 @@ Endpoint:
 ws://<stack-chan-ip>:8080/
 ```
 
-Text frames are UTF-8 JSON commands. Binary frames are signed 16-bit PCM audio:
-the client can send playback audio to the device speaker, and the device sends
-microphone audio while it is in listening state and mic streaming is not muted.
+Text frames are UTF-8 JSON commands. Client-to-device binary frames are signed
+16-bit PCM audio for speaker playback. Device-to-client microphone binary frames
+use a 16-byte header followed by signed 16-bit PCM while the device is in
+listening state and mic streaming is not muted.
 Muting the microphone stops only the outgoing microphone audio stream; it does
 not disconnect the WebSocket client.
 
@@ -318,7 +323,9 @@ Audio settings:
 Sample rate: 16000 Hz
 Channels: 1
 Format: signed 16-bit PCM
-Recommended chunk: 20 ms input, 60 ms playback
+Recommended chunk: 40 ms microphone input, 60 ms playback
+Microphone packet: "MIC1" magic, uint32 little-endian seq, uint32 little-endian timestampMs, uint16 little-endian sampleCount, uint16 flags, PCM payload
+Microphone flags: bit 0 = stream segment start
 ```
 
 ## WebSocket JSON Commands
@@ -458,8 +465,10 @@ Device response:
 ```
 
 The device also broadcasts `interaction.event` messages for physical and
-device-side events such as `petting`, `shake`, `session_start`, `level_up`, and
-`level_down`.
+device-side events such as `petting`, `shake`, `camera_button`, `session_start`,
+`level_up`, and `level_down`. `camera_button` is sent only while a WebSocket
+client is connected, uses phase `pressed`, and is locked until the next
+WebSocket text/binary response from the client or a 30-second timeout.
 
 Short-term state behavior:
 

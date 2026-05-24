@@ -10,6 +10,7 @@ public:
   void setMotion(const char* name);
   void setTargetPose(int pan, int tilt);
   void setImmediatePose(int pan, int tilt);
+  void holdCurrentPose();
   void saveCurrentPoseAsHome();
   void moveToSavedHome();
   void update(unsigned long now);

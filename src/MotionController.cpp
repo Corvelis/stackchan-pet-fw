@@ -1,6 +1,7 @@
 #include "MotionController.h"
 
 #include <M5StackChan.h>
+#include "config.h"
 #include <Preferences.h>
 
 #include "config.h"
@@ -59,6 +60,11 @@ void MotionController::setImmediatePose(int pan, int tilt) {
   targetPose_ = currentPose_;
   writeServoPose(currentPose_);
   logPose("immediate", currentPose_);
+}
+
+void MotionController::holdCurrentPose() {
+  targetPose_ = currentPose_;
+  logPose("hold", currentPose_);
 }
 
 void MotionController::saveCurrentPoseAsHome() {
@@ -233,5 +239,10 @@ void MotionController::writeServoPose(const Pose& pose) {
 }
 
 void MotionController::logPose(const char* label, const Pose& pose) const {
+#if VERBOSE_LOG_ENABLED
   Serial.printf("[motion] %s pan=%d tilt=%d\n", label, pose.pan, pose.tilt);
+#else
+  (void)label;
+  (void)pose;
+#endif
 }
