@@ -184,7 +184,7 @@ http://192.168.4.1/wifi
 このファームウェア単体では会話機能は動作しません。
 対応スマホアプリは今後アップロード予定です。
 ご自身の WebSocket または USB Serial クライアントを接続したい場合は、API 仕様を
-[README.ja.md](../README.ja.md#接続口) と
+[README.md](../README.md#接続口) と
 [好感度 API 詳細](device_affection_api.ja.md) で確認してください。USB Serial の frame 仕様は
 [USB Serial Protocol](usb_serial_protocol.ja.md) を参照してください。
 

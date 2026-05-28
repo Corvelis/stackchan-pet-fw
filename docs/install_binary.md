@@ -186,7 +186,7 @@ Follow the page and save the SSID/password for the Wi-Fi network you normally us
 Conversation does not work with this firmware alone.
 A compatible phone app is planned for a future upload.
 If you want to connect your own WebSocket or USB Serial client, see the API documentation in
-[README.md](../README.md#connection-points) and
+[README.en.md](../README.en.md#connection-points) and
 [the affection API details](device_affection_api.md). For USB Serial framing,
 see [USB Serial Protocol](usb_serial_protocol.md).
 
