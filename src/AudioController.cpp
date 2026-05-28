@@ -2,6 +2,20 @@
 
 #include <cstring>
 
+namespace {
+const char* audioStateName(ChanState state) {
+  switch (state) {
+    case ChanState::Idle:
+      return "Idle";
+    case ChanState::Listening:
+      return "Listening";
+    case ChanState::Speaking:
+      return "Speaking";
+  }
+  return "Unknown";
+}
+}
+
 void AudioController::begin(WebSocketServerController* wsServer) {
   wsServer_ = wsServer;
   rxCapacity_ = AUDIO_RX_RING_BYTES;
@@ -51,6 +65,15 @@ void AudioController::begin(WebSocketServerController* wsServer) {
   if (micCaptureTaskHandle_ == nullptr) {
     Serial.println("[audio] failed to start mic capture task");
   }
+}
+
+void AudioController::setMicPacketSender(MicPacketSender sender, void* context) {
+  micPacketSender_ = sender;
+  micPacketSenderContext_ = context;
+}
+
+void AudioController::setUsbSerialClientConnected(bool connected) {
+  usbSerialClientConnected_ = connected;
 }
 
 void AudioController::setState(ChanState state) {
@@ -159,7 +182,7 @@ bool AudioController::micMuted() const {
 }
 
 bool AudioController::isMicStreaming() const {
-  return state_ == ChanState::Listening && micEnabled_ && !micMuted_ && wsServer_ != nullptr && wsServer_->hasClient();
+  return state_ == ChanState::Listening && micEnabled_ && !micMuted_ && hasMicClient();
 }
 
 void AudioController::setRemoteVadActive(bool active) {
@@ -167,20 +190,42 @@ void AudioController::setRemoteVadActive(bool active) {
 }
 
 void AudioController::onBinaryReceived(uint8_t* payload, size_t length) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  Serial.printf("AudioController::onBinaryReceived bytes=%u state=%s speaker_enabled=%d speaker_pending=%d\n",
+                static_cast<unsigned>(length),
+                audioStateName(state_),
+                speakerEnabled_ ? 1 : 0,
+                speakerStartPending_ ? 1 : 0);
+#endif
   if (state_ != ChanState::Speaking || (!speakerEnabled_ && !speakerStartPending_)) {
-    Serial.printf("[audio] dropped %u bytes; not speaking\n", static_cast<unsigned>(length));
+    Serial.printf("AudioController drop binary reason=not_speaking_or_speaker_off state=%s bytes=%u speaker_enabled=%d speaker_pending=%d\n",
+                  audioStateName(state_),
+                  static_cast<unsigned>(length),
+                  speakerEnabled_ ? 1 : 0,
+                  speakerStartPending_ ? 1 : 0);
     return;
   }
 
   if ((length & 1) != 0) {
-    Serial.printf("[audio] dropped odd-sized pcm packet: %u bytes\n", static_cast<unsigned>(length));
+    Serial.printf("AudioController drop binary reason=odd_sized_pcm state=%s bytes=%u\n",
+                  audioStateName(state_),
+                  static_cast<unsigned>(length));
     return;
   }
 
   size_t written = appendRxBytes(payload, length);
+  ++speakerRxPacketCount_;
   if (written > 0 && pendingIdleAfterPlayback_) {
     idleDrainEmptySinceMs_ = 0;
   }
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  Serial.printf("AudioController accepted pcm bytes=%u buffered_bytes=%u\n",
+                static_cast<unsigned>(written),
+                static_cast<unsigned>(rxAvailable()));
+  if (speakerRxPacketCount_ <= 6 || rxAvailable() >= AUDIO_PLAYBACK_PREBUFFER_BYTES) {
+    Serial.printf("TTS buffer bytes=%u\n", static_cast<unsigned>(rxAvailable()));
+  }
+#endif
   if (written < length) {
     Serial.printf("[audio] rx ring overflow; dropped %u bytes, buffered=%u/%u\n",
                   static_cast<unsigned>(length - written),
@@ -211,6 +256,8 @@ void AudioController::enterIdle() {
   playbackStarted_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
+  speakerRxPacketCount_ = 0;
+  speakerLastBufferLogBytes_ = 0;
   clearRxRing();
   Serial.println("[audio] idle: mic off, speaker stopped");
 }
@@ -225,6 +272,8 @@ void AudioController::enterListening() {
   playbackStarted_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
+  speakerRxPacketCount_ = 0;
+  speakerLastBufferLogBytes_ = 0;
   clearRxRing();
 
   if (micMuted_) {
@@ -244,6 +293,8 @@ void AudioController::enterSpeaking() {
   playbackStarted_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
+  speakerRxPacketCount_ = 0;
+  speakerLastBufferLogBytes_ = 0;
   clearRxRing();
 
   const unsigned long now = millis();
@@ -350,13 +401,20 @@ void AudioController::noteMicPause(const char* reason) {
 }
 
 void AudioController::updateMicSend() {
-  if (micMuted_ || !micEnabled_ || wsServer_ == nullptr || !wsServer_->hasClient()) {
+  if (micMuted_ || !micEnabled_ || !hasMicClient()) {
     return;
   }
 
   while (copyNextMicPacket(micSendScratch_)) {
     const unsigned long now = millis();
-    if (wsServer_->sendBinary(micSendScratch_, AUDIO_MIC_PACKET_BYTES)) {
+    bool sent = false;
+    if (wsServer_ != nullptr && wsServer_->hasClient()) {
+      sent = wsServer_->sendBinary(micSendScratch_, AUDIO_MIC_PACKET_BYTES) || sent;
+    }
+    if (usbSerialClientConnected_ && micPacketSender_ != nullptr) {
+      sent = micPacketSender_(micSendScratch_, AUDIO_MIC_PACKET_BYTES, micPacketSenderContext_) || sent;
+    }
+    if (sent) {
       ++micTxStatsChunks_;
       micTxStatsBytes_ += AUDIO_CHUNK_BYTES;
       if (lastMicTxChunkMs_ != 0) {
@@ -372,6 +430,11 @@ void AudioController::updateMicSend() {
       break;
     }
   }
+}
+
+bool AudioController::hasMicClient() const {
+  return (wsServer_ != nullptr && wsServer_->hasClient()) ||
+         (usbSerialClientConnected_ && micPacketSender_ != nullptr);
 }
 
 void AudioController::writeMicPacket(uint8_t* packet, const int16_t* samples, size_t sampleCount, unsigned long timestampMs, uint16_t flags) {
@@ -469,7 +532,7 @@ void AudioController::micCaptureTaskLoop() {
       micCaptureTimestampMs_ = recordStartMs;
     }
 
-    if (wsServer_ != nullptr && wsServer_->hasClient()) {
+    if (hasMicClient()) {
       const int32_t chunkPeak = processMicChunk(captureBuffer, AUDIO_CHUNK_SAMPLES);
 #if AUDIO_MIC_GATE_ENABLED
       const bool remoteVadActive = remoteVadActive_;
@@ -779,8 +842,22 @@ void AudioController::updateSpeakerPlayback() {
   }
 
   if (!playbackStarted_) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+    const size_t buffered = rxAvailable();
+    if (buffered != speakerLastBufferLogBytes_ &&
+        (buffered >= AUDIO_PLAYBACK_PREBUFFER_BYTES ||
+         buffered >= speakerLastBufferLogBytes_ + AUDIO_PLAYBACK_CHUNK_BYTES ||
+         buffered < speakerLastBufferLogBytes_)) {
+      speakerLastBufferLogBytes_ = buffered;
+      Serial.printf("TTS buffer bytes=%u\n", static_cast<unsigned>(buffered));
+    }
+#endif
     if (rxAvailable() >= AUDIO_PLAYBACK_PREBUFFER_BYTES || (pendingIdleAfterPlayback_ && rxAvailable() > 0)) {
       playbackStarted_ = true;
+      Serial.printf("TTS prebuffer ready threshold=%u buffered=%u\n",
+                    static_cast<unsigned>(AUDIO_PLAYBACK_PREBUFFER_BYTES),
+                    static_cast<unsigned>(rxAvailable()));
+      Serial.println("TTS playback start");
       Serial.printf("[audio] playback started with %u bytes buffered\n", static_cast<unsigned>(rxAvailable()));
     } else if (pendingIdleAfterPlayback_ && rxAvailable() == 0 && M5.Speaker.isPlaying(AUDIO_SPEAKER_CHANNEL) == 0) {
       const unsigned long now = millis();
@@ -806,6 +883,7 @@ void AudioController::updateSpeakerPlayback() {
       break;
     }
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+    Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
     ++queuedThisUpdate;
   }
 
@@ -817,6 +895,7 @@ void AudioController::updateSpeakerPlayback() {
     memset(buffer, 0, AUDIO_PLAYBACK_CHUNK_BYTES);
     readRxBytes(reinterpret_cast<uint8_t*>(buffer), remaining);
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+    Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
   }
 
   if (pendingIdleAfterPlayback_ && rxAvailable() == 0 && M5.Speaker.isPlaying(AUDIO_SPEAKER_CHANNEL) == 0) {
@@ -863,7 +942,11 @@ void AudioController::playPcmChunk(const int16_t* samples, size_t sampleCount) {
   memcpy(buffer, samples, sampleCount * sizeof(int16_t));
   speakerBufferIndex_ = (speakerBufferIndex_ + 1) % AUDIO_SPEAKER_BUFFER_COUNT;
 
-  if (!M5.Speaker.playRaw(buffer, sampleCount, AUDIO_SAMPLE_RATE, false, 1, AUDIO_SPEAKER_CHANNEL, false)) {
+  const bool ok = M5.Speaker.playRaw(buffer, sampleCount, AUDIO_SAMPLE_RATE, false, 1, AUDIO_SPEAKER_CHANNEL, false);
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  Serial.printf("I2S write result=%d\n", ok ? 1 : 0);
+#endif
+  if (!ok) {
     Serial.println("[audio] playRaw failed");
   }
 }

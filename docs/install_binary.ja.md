@@ -20,7 +20,7 @@ stackchan_cores3_factory.bin
 
 - このバイナリは M5Stack CoreS3 用です。他の機種には書き込まないでください。
 - ファームウェア単体では会話機能は動作しません。
-- 会話、音声認識、TTS、応答生成には、対応するスマホアプリまたは WebSocket クライアントが必要です。
+- 会話、音声認識、TTS、応答生成には、対応するスマホアプリ、WebSocket クライアント、または USB Serial クライアントが必要です。
 - 既にこのファームウェアを使っている人は、通常 `stackchan_cores3_firmware.bin` を使って更新してください。
 - factory image を書き込むと、本体内に保存済みの Wi-Fi 設定やサーボ原点設定は初期化されます。
 - バイナリに含まれる画像を、素材として取り出して使うことは許可しません。
@@ -183,9 +183,10 @@ http://192.168.4.1/wifi
 
 このファームウェア単体では会話機能は動作しません。
 対応スマホアプリは今後アップロード予定です。
-ご自身の WebSocket クライアントを接続したい場合は、API 仕様を
+ご自身の WebSocket または USB Serial クライアントを接続したい場合は、API 仕様を
 [README.ja.md](../README.ja.md#接続口) と
-[好感度 API 詳細](device_affection_api.ja.md) で確認してください。
+[好感度 API 詳細](device_affection_api.ja.md) で確認してください。USB Serial の frame 仕様は
+[USB Serial Protocol](usb_serial_protocol.ja.md) を参照してください。
 
 ## 基本の使い方
 
@@ -203,9 +204,9 @@ http://192.168.4.1/wifi
   発話中の音声再生と口パクは継続します。
 - 電源ボタンを短押しすると、画面のオン/オフを切り替えます。
 - 画面オフ中は、なでなでやフリフリの反応は発生しません。画面をオンに戻すと通常通り反応します。
-- WebSocket クライアント接続中は、表情画面右側のマイク表示をタップすると、マイク送信のミュート/解除を切り替えます。
-- WebSocket クライアント接続中は、マイク表示の上にあるカメラ表示をタップすると `camera_button` イベントを送ります。
-  本体は WebSocket では画像を送らないため、クライアント側で HTTP `POST /capture` を呼んで JPEG を取得します。
+- WebSocket または USB Serial クライアント接続中は、表情画面右側のマイク表示をタップすると、マイク送信のミュート/解除を切り替えます。
+- WebSocket または USB Serial クライアント接続中は、マイク表示の上にあるカメラ表示をタップすると `camera_button` イベントを送ります。
+  ネットワーク接続のクライアントは HTTP `POST /capture`、USB Serial クライアントは `capture.request` で JPEG を取得します。
 
 ### 7. サーボ原点を調整する
 

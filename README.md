@@ -7,7 +7,7 @@ servo motion, microphone/speaker streaming, camera capture, touch/shake
 reactions, and network interfaces for external control.
 
 This repository contains only the Stack-chan firmware side. It documents the
-HTTP and WebSocket interfaces exposed by the device; external client
+HTTP, WebSocket, and USB Serial interfaces exposed by the device; external client
 implementations are out of scope.
 
 ## Features
@@ -16,9 +16,10 @@ implementations are out of scope.
 - LittleFS-based face image rendering.
 - WebSocket JSON control channel.
 - WebSocket binary PCM playback and microphone streaming.
+- USB CDC / USB Serial control channel for Android direct USB connections.
 - HTTP camera capture and status endpoints.
 - On-face camera button event for requesting client-side capture handling.
-- STA Wi-Fi mode and SoftAP direct-connection mode.
+- STA Wi-Fi mode, SoftAP direct-connection mode, and USB Serial mode.
 - Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
 - Local petting and shake reactions.
 - Persistent affection state controlled through WebSocket events.
@@ -59,6 +60,7 @@ Required:
 - `src/`: firmware source code.
 - `data/`: local LittleFS data directory. Runtime PNGs are ignored by Git.
 - `docs/device_affection_api.md`: detailed device-side affection API notes.
+- `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
 
 Optional:
 
@@ -125,6 +127,8 @@ Folders under `assets/` are only source/reference work areas and are not read
 directly by the firmware. Rename/export the runtime images to the filenames
 below, place them directly under `data/`, then run `pio run --target uploadfs`
 to write them to LittleFS.
+Use `python3 scripts/audit_face_assets.py` to audit the local image set.
+See `docs/face_image_inventory.ja.md` for the current cleanup notes.
 
 | File | Expected image | Example source from Tsukuyomi-chan standing material |
 | --- | --- | --- |
@@ -244,11 +248,12 @@ The on-device Network screen can show QR codes for Wi-Fi setup.
   Audio playback and lip-sync during speech continue.
 - Press the power button to toggle the display.
 - While the screen is off, petting and shake interactions are disabled.
-- When a WebSocket client is connected, tap the microphone overlay on the right
-  side of the face screen to mute or unmute mic streaming.
-- When a WebSocket client is connected, tap the camera overlay above the
+- When a WebSocket or USB Serial client is connected, tap the microphone overlay
+  on the right side of the face screen to mute or unmute mic streaming.
+- When a WebSocket or USB Serial client is connected, tap the camera overlay above the
   microphone overlay to send a `camera_button` event. The device does not send
-  image data over WebSocket; clients should call HTTP `POST /capture`.
+  image data over WebSocket; network clients should call HTTP `POST /capture`,
+  and USB Serial clients should send a `capture.request` message.
 
 ## Connection Points
 
@@ -275,6 +280,7 @@ Example `/status` response:
   "cameraReady": false,
   "networkMode": "STA",
   "wsClientConnected": true,
+  "usbSerialClientConnected": false,
   "affection": 500,
   "mood": 0,
   "confusion": 0,
@@ -329,6 +335,59 @@ Recommended chunk: 40 ms microphone input, 60 ms playback
 Microphone packet: "MIC1" magic, uint32 little-endian seq, uint32 little-endian timestampMs, uint16 little-endian sampleCount, uint16 flags, PCM payload
 Microphone flags: bit 0 = stream segment start
 ```
+
+### USB Serial
+
+The firmware also accepts the same command/event model over USB CDC / USB
+Serial. This path is intended for Android devices that open the CoreS3 USB port
+with Android USB Host APIs such as `usb-serial-for-android`.
+
+The device supports two USB Serial input forms:
+
+- Newline-delimited raw JSON for simple diagnostics, for example
+  `{"type":"ping","id":"phone_001"}\n`.
+- Binary SCU1 frames for JSON, TTS PCM, microphone PCM, and capture image data.
+
+SCU1 frame layout:
+
+```text
+magic     4 bytes  "SCU1"
+version   1 byte   0x01
+type      1 byte
+flags     1 byte
+reserved  1 byte   0x00
+seq       4 bytes  little-endian
+length    4 bytes  little-endian
+payload   length bytes
+crc32     4 bytes  little-endian
+```
+
+CRC32 uses the standard IEEE polynomial and covers `version` through `payload`;
+the `magic` bytes and final CRC field are not included.
+
+Frame types:
+
+| Type | Direction | Payload |
+| --- | --- | --- |
+| `0x01` JSON | both | UTF-8 JSON command/event |
+| `0x02` TTS PCM | client to device | raw signed 16-bit little-endian PCM, 16 kHz mono |
+| `0x03` MIC PCM | device to client | existing `MIC1` microphone packet |
+| `0x04` capture request | client to device | JSON request payload |
+| `0x05` capture image chunk | device to client | JPEG bytes |
+| `0x08` ping | client to device | optional JSON payload |
+| `0x09` pong | device to client | JSON payload |
+
+The same JSON commands listed below are accepted inside SCU1 type `0x01`.
+For TTS playback, send `{"type":"state","value":"speaking"}`, then one or more
+type `0x02` PCM frames, then `{"type":"state","value":"idle"}`. Playback starts
+after the prebuffer threshold is reached or when `idle` drains the remaining
+buffer.
+
+USB Serial clients must treat the USB stream as mixed binary data. Development
+builds may print diagnostic text on the same CDC port, so clients should scan
+for the `SCU1` magic and resynchronize instead of assuming every byte belongs to
+a frame. See `docs/usb_serial_protocol.md` for the complete protocol and Android
+client notes.
 
 ## WebSocket JSON Commands
 
@@ -468,9 +527,9 @@ Device response:
 
 The device also broadcasts `interaction.event` messages for physical and
 device-side events such as `petting`, `shake`, `camera_button`, `session_start`,
-`level_up`, and `level_down`. `camera_button` is sent only while a WebSocket
-client is connected, uses phase `pressed`, and is locked until the next
-WebSocket text/binary response from the client or a 30-second timeout.
+`level_up`, and `level_down`. `camera_button` is sent only while a WebSocket or
+USB Serial client is connected, uses phase `pressed`, and is locked until the
+next client text/binary response or a 30-second timeout.
 
 Short-term state behavior:
 
@@ -519,6 +578,8 @@ See `docs/device_affection_api.md` for the detailed device-side affection API.
 - If SoftAP mode is active, connect the phone, PC, or other client device to
   `StackChan-Direct` and use `192.168.4.1` as the device IP. The Wi-Fi setup
   page is `/wifi`.
+- If USB Serial ping/pong times out, check that the client can resynchronize on
+  the `SCU1` magic and ignores diagnostic text printed before or between frames.
 
 ## License Notes
 

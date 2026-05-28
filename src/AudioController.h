@@ -10,9 +10,13 @@
 #include "WebSocketServerController.h"
 #include "config.h"
 
+using MicPacketSender = bool (*)(const uint8_t* payload, size_t length, void* context);
+
 class AudioController {
 public:
   void begin(WebSocketServerController* wsServer);
+  void setMicPacketSender(MicPacketSender sender, void* context);
+  void setUsbSerialClientConnected(bool connected);
   void setState(ChanState state);
   ChanState state() const;
   bool isPlaybackDraining() const;
@@ -39,6 +43,7 @@ private:
   void noteMicPause(const char* reason);
   void startSpeakerIfDue();
   void updateMicSend();
+  bool hasMicClient() const;
   static void micCaptureTaskEntry(void* context);
   void micCaptureTaskLoop();
   bool enqueueMicPacket(const int16_t* samples, size_t sampleCount, unsigned long timestampMs, uint16_t flags);
@@ -61,10 +66,13 @@ private:
   bool readRxBytes(uint8_t* out, size_t length);
 
   WebSocketServerController* wsServer_ = nullptr;
+  MicPacketSender micPacketSender_ = nullptr;
+  void* micPacketSenderContext_ = nullptr;
   ChanState state_ = ChanState::Idle;
   unsigned long nextMicSendDueMs_ = 0;
   bool micEnabled_ = false;
   bool micMuted_ = false;
+  bool usbSerialClientConnected_ = false;
   bool speakerEnabled_ = false;
   bool speakerStartPending_ = false;
   bool playbackStarted_ = false;
@@ -101,6 +109,8 @@ private:
   uint32_t micPauseCamera_ = 0;
   uint32_t micPauseWsSettle_ = 0;
   uint32_t micPauseOther_ = 0;
+  uint32_t speakerRxPacketCount_ = 0;
+  size_t speakerLastBufferLogBytes_ = 0;
   int32_t micStatsPeak_ = 0;
   size_t micRecordIndex_ = 2;
   size_t micSendIndex_ = 0;
