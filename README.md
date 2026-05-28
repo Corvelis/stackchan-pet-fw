@@ -1,91 +1,89 @@
 # Stack-chan CoreS3 Controller
 
-[English](README.md) | [日本語](README.ja.md)
+[日本語](README.md) | [English](README.en.md)
 
-Firmware for an M5Stack CoreS3 based Stack-chan. It provides face rendering,
-servo motion, microphone/speaker streaming, camera capture, touch/shake
-reactions, and network interfaces for external control.
+M5Stack CoreS3 ベースのスタックチャン用ファームウェアです。表情表示、サーボ動作、
+マイク/スピーカー音声ストリーミング、カメラ撮影、なでなで/ふりふり反応、
+外部制御用の通信インターフェースを扱います。
 
-This repository contains only the Stack-chan firmware side. It documents the
-HTTP, WebSocket, and USB Serial interfaces exposed by the device; external client
-implementations are out of scope.
+このリポジトリに含めているのはスタックチャン本体側のファームウェアだけです。
+README では、本体が公開する HTTP / WebSocket / USB Serial の口を記載しています。
+外部クライアント側の実装方法は対象外です。
 
-## Features
+## できること
 
-- M5Stack CoreS3 firmware built with PlatformIO and Arduino.
-- LittleFS-based face image rendering.
-- WebSocket JSON control channel.
-- WebSocket binary PCM playback and microphone streaming.
-- USB CDC / USB Serial control channel for Android direct USB connections.
-- HTTP camera capture and status endpoints.
-- On-face camera button event for requesting client-side capture handling.
-- STA Wi-Fi mode, SoftAP direct-connection mode, and USB Serial mode.
-- Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
-- Local petting and shake reactions.
-- Persistent affection state controlled through WebSocket events.
-- Device-side interaction events for petting, shake, camera button, session start, and level changes.
-- On-device settings screen for network, display, audio, and power controls.
-- Battery, microphone, affection, thermal, and low-power visual overlays.
+- PlatformIO / Arduino でビルドする M5Stack CoreS3 ファームウェア
+- LittleFS 上の PNG 表情画像を表示
+- WebSocket JSON による状態制御
+- WebSocket binary による PCM 音声再生とマイク音声送信
+- Android 直結向けの USB CDC / USB Serial 制御チャンネル
+- HTTP によるカメラ撮影とステータス取得
+- 表情画面上のカメラボタンからクライアントへ撮影要求イベントを送信
+- Wi-Fi STA 接続、SoftAP 直接接続、USB Serial 接続
+- ブラウザからの Wi-Fi 設定、SSID スキャン、複数 Wi-Fi 保存
+- 本体側のなでなで/ふりふり反応
+- WebSocket イベントによる好感度管理
+- なでなで、ふりふり、カメラボタン、接続開始、好感度レベル変化の本体側 interaction event
+- Network / Display / Audio / Power を切り替えられる本体設定画面
+- バッテリー、マイク、好感度、熱状態、低電力状態の画面オーバーレイ
 
-## Hardware
+## 必要なもの
 
 - M5Stack CoreS3
-- Stack-chan compatible servo hardware
-- PlatformIO development environment
+- Stack-chan 互換のサーボ構成
+- PlatformIO 開発環境
 
-The PlatformIO environment is defined as `m5stack-cores3` in `platformio.ini`.
+PlatformIO の環境名は `platformio.ini` の `m5stack-cores3` です。
 
-## Install PlatformIO
+## PlatformIO の準備
 
-Use either the VS Code PlatformIO extension or PlatformIO Core CLI.
+VS Code の PlatformIO 拡張、または PlatformIO Core CLI を使います。
 
-Check that the `pio` command is available:
+`pio` コマンドが使えることを確認してください。
 
 ```sh
 pio --version
 ```
 
-If `pio` is not found but PlatformIO is installed on macOS, it may be available
-at:
+macOS で PlatformIO は入っているのに `pio` が見つからない場合は、次の場所にあることがあります。
 
 ```sh
 ~/.platformio/penv/bin/pio --version
 ```
 
-## Repository Contents
+## リポジトリ構成
 
-Required:
+必須:
 
-- `platformio.ini`: PlatformIO build configuration.
-- `src/`: firmware source code.
-- `data/`: local LittleFS data directory. Runtime PNGs are ignored by Git.
-- `docs/device_affection_api.md`: detailed device-side affection API notes.
-- `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
+- `platformio.ini`: PlatformIO のビルド設定
+- `src/`: ファームウェア本体
+- `data/`: LittleFS にアップロードするローカルデータ置き場
+- `docs/device_affection_api.ja.md`: 本体側の好感度 API 詳細
+- `docs/usb_serial_protocol.ja.md`: アプリ向け USB Serial frame protocol 詳細
 
-Optional:
+任意:
 
-- `.vscode/extensions.json`: editor recommendation only.
+- `.vscode/extensions.json`: VS Code の推奨拡張
 
-Ignored:
+GitHub に上げないもの:
 
-- `.pio/`: build output and downloaded dependencies.
-- `.DS_Store`: macOS metadata.
-- `src/config_private.h`: local Wi-Fi credentials.
-- `assets/`: local source/reference image assets.
-- `data/*.png`: runtime face images derived from third-party character materials.
+- `.pio/`: ビルド生成物とダウンロードされた依存ライブラリ
+- `.DS_Store`: macOS のメタデータ
+- `src/config_private.h`: ローカル Wi-Fi 認証情報
+- `assets/`: ローカルの画像素材作業フォルダ
+- `data/*.png`: 第三者素材から作成した実行時用の表情画像
 
-## Setup
+## セットアップ手順
 
-1. Install PlatformIO and confirm that `pio --version` works.
-2. Copy the private config template:
+1. PlatformIO をインストールし、`pio --version` が動くことを確認します。
+2. ローカル設定ファイルを作ります。
 
 ```sh
 cp src/config_private.example.h src/config_private.h
 ```
 
-3. Optionally edit `src/config_private.h`.
-   You can also leave it unconfigured and register Wi-Fi from the browser setup
-   page after boot:
+3. 必要に応じて `src/config_private.h` に Wi-Fi 情報を書きます。
+   未設定のままでも、起動後にブラウザの Wi-Fi 設定画面から登録できます。
 
 ```cpp
 #define WIFI_SSID "your-wifi-ssid"
@@ -94,94 +92,89 @@ cp src/config_private.example.h src/config_private.h
 #define WIFI_PASSWORD_2 ""
 ```
 
-4. Prepare the face PNG files listed below under `data/`.
-5. Connect the CoreS3 by USB.
-6. Build and upload the firmware:
+4. 後述の PNG ファイルを `data/` に配置します。
+5. CoreS3 を USB で接続します。
+6. ファームウェアを書き込みます。
 
 ```sh
 pio run --target upload
 ```
 
-7. Upload the LittleFS image data:
+7. LittleFS の画像データを書き込みます。
 
 ```sh
 pio run --target uploadfs
 ```
 
-8. Open the serial monitor:
+8. シリアルモニタを開きます。
 
 ```sh
 pio device monitor
 ```
 
-The device prints the Wi-Fi mode and IP address on boot.
+起動ログに Wi-Fi モードと IP アドレスが表示されます。
 
-For ready-to-flash `.bin` installation, see the [Binary Installation Guide](docs/install_binary.md).
-Release builds should define `STACKCHAN_RELEASE_BUILD` so `src/config_private.h` local Wi-Fi credentials are not included.
+配布用 `.bin` のインストール手順は、[バイナリ版インストール手順](docs/install_binary.ja.md) を参照してください。
+配布用ビルドでは `STACKCHAN_RELEASE_BUILD` を指定し、`src/config_private.h` の個人 Wi-Fi 情報を含めないでください。
 
-## Face Images
+## 表情画像の配置
 
-The firmware loads face images from LittleFS using the paths in `src/config.h`.
-Place 240 x 240 PNG files with these exact names under `data/`.
-Folders under `assets/` are only source/reference work areas and are not read
-directly by the firmware. Rename/export the runtime images to the filenames
-below, place them directly under `data/`, then run `pio run --target uploadfs`
-to write them to LittleFS.
-Use `python3 scripts/audit_face_assets.py` to audit the local image set.
-See `docs/face_image_inventory.ja.md` for the current cleanup notes.
+ファームウェアは `src/config.h` に定義されたパスで LittleFS から画像を読みます。
+`data/` に 240 x 240 の PNG を次のファイル名で置いてください。
+`assets/` 配下のフォルダは素材作業用で、ファームウェアからは直接読みません。
+実機で使う画像は、下表のファイル名へリネームして `data/` 直下に置き、
+`pio run --target uploadfs` で LittleFS に書き込んでください。
+ローカル画像セットの棚卸しや重複確認には `python3 scripts/audit_face_assets.py` を使えます。
+整理方針は `docs/face_image_inventory.ja.md` にまとめています。
 
-| File | Expected image | Example source from Tsukuyomi-chan standing material |
+| ファイル名 | 置いてほしい画像 | つくよみちゃん万能立ち絵素材を使う場合の例 |
 | --- | --- | --- |
-| `idle.png` | Default idle face, mouth closed. | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `listen.png` | Listening/ready face, mouth closed. | `01-02a 基本-目ぱっちり-口閉じ.png` |
-| `talk_0.png` | Normal speaking frame, mouth closed. | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `talk_1.png` | Normal speaking frame, mouth open. | `01-01b 基本-目ふんわり-口開け.png` |
-| `blink.png` | Normal blink frame. | `01-01c 基本-目ふんわり-目閉じ.png` |
-| `smile.png` | Idle smile frame used only in the normal affection tier. | `01-03ac 基本-にっこり-口閉じ.png` |
-| `good_0.png` | Positive/master-recognized face, mouth closed. | `02-04a 喜び・称賛-口閉じ.png` |
-| `good_1.png` | Positive/master-recognized face, mouth open. | `02-04b 喜び・称賛-口開け.png` |
-| `good_blink.png` | Positive/master-recognized blink frame. | `02-04c 喜び・称賛-目閉じ.png` |
-| `bad_0.png` | Negative/not-master face, mouth closed. | `10-03ac 覚悟-口閉じ.png` |
-| `bad_1.png` | Negative/not-master face, mouth open. | `10-03b 覚悟-口開け.png` |
-| `photo_0.png` | Camera/photo mode face, mouth closed. | `09-01a 祈り-口閉じ.png` |
-| `photo_1.png` | Camera/photo mode face, mouth open. | `09-01b 祈り-口開け.png` |
-| `photo_blink.png` | Camera/photo mode blink frame, mouth closed. | `09-01c 祈り-目閉じ・口閉じ.png` |
-| `photo_blink_talk.png` | Camera/photo mode blink frame, mouth open. | `09-01d 祈り-目閉じ・口開け.png` |
-| `photo_master_0.png` | Master-photo mode face, mouth closed. | `02-02ac ほんわか-手を組む-口閉じ.png` |
-| `photo_master_1.png` | Master-photo mode face, mouth open. | `02-02b ほんわか-手を組む-口開け.png` |
-| `nadenade_0.png` | Petting/nadenade face, mouth closed. | `02-01ac ほんわか-基本ポーズ-口閉じ.png` |
-| `nadenade_1.png` | Petting/nadenade face, mouth open. | `02-01b ほんわか-基本ポーズ-口開け.png` |
-| `furifuri_0.png` | Shake/furifuri face, mouth closed. | `07-01ac 大変です！-口閉じ.png` |
-| `furifuri_1.png` | Shake/furifuri face, mouth open. | `07-01b 大変です！-口開け.png` |
+| `idle.png` | 通常待機顔。口閉じ。 | `01-01a 基本-目ふんわり-口閉じ.png` |
+| `listen.png` | 聞き取り中/待ち受け顔。口閉じ。 | `01-02a 基本-目ぱっちり-口閉じ.png` |
+| `talk_0.png` | 通常発話の口閉じフレーム。 | `01-01a 基本-目ふんわり-口閉じ.png` |
+| `talk_1.png` | 通常発話の口開けフレーム。 | `01-01b 基本-目ふんわり-口開け.png` |
+| `blink.png` | 通常まばたきフレーム。 | `01-01c 基本-目ふんわり-目閉じ.png` |
+| `smile.png` | 通常好感度 tier の待機中にだけ出るにっこり顔。 | `01-03ac 基本-にっこり-口閉じ.png` |
+| `good_0.png` | ポジティブ/マスター認識時の口閉じ顔。 | `02-04a 喜び・称賛-口閉じ.png` |
+| `good_1.png` | ポジティブ/マスター認識時の口開け顔。 | `02-04b 喜び・称賛-口開け.png` |
+| `good_blink.png` | ポジティブ/マスター認識時のまばたき顔。 | `02-04c 喜び・称賛-目閉じ.png` |
+| `bad_0.png` | ネガティブ/not_master 時の口閉じ顔。 | `10-03ac 覚悟-口閉じ.png` |
+| `bad_1.png` | ネガティブ/not_master 時の口開け顔。 | `10-03b 覚悟-口開け.png` |
+| `photo_0.png` | 撮影/photo モードの口閉じ顔。 | `09-01a 祈り-口閉じ.png` |
+| `photo_1.png` | 撮影/photo モードの口開け顔。 | `09-01b 祈り-口開け.png` |
+| `photo_blink.png` | 撮影/photo モードの目閉じ・口閉じ顔。 | `09-01c 祈り-目閉じ・口閉じ.png` |
+| `photo_blink_talk.png` | 撮影/photo モードの目閉じ・口開け顔。 | `09-01d 祈り-目閉じ・口開け.png` |
+| `photo_master_0.png` | マスター撮影/photo_master モードの口閉じ顔。 | `02-02ac ほんわか-手を組む-口閉じ.png` |
+| `photo_master_1.png` | マスター撮影/photo_master モードの口開け顔。 | `02-02b ほんわか-手を組む-口開け.png` |
+| `nadenade_0.png` | なでなで/pet モードの口閉じ顔。 | `02-01ac ほんわか-基本ポーズ-口閉じ.png` |
+| `nadenade_1.png` | なでなで/pet モードの口開け顔。 | `02-01b ほんわか-基本ポーズ-口開け.png` |
+| `furifuri_0.png` | ふりふり/shake モードの口閉じ顔。 | `07-01ac 大変です！-口閉じ.png` |
+| `furifuri_1.png` | ふりふり/shake モードの口開け顔。 | `07-01b 大変です！-口開け.png` |
 
-Mouth-open files ending in `_1.png` are used during speaking animation. The
-matching `_0.png` files are used for the closed-mouth frame and for the base
-face in that mode.
+`_1.png` で終わる口開け画像は発話アニメーションで使います。対応する `_0.png` は
+口閉じフレームで、そのモードの基本顔としても使います。
 
-Additional optional face files can be added for richer visual states. The
-firmware falls back to the base faces above if these files are missing.
-`talk_guarded_0.png` and `talk_attached_0.png` are only needed when the
-closed-mouth speaking frame should differ from the idle face. If they are
-missing, the firmware uses `idle_guarded_0.png` / `idle_attached_0.png` as the
-closed-mouth speaking frame.
+より細かい状態表示を使う場合は、次の追加画像も配置できます。存在しない場合、
+ファームウェアは上記の基本表情へフォールバックします。
+`talk_guarded_0.png` と `talk_attached_0.png` は、口閉じ発話フレームを
+idle 顔と分けたい場合だけ用意してください。存在しない場合は、それぞれ
+`idle_guarded_0.png` / `idle_attached_0.png` を口閉じフレームとして使います。
 
-| File group | Files |
+| グループ | ファイル名 |
 | --- | --- |
-| Guarded affection tier | `idle_guarded_0.png`, `blink_guarded_0.png`, `talk_guarded_0.png`, `talk_guarded_1.png` |
-| Attached affection tier | `idle_attached_0.png`, `blink_attached_0.png`, `talk_attached_0.png`, `talk_attached_1.png` |
-| Guarded petting | `pet_guarded_0.png`, `pet_guarded_1.png`, `pet_blink_guarded_0.png` |
-| Attached petting | `pet_attached_0.png`, `pet_attached_1.png`, `pet_blink_attached_0.png` |
-| Guarded shake | `shake_guarded_0.png`, `shake_guarded_1.png` |
-| Attached shake | `shake_attached_0.png`, `shake_attached_1.png` |
-| Thermal and low power | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
+| 警戒寄りの好感度 tier | `idle_guarded_0.png`, `blink_guarded_0.png`, `talk_guarded_0.png`, `talk_guarded_1.png` |
+| 親密寄りの好感度 tier | `idle_attached_0.png`, `blink_attached_0.png`, `talk_attached_0.png`, `talk_attached_1.png` |
+| 警戒寄りのなでなで | `pet_guarded_0.png`, `pet_guarded_1.png`, `pet_blink_guarded_0.png` |
+| 親密寄りのなでなで | `pet_attached_0.png`, `pet_attached_1.png`, `pet_blink_attached_0.png` |
+| 警戒寄りのふりふり | `shake_guarded_0.png`, `shake_guarded_1.png` |
+| 親密寄りのふりふり | `shake_attached_0.png`, `shake_attached_1.png` |
+| 熱状態と低電力 | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
 
-The local image set used during development was prepared from
-"つくよみちゃん万能立ち絵素材（花兎*様）". These image files are not included in
-this repository. Download the original material from the official distribution
-page, follow its terms, export the required 240 x 240 PNGs, and place them in
-`data/`.
+開発時の画像は「つくよみちゃん万能立ち絵素材（花兎*様）」からローカルで作成しています。
+このリポジトリには画像ファイル本体を含めていません。公式配布ページから素材を入手し、
+利用規約に従って 240 x 240 PNG を書き出して `data/` に配置してください。
 
-Credit for the local image set:
+ローカル画像セットのクレジット:
 
 ```text
 フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
@@ -190,14 +183,14 @@ https://tyc.rei-yumesaki.net/
 https://tyc.rei-yumesaki.net/material/illust/
 ```
 
-## Network Modes
+## ネットワークモード
 
-The firmware supports two network modes:
+ファームウェアには 2 つの接続モードがあります。
 
-- STA mode: connects to saved Wi-Fi settings or credentials in `src/config_private.h`.
-- SoftAP mode: starts its own access point.
+- STA モード: 保存済み Wi-Fi 設定、または `src/config_private.h` の Wi-Fi に接続します。
+- SoftAP モード: CoreS3 自身がアクセスポイントになります。
 
-Default SoftAP settings:
+SoftAP の初期値:
 
 ```text
 SSID: StackChan-Direct
@@ -205,75 +198,72 @@ Password: stackchan123
 IP: 192.168.4.1
 ```
 
-Hold the touch screen while the info screen is visible to switch between STA and
-SoftAP. The selected mode is saved in device preferences and applied after
-restart.
+情報画面が表示されている状態でタッチ画面を長押しすると、STA と SoftAP を切り替えます。
+選択したモードは本体に保存され、再起動後に反映されます。
 
-## Wi-Fi Setup Page
+## Wi-Fi 設定ページ
 
-If STA mode starts with no configured Wi-Fi credentials, the device
-automatically falls back to SoftAP mode. Connect a phone or PC to
-`StackChan-Direct`, then open this URL in a browser:
+Wi-Fi 未設定の状態で STA 接続を開始すると、本体は自動で SoftAP モードに切り替わります。
+スマホまたは PC を `StackChan-Direct` に接続し、ブラウザで次の URL を開いてください。
 
 ```text
 http://192.168.4.1/wifi
 ```
 
-The setup page can scan nearby SSIDs, save an SSID/password, edit or delete
-saved networks, and change connection priority. Saved networks are tried from
-top to bottom. When the device is already connected in STA mode, open `/wifi`
-on the IP address shown on the Network screen to use the same setup page.
+設定ページでは、周辺 SSID のスキャン、SSID/password の保存、保存済み Wi-Fi の編集、
+削除、優先度変更ができます。保存済み Wi-Fi は上から順に接続を試します。
+STA 接続済みの場合は、本体の Network 画面に表示される IP アドレスの `/wifi` からも
+同じ設定ページを開けます。
 
-The on-device Network screen can show QR codes for Wi-Fi setup.
+本体の Network 画面では、QR コードから Wi-Fi 設定ページを開けます。
 
-- SoftAP mode: use `Wi-Fi QR` to connect to `StackChan-Direct`, then use
-  `Setup QR` to open `http://192.168.4.1/wifi`.
-- STA connected: use `Setup QR` to open `http://<device-ip>/wifi`. The phone or
-  PC must be on the same Wi-Fi network as the device.
-- Tap the QR screen to return to the Network screen.
+- SoftAP モード: `Wi-Fi QR` で `StackChan-Direct` に接続し、続けて `Setup QR` で
+  `http://192.168.4.1/wifi` を開きます。
+- STA 接続済み: `Setup QR` で `http://<本体のIP>/wifi` を開きます。スマホや PC は
+  本体と同じ Wi-Fi に接続している必要があります。
+- QR 表示画面をタップすると Network 画面に戻ります。
 
-## On-Device Controls
+## 本体操作
 
-- Flick from an edge of the touch screen to show or hide the settings screen.
-- Use the settings tabs for Network, Display, Audio, Servo, and Pwr.
-- If Wi-Fi is not configured, the device starts a setup Wi-Fi network named
-  `StackChan-Direct`. Connect a phone or PC to it, then open
-  `http://192.168.4.1/wifi` to configure Wi-Fi.
-- Hold the Network settings page to switch between STA and SoftAP.
-- Use Display settings to adjust brightness or turn the screen off.
-- Use Audio settings to adjust speaker volume.
-- Use Servo settings to save the face reference position or return to the saved position.
-- Use Power settings to check thermal state, battery state, and low-power mode.
-- Low-power mode caps display brightness and reduces idle face updates and nodding motion.
-  Audio playback and lip-sync during speech continue.
-- Press the power button to toggle the display.
-- While the screen is off, petting and shake interactions are disabled.
-- When a WebSocket or USB Serial client is connected, tap the microphone overlay
-  on the right side of the face screen to mute or unmute mic streaming.
-- When a WebSocket or USB Serial client is connected, tap the camera overlay above the
-  microphone overlay to send a `camera_button` event. The device does not send
-  image data over WebSocket; network clients should call HTTP `POST /capture`,
-  and USB Serial clients should send a `capture.request` message.
+- タッチ画面の端からフリックすると、設定画面の表示/非表示を切り替えます。
+- 設定画面には Network / Display / Audio / Servo / Pwr のタブがあります。
+- Wi-Fi 未設定時は、本体が `StackChan-Direct` という設定用 Wi-Fi を出します。
+  スマホや PC をそこへ接続し、`http://192.168.4.1/wifi` を開くと Wi-Fi 設定ができます。
+- Network 設定ページを長押しすると、STA と SoftAP を切り替えます。
+- Display 設定では、明るさと画面オフを操作できます。
+- Audio 設定では、スピーカー音量を操作できます。
+- Servo 設定では、顔の基準位置を保存したり、保存済み位置へ戻したりできます。
+- Power 設定では、熱状態、バッテリー状態、低電力モードを確認/変更できます。
+- 低電力モードをオンにすると、画面の最大輝度を抑え、待機中の表情更新と首振り動作を減らします。
+  発話中の音声再生と口パクは継続します。
+- 電源ボタンを押すと、画面のオン/オフを切り替えます。
+- 画面オフ中は、なでなでやフリフリの反応は発生しません。
+- WebSocket または USB Serial クライアント接続中は、表情画面右側のマイク表示をタップすると
+  マイク送信のミュート/解除を切り替えます。
+- WebSocket または USB Serial クライアント接続中は、マイク表示の上にあるカメラ表示をタップすると
+  `camera_button` イベントを送ります。本体は WebSocket では画像を送らないため、
+  ネットワーク接続のクライアントは HTTP `POST /capture`、USB Serial クライアントは
+  `capture.request` メッセージで画像を取得します。
 
-## Connection Points
+## 接続口
 
 ### HTTP
 
-Base URL:
+ベース URL:
 
 ```text
 http://<stack-chan-ip>
 ```
 
-Endpoints:
+エンドポイント:
 
-| Method | Path | Description |
+| Method | Path | 説明 |
 | --- | --- | --- |
-| `GET` | `/status` | Returns device status as JSON. `charging` is `true` while charging or externally powered over USB/VBUS. |
-| `POST` | `/capture` | Captures a JPEG image from the camera. |
-| `OPTIONS` | `/status`, `/capture` | CORS preflight support. |
+| `GET` | `/status` | 本体状態を JSON で返します。`charging` は充電中または USB/VBUS 給電中なら `true` です。 |
+| `POST` | `/capture` | カメラで JPEG を撮影して返します。 |
+| `OPTIONS` | `/status`, `/capture` | CORS preflight 用です。 |
 
-Example `/status` response:
+`/status` のレスポンス例:
 
 ```json
 {
@@ -310,43 +300,41 @@ Example `/status` response:
 
 ### WebSocket
 
-Endpoint:
+エンドポイント:
 
 ```text
 ws://<stack-chan-ip>:8080/
 ```
 
-Text frames are UTF-8 JSON commands. Client-to-device binary frames are signed
-16-bit PCM audio for speaker playback. Device-to-client microphone binary frames
-use a 16-byte header followed by signed 16-bit PCM while the device is in
-listening state and mic streaming is not muted. While the remote VAD is inactive,
-the device may pause microphone frame transmission during local silence; it keeps
-the WebSocket connected and resumes with a short pre-roll when local input rises.
-Muting the microphone stops only the outgoing microphone audio stream; it does
-not disconnect the WebSocket client.
+text frame は UTF-8 JSON コマンドです。クライアントから本体へ送る binary frame は
+スピーカー再生用の signed 16-bit PCM 音声です。本体からクライアントへ送るマイク
+binary frame は 16 byte header の後ろに signed 16-bit PCM を入れ、listening 状態
+かつマイク送信がミュートされていない間に送ります。remote VAD が inactive の間は、
+本体側で無音と判定したときにマイク frame 送信を休止することがあります。WebSocket
+接続は維持し、音量が戻ると短い pre-roll 付きで送信を再開します。マイクのミュートは
+送信だけを止め、WebSocket 接続は切断しません。
 
-Audio settings:
+音声設定:
 
 ```text
 Sample rate: 16000 Hz
 Channels: 1
 Format: signed 16-bit PCM
-Recommended chunk: 40 ms microphone input, 60 ms playback
+Recommended chunk: mic input 40 ms, playback 60 ms
 Microphone packet: "MIC1" magic, uint32 little-endian seq, uint32 little-endian timestampMs, uint16 little-endian sampleCount, uint16 flags, PCM payload
 Microphone flags: bit 0 = stream segment start
 ```
 
 ### USB Serial
 
-The firmware also accepts the same command/event model over USB CDC / USB
-Serial. This path is intended for Android devices that open the CoreS3 USB port
-with Android USB Host APIs such as `usb-serial-for-android`.
+ファームウェアは、USB CDC / USB Serial でも同じ command/event モデルを受け付けます。
+Android 側で `usb-serial-for-android` などの USB Host API から CoreS3 の USB port を
+開き、Wi-Fi に依存せずに制御する用途を想定しています。
 
-The device supports two USB Serial input forms:
+USB Serial 入力は 2 形式に対応しています。
 
-- Newline-delimited raw JSON for simple diagnostics, for example
-  `{"type":"ping","id":"phone_001"}\n`.
-- Binary SCU1 frames for JSON, TTS PCM, microphone PCM, and capture image data.
+- 診断向けの改行区切り raw JSON。例: `{"type":"ping","id":"phone_001"}\n`
+- JSON、TTS PCM、マイク PCM、撮影画像を扱う binary SCU1 frame
 
 SCU1 frame layout:
 
@@ -362,117 +350,112 @@ payload   length bytes
 crc32     4 bytes  little-endian
 ```
 
-CRC32 uses the standard IEEE polynomial and covers `version` through `payload`;
-the `magic` bytes and final CRC field are not included.
+CRC32 は標準 IEEE polynomial を使い、`version` から `payload` までを対象にします。
+`magic` と最後の CRC field は含めません。
 
-Frame types:
+Frame type:
 
 | Type | Direction | Payload |
 | --- | --- | --- |
-| `0x01` JSON | both | UTF-8 JSON command/event |
+| `0x01` JSON | 双方向 | UTF-8 JSON command/event |
 | `0x02` TTS PCM | client to device | raw signed 16-bit little-endian PCM, 16 kHz mono |
-| `0x03` MIC PCM | device to client | existing `MIC1` microphone packet |
+| `0x03` MIC PCM | device to client | 既存の `MIC1` microphone packet |
 | `0x04` capture request | client to device | JSON request payload |
 | `0x05` capture image chunk | device to client | JPEG bytes |
 | `0x08` ping | client to device | optional JSON payload |
 | `0x09` pong | device to client | JSON payload |
 
-The same JSON commands listed below are accepted inside SCU1 type `0x01`.
-For TTS playback, send `{"type":"state","value":"speaking"}`, then one or more
-type `0x02` PCM frames, then `{"type":"state","value":"idle"}`. Playback starts
-after the prebuffer threshold is reached or when `idle` drains the remaining
-buffer.
+下記の WebSocket JSON コマンドと同じ JSON を、SCU1 type `0x01` の payload として
+送れます。TTS 再生では、まず `{"type":"state","value":"speaking"}` を送り、
+続けて type `0x02` の PCM frame を送り、最後に `{"type":"state","value":"idle"}`
+を送ります。再生はプリバッファ閾値に到達した時点、または `idle` による残りバッファの
+drain 時に開始します。
 
-USB Serial clients must treat the USB stream as mixed binary data. Development
-builds may print diagnostic text on the same CDC port, so clients should scan
-for the `SCU1` magic and resynchronize instead of assuming every byte belongs to
-a frame. See `docs/usb_serial_protocol.md` for the complete protocol and Android
-client notes.
+USB Serial クライアントは、USB stream を binary として扱ってください。開発ビルドでは
+同じ CDC port に診断ログが混ざることがあるため、受信側は常に `SCU1` magic をスキャンして
+再同期し、frame 外のテキストを読み飛ばす必要があります。完全な仕様と Android 側の注意点は
+`docs/usb_serial_protocol.ja.md` を参照してください。
 
-## WebSocket JSON Commands
+## WebSocket JSON コマンド
 
-Set the high-level state:
+状態を切り替える:
 
 ```json
 { "type": "state", "value": "listening" }
 ```
 
-Allowed values: `idle`, `listening`, `speaking`.
+`value`: `idle`, `listening`, `speaking`
 
-Set recognition result:
+認識結果を送る:
 
 ```json
 { "type": "auth", "result": "master" }
 ```
 
-Allowed values: `master`, `not_master`, `unknown`, `none`.
+`result`: `master`, `not_master`, `unknown`, `none`
 
-Set voice activity:
+発話検出状態を送る:
 
 ```json
 { "type": "vad", "active": true }
 ```
 
-Set face mode:
+表情モードを切り替える:
 
 ```json
 { "type": "face_mode", "value": "photo" }
 ```
 
-Allowed values: `normal`, `photo`, `photo_master`, `nadenade`, `pet`,
-`furifuri`, `shake`.
+`value`: `normal`, `photo`, `photo_master`, `nadenade`, `pet`, `furifuri`, `shake`
 
-Show a specific face image:
+特定の表情画像を表示する:
 
 ```json
 { "type": "face", "value": "idle" }
 ```
 
-Common values: `idle`, `listen`, `talk_0`, `talk_1`, `bad_0`, `bad_1`,
+主な `value`: `idle`, `listen`, `talk_0`, `talk_1`, `bad_0`, `bad_1`,
 `good_0`, `good_1`, `good_blink`, `photo_0`, `photo_1`, `photo_blink`,
 `photo_blink_talk`, `photo_master_0`, `photo_master_1`, `nadenade_0`,
-`nadenade_1`, `furifuri_0`, `furifuri_1`, `blink`, `smile`, and the optional
-guarded, attached, thermal, and low-power face names listed in the Face Images
-section.
+`nadenade_1`, `furifuri_0`, `furifuri_1`, `blink`, `smile`、および
+「表情画像の配置」にある guarded / attached / thermal / low-power 系の追加表情名
 
-Set motion:
+モーションを指定する:
 
 ```json
 { "type": "motion", "name": "center" }
 ```
 
-Allowed names: `center`, `look_left`, `look_right`, `look_away`, `not_master`,
-`nod`, `small_nod`, `small_bounce`, `lean_forward`, `wobble`, `shy_nod`,
-`thinking`.
+`name`: `center`, `look_left`, `look_right`, `look_away`, `not_master`, `nod`,
+`small_nod`, `small_bounce`, `lean_forward`, `wobble`, `shy_nod`, `thinking`
 
-Set servo pose directly:
+サーボ角を直接指定する:
 
 ```json
 { "type": "pose", "pan": 90, "tilt": 82 }
 ```
 
-Default servo limits are:
+初期設定の範囲:
 
 ```text
 pan: 45..135
 tilt: 60..120
 ```
 
-Set petting state:
+なでなで状態を送る:
 
 ```json
 { "type": "pet", "active": true }
 ```
 
-`nadenade` is accepted as an alias for `pet`.
+`nadenade` も `pet` の別名として受け付けます。
 
-## Affection Commands
+## 好感度コマンド
 
-The device owns the canonical affection state. It accepts event messages and
-applies weighting, cooldown, duplicate suppression, persistence, and display
-updates on the firmware side.
+好感度の正本は本体側が持ちます。本体はイベントメッセージを受け取り、
+重み、クールダウン、重複抑制、永続化、表示更新をファームウェア側で処理します。
 
-Inbound event example:
+本体が受け付けるイベント例:
 
 ```json
 {
@@ -486,7 +469,7 @@ Inbound event example:
 }
 ```
 
-Supported event names:
+対応イベント名:
 
 ```text
 talk
@@ -501,13 +484,13 @@ petting
 shake
 ```
 
-State request:
+状態取得リクエスト:
 
 ```json
 { "type": "affection.get", "requestId": "req-000002" }
 ```
 
-Device response:
+本体からのレスポンス:
 
 ```json
 {
@@ -525,68 +508,63 @@ Device response:
 }
 ```
 
-The device also broadcasts `interaction.event` messages for physical and
-device-side events such as `petting`, `shake`, `camera_button`, `session_start`,
-`level_up`, and `level_down`. `camera_button` is sent only while a WebSocket or
-USB Serial client is connected, uses phase `pressed`, and is locked until the
-next client text/binary response or a 30-second timeout.
+本体は `petting`, `shake`, `camera_button`, `session_start`, `level_up`,
+`level_down` などの物理/本体側イベントを `interaction.event` として broadcast
+します。`camera_button` は WebSocket または USB Serial クライアント接続中だけ送信し、
+phase は `pressed`、クライアントから次の text/binary 応答を受けるか 30 秒
+タイムアウトするまで再押下をロックします。
 
-Short-term state behavior:
+短期状態の扱い:
 
-- Immediately after a WebSocket connection, the device resets `mood` and
-  `confusion` to `0`, sends `affection.state`, then sends the `session_start`
-  `interaction.event`.
-- `mood` decays toward `0` by `2` every 10 seconds. `confusion` decays toward
-  `0` by `10` every 10 seconds.
-- During TTS playback and playback-buffer draining, natural decay and
-  decay-driven `affection.state` broadcasts are paused to prioritize smooth
-  audio playback.
-- Conversation-driven affection changes update the internal state and WebSocket
-  response immediately, while the on-screen heart meter and delta indicator are
-  refreshed after TTS playback.
-- Shake detection raises `confusion` to `100`.
+- WebSocket 接続直後は `mood` と `confusion` を `0` に戻した `affection.state` を送り、
+  その後に `session_start` の `interaction.event` を送ります。
+- `mood` は 10 秒ごとに `2` ずつ、`confusion` は 10 秒ごとに `10` ずつ `0` へ戻ります。
+- TTS 再生中と再生バッファのドレイン中は、音声再生を優先して自然減衰と
+  減衰由来の `affection.state` broadcast を止めます。
+- 会話由来の好感度変化は内部状態と WebSocket 応答にはすぐ反映し、画面のハートメーターと
+  差分表示は TTS 再生後にまとめて更新します。
+- ふりふり検知時は `confusion` を `100` まで上げます。
 
-Reset request:
+リセットリクエスト:
 
 ```json
 { "type": "affection.reset", "value": 500 }
 ```
 
-Debug adjust request:
+デバッグ用の増減リクエスト:
 
 ```json
 { "type": "affection.debug_adjust", "delta": 10 }
 ```
 
-Debug set request:
+デバッグ用の直接設定リクエスト:
 
 ```json
 { "type": "affection.debug_set", "levelIndex": 5, "mood": 40, "persist": false }
 ```
 
-See `docs/device_affection_api.md` for the detailed device-side affection API.
+本体側の好感度 API 詳細は `docs/device_affection_api.ja.md` を参照してください。
 
-## Troubleshooting
+## トラブルシュート
 
-- If Wi-Fi is not configured, connect to `StackChan-Direct` and open
-  `http://192.168.4.1/wifi` to register an SSID/password. When building from
-  source, you can also set `WIFI_SSID` / `WIFI_PASSWORD` in `src/config_private.h`.
-- If faces are missing, make sure all required PNG files are in `data/` and run
-  `pio run --target uploadfs`.
-- If HTTP works but WebSocket does not, check that the client connects to port
-  `8080`, not port `80`.
-- If SoftAP mode is active, connect the phone, PC, or other client device to
-  `StackChan-Direct` and use `192.168.4.1` as the device IP. The Wi-Fi setup
-  page is `/wifi`.
-- If USB Serial ping/pong times out, check that the client can resynchronize on
-  the `SCU1` magic and ignores diagnostic text printed before or between frames.
+- Wi-Fi が未設定の場合は、`StackChan-Direct` に接続して
+  `http://192.168.4.1/wifi` から SSID/password を登録してください。
+  ソースビルド時は `src/config_private.h` に `WIFI_SSID` / `WIFI_PASSWORD` を
+  設定することもできます。
+- 表情が表示されない場合は、必要な PNG が `data/` に揃っていることを確認し、
+  `pio run --target uploadfs` を実行してください。
+- HTTP は通るが WebSocket が通らない場合は、接続先が port `8080` になっているか確認してください。
+- SoftAP モードの場合は、スマホ、PC、その他のクライアント端末を `StackChan-Direct` に接続し、
+  IP に `192.168.4.1` を指定してください。Wi-Fi 設定ページは `/wifi` です。
+- USB Serial の ping/pong が timeout する場合は、アプリ側が `SCU1` magic へ再同期できているか、
+  frame の前後に混ざる診断テキストを読み飛ばせているか確認してください。
 
-## License Notes
+## ライセンスに関する注意
 
-Firmware source code in this repository is licensed under the MIT License. See
-`LICENSE`.
+このリポジトリのファームウェアソースコードは MIT License で公開します。詳細は
+`LICENSE` を参照してください。
 
-Direct third-party library license notes are listed in `THIRD_PARTY_NOTICES.md`.
+直接利用している外部ライブラリのライセンス概要は `THIRD_PARTY_NOTICES.md` にまとめています。
 
-This repository does not include third-party character image files. Prepare
-runtime images locally and follow the terms of the material you use.
+このリポジトリには第三者のキャラクター画像ファイルを含めていません。実行時用画像は
+ローカルで準備し、使用する素材の利用規約に従ってください。
