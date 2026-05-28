@@ -1,6 +1,6 @@
 # Stack-chan CoreS3 Controller
 
-[English](README.md) | [日本語](README.ja.md)
+[日本語](README.md) | [English](README.en.md)
 
 M5Stack CoreS3 ベースのスタックチャン用ファームウェアです。表情表示、サーボ動作、
 マイク/スピーカー音声ストリーミング、カメラ撮影、なでなで/ふりふり反応、
