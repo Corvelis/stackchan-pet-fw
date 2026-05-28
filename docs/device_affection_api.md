@@ -260,20 +260,24 @@ Phase values:
 the firmware broadcasts `affection.state` first, then sends the interaction
 event.
 
-`camera_button` is sent only while a WebSocket client is connected. It carries a
-monotonically increasing `seq` for button events and no image binary; clients
-should call HTTP `POST /capture` to fetch the JPEG. After sending
-`camera_button`, the device ignores further camera button presses until the next
-WebSocket text/binary response from the client or a 30-second timeout.
+`camera_button` is sent only while a WebSocket or USB Serial client is
+connected. It carries a monotonically increasing `seq` for button events and no
+image binary. Network clients should call HTTP `POST /capture` to fetch the
+JPEG; USB Serial clients should send a `capture.request` JSON message. After
+sending `camera_button`, the device ignores further camera button presses until
+the next client text/binary response or a 30-second timeout.
 
 ## TTS and Connection Modes
 
-When at least one WebSocket client is connected, the firmware is in connected
-mode. In connected mode, the device does not play template TTS by itself; it
-only sends interaction events and handles face/motion changes. The phone
-generates TTS and streams PCM back over the existing binary WebSocket path.
+When at least one WebSocket or USB Serial client is connected, the firmware is
+in connected mode. In connected mode, the device does not play template TTS by
+itself; it only sends interaction events and handles face/motion changes. The
+phone generates TTS and streams PCM back over the active client transport:
+WebSocket binary frames for network clients, or SCU1 type `0x02` frames for USB
+Serial clients.
 
-When no WebSocket client is connected, the device can be considered standalone.
+When no WebSocket or USB Serial client is connected, the device can be
+considered standalone.
 Local voice/effect playback for standalone mode is a future extension.
 
 ## Compatibility and Fallbacks
@@ -302,7 +306,7 @@ Firmware behavior:
 - `confusion` is reset to `0`.
 - `seq` is incremented.
 - The state is saved immediately.
-- `affection.state` is broadcast when a WebSocket client is connected.
+- `affection.state` is broadcast when a WebSocket or USB Serial client is connected.
 
 The current firmware ignores `mode` and `reason` if they are present.
 
@@ -323,7 +327,7 @@ Firmware behavior:
 - `delta` is applied to `affection`.
 - The final value is clamped to `0..1000`.
 - `mood` and `confusion` are not changed by this command.
-- `affection.state` is broadcast when a WebSocket client is connected.
+- `affection.state` is broadcast when a WebSocket or USB Serial client is connected.
 
 This command is intended for tuning and diagnostics.
 

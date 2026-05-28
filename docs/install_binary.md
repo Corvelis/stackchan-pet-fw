@@ -20,7 +20,7 @@ stackchan_cores3_factory.bin
 
 - This binary is only for M5Stack CoreS3. Do not flash it to other devices.
 - Conversation does not work with this firmware alone.
-- Conversation, speech recognition, TTS, and response generation require a compatible phone app or WebSocket client.
+- Conversation, speech recognition, TTS, and response generation require a compatible phone app, WebSocket client, or USB Serial client.
 - Existing users should normally update with `stackchan_cores3_firmware.bin`.
 - Flashing the factory image resets saved Wi-Fi settings and servo home calibration on the device.
 - Images included in the binary must not be extracted and reused as material assets.
@@ -185,9 +185,10 @@ Follow the page and save the SSID/password for the Wi-Fi network you normally us
 
 Conversation does not work with this firmware alone.
 A compatible phone app is planned for a future upload.
-If you want to connect your own WebSocket client, see the API documentation in
+If you want to connect your own WebSocket or USB Serial client, see the API documentation in
 [README.md](../README.md#connection-points) and
-[the affection API details](device_affection_api.md).
+[the affection API details](device_affection_api.md). For USB Serial framing,
+see [USB Serial Protocol](usb_serial_protocol.md).
 
 ## Basic Usage
 
@@ -205,9 +206,9 @@ If you want to connect your own WebSocket client, see the API documentation in
   Audio playback and lip-sync during speech continue.
 - Short-press the power button to turn the screen on or off.
 - While the screen is off, petting and shake interactions are disabled. They resume when the screen is turned on.
-- When a WebSocket client is connected, tap the microphone overlay on the right side of the face screen to mute or unmute mic streaming.
-- When a WebSocket client is connected, tap the camera overlay above the microphone overlay to send a `camera_button` event.
-  The device does not send image data over WebSocket; the client should call HTTP `POST /capture` to fetch the JPEG.
+- When a WebSocket or USB Serial client is connected, tap the microphone overlay on the right side of the face screen to mute or unmute mic streaming.
+- When a WebSocket or USB Serial client is connected, tap the camera overlay above the microphone overlay to send a `camera_button` event.
+  Network clients should call HTTP `POST /capture`; USB Serial clients should send `capture.request`.
 
 ### 7. Calibrate servo home
 

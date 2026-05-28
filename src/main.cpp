@@ -81,6 +81,7 @@ bool displayOn = true;
 bool wsStarted = false;
 bool httpStarted = false;
 bool wsClientConnected = false;
+bool usbSerialClientConnected = false;
 NetworkQrType activeNetworkQr = NetworkQrType::None;
 unsigned long lastWifiCheckMs = 0;
 unsigned long lastInfoDrawMs = 0;
@@ -122,6 +123,34 @@ unsigned long lastInitializeDrawMs = 0;
 unsigned long lastFaceUpdateMs = 0;
 uint8_t initializeSpinnerFrame = 0;
 unsigned long interactionReadyAtMs = 0;
+unsigned long usbSerialLastRxMs = 0;
+size_t usbSerialLineLength = 0;
+bool usbSerialLineOverflow = false;
+char usbSerialLineBuffer[USB_SERIAL_LINE_BUFFER_BYTES] = {};
+bool usbSerialFramedMode = false;
+uint32_t usbSerialTxSeq = 0;
+uint8_t usbSerialFrameHeader[16] = {};
+uint8_t usbSerialFramePayload[USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES] = {};
+uint8_t usbSerialHeaderIndex = 0;
+uint32_t usbSerialFrameLength = 0;
+uint32_t usbSerialPayloadIndex = 0;
+uint8_t usbSerialCrcIndex = 0;
+uint8_t usbSerialFrameCrcBytes[4] = {};
+uint8_t usbSerialMagicIndex = 0;
+uint32_t usbSerialTtsFrameCount = 0;
+uint32_t usbSerialTtsTotalBytes = 0;
+unsigned long usbSerialSpeakingReceivedMs = 0;
+unsigned long usbSerialFirstPcmMs = 0;
+unsigned long usbSerialLastPcmMs = 0;
+uint32_t usbSerialRxDiagEventCount = 0;
+enum class UsbSerialRxState : uint8_t {
+  Line,
+  Header,
+  Payload,
+  Crc,
+  DropFrame,
+};
+UsbSerialRxState usbSerialRxState = UsbSerialRxState::Line;
 struct WifiCredential {
   String ssid;
   String password;
@@ -144,6 +173,15 @@ uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
 void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
 bool sendCameraButtonEvent(unsigned long now);
+bool appClientConnected();
+void updateUsbSerial(unsigned long now);
+bool sendUsbSerialJson(const char* payload);
+bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags = 0);
+bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context);
+void handleUsbSerialLine(const uint8_t* payload, size_t length);
+void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length);
+void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length);
+void handleUsbSerialCaptureRequest(JsonDocument& doc);
 void updateCameraButtonPending(unsigned long now);
 void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
@@ -155,6 +193,63 @@ void drawInfoScreen();
 void applyDisplayBrightness();
 void applyLowPowerMode(bool enabled, bool persist);
 bool audioBusyForServoCalibration();
+
+constexpr uint8_t kUsbSerialMagic[4] = {'S', 'C', 'U', '1'};
+constexpr uint8_t kUsbSerialVersion = 0x01;
+constexpr uint8_t kUsbSerialTypeJson = 0x01;
+constexpr uint8_t kUsbSerialTypeTtsPcm = 0x02;
+constexpr uint8_t kUsbSerialTypeMicPcm = 0x03;
+constexpr uint8_t kUsbSerialTypeCaptureRequest = 0x04;
+constexpr uint8_t kUsbSerialTypeCaptureImageChunk = 0x05;
+constexpr uint8_t kUsbSerialTypeAck = 0x06;
+constexpr uint8_t kUsbSerialTypeError = 0x07;
+constexpr uint8_t kUsbSerialTypePing = 0x08;
+constexpr uint8_t kUsbSerialTypePong = 0x09;
+
+const char* chanStateName(ChanState state) {
+  switch (state) {
+    case ChanState::Idle:
+      return "Idle";
+    case ChanState::Listening:
+      return "Listening";
+    case ChanState::Speaking:
+      return "Speaking";
+  }
+  return "Unknown";
+}
+
+uint32_t readLe32(const uint8_t* data) {
+  return static_cast<uint32_t>(data[0]) |
+         (static_cast<uint32_t>(data[1]) << 8) |
+         (static_cast<uint32_t>(data[2]) << 16) |
+         (static_cast<uint32_t>(data[3]) << 24);
+}
+
+void writeLe32(uint8_t* data, uint32_t value) {
+  data[0] = static_cast<uint8_t>(value & 0xff);
+  data[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+  data[2] = static_cast<uint8_t>((value >> 16) & 0xff);
+  data[3] = static_cast<uint8_t>((value >> 24) & 0xff);
+}
+
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
+    }
+  }
+  return crc;
+}
+
+void printHexBytes(const uint8_t* data, size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    Serial.printf("%02x", data[i]);
+    if (i + 1 < length) {
+      Serial.print(' ');
+    }
+  }
+}
 
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
@@ -208,6 +303,10 @@ bool audioBusyForUiEffects() {
   return currentState == ChanState::Speaking ||
          audioController.state() == ChanState::Speaking ||
          audioController.isPlaybackDraining();
+}
+
+bool appClientConnected() {
+  return wsClientConnected || usbSerialClientConnected;
 }
 
 void updatePendingAffectionDelta() {
@@ -468,7 +567,7 @@ uint8_t effectiveBrightness() {
   if (deviceSettings.lowPowerMode) {
     return min<uint8_t>(deviceSettings.brightness, DISPLAY_LOW_POWER_BRIGHTNESS_MAX);
   }
-  if (!infoScreenVisible && wsClientConnected &&
+  if (!infoScreenVisible && appClientConnected() &&
       (currentState == ChanState::Listening || currentState == ChanState::Speaking ||
        audioController.state() == ChanState::Listening || audioController.state() == ChanState::Speaking)) {
     const uint16_t dimmed = static_cast<uint16_t>(deviceSettings.brightness) * DISPLAY_CONVERSATION_BRIGHTNESS_PERCENT / 100;
@@ -481,7 +580,7 @@ ThermalFaceMode thermalFaceModeForLevel(ThermalLevel level) {
   if (level == ThermalLevel::Hot) {
     return ThermalFaceMode::Hot;
   }
-  if (level == ThermalLevel::Warm && !wsClientConnected) {
+  if (level == ThermalLevel::Warm && !appClientConnected()) {
     return ThermalFaceMode::Warm;
   }
   return ThermalFaceMode::Normal;
@@ -921,7 +1020,7 @@ void updateBatteryStatus() {
 }
 
 void updateMicStatusOverlay() {
-  faceController.setMicState(wsClientConnected, audioController.micMuted(), audioController.isMicStreaming());
+  faceController.setMicState(appClientConnected(), audioController.micMuted(), audioController.isMicStreaming());
 }
 
 void updateThermalStatus(unsigned long now) {
@@ -1244,6 +1343,7 @@ void handleStatusRequest() {
   doc["cameraReady"] = cameraManager.isReady();
   doc["networkMode"] = networkModeName();
   doc["wsClientConnected"] = wsClientConnected;
+  doc["usbSerialClientConnected"] = usbSerialClientConnected;
   doc["affection"] = affection.affection;
   doc["mood"] = affection.mood;
   doc["confusion"] = affection.confusion;
@@ -1399,7 +1499,8 @@ void drawNetworkSettingsPage() {
     M5.Display.println("WS: not ready");
   }
 
-  M5.Display.printf("Client: %s\n", wsClientConnected ? "connected" : "disconnected");
+  M5.Display.printf("Client: %s\n", appClientConnected() ? "connected" : "disconnected");
+  M5.Display.printf("USB: %s\n", usbSerialClientConnected ? "connected" : "waiting");
   M5.Display.println();
   M5.Display.printf("Hold: switch to %s\n", networkMode == NetworkMode::SoftAp ? "STA" : "SoftAP");
 }
@@ -1842,15 +1943,47 @@ void updateDeferredFaceMode() {
 }
 
 void handleStateCommand(const char* value) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  const ChanState stateBefore = currentState;
+  const ChanState audioBefore = audioController.state();
+#endif
   if (strcmp(value, "idle") == 0) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+    Serial.printf("USB JSON state idle received state before=%s audio_before=%s\n",
+                  chanStateName(stateBefore),
+                  chanStateName(audioBefore));
+#endif
     setState(ChanState::Idle);
   } else if (strcmp(value, "listening") == 0) {
     setState(ChanState::Listening);
   } else if (strcmp(value, "speaking") == 0) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+    usbSerialSpeakingReceivedMs = millis();
+    usbSerialFirstPcmMs = 0;
+    usbSerialLastPcmMs = 0;
+    usbSerialTtsFrameCount = 0;
+    usbSerialTtsTotalBytes = 0;
+    Serial.printf("USB JSON state speaking received state before=%s audio_before=%s\n",
+                  chanStateName(stateBefore),
+                  chanStateName(audioBefore));
+#endif
     setState(ChanState::Speaking);
   } else {
     Serial.printf("[json] unsupported state: %s\n", value);
+    return;
   }
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  if (strcmp(value, "idle") == 0 || strcmp(value, "speaking") == 0) {
+    Serial.printf("USB JSON state %s processed state after=%s audio_after=%s\n",
+                  value,
+                  chanStateName(currentState),
+                  chanStateName(audioController.state()));
+    if (strcmp(value, "idle") == 0 && usbSerialLastPcmMs != 0) {
+      Serial.printf("TTS timing last_pcm_to_idle_ms=%lu\n",
+                    static_cast<unsigned long>(millis() - usbSerialLastPcmMs));
+    }
+  }
+#endif
 }
 
 void handleFaceModeCommand(const char* value) {
@@ -1953,8 +2086,105 @@ void writeAffectionState(JsonDocument& doc, const char* requestId, unsigned long
   writeAffectionSnapshot(doc, now);
 }
 
+bool sendUsbSerialJson(const char* payload) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  if (!usbSerialClientConnected || payload == nullptr) {
+    return false;
+  }
+  if (usbSerialFramedMode) {
+    const bool sent = sendUsbSerialFrame(kUsbSerialTypeJson,
+                                         reinterpret_cast<const uint8_t*>(payload),
+                                         strlen(payload));
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+    Serial.printf("USB TX JSON framed length=%u ok=%d at_ms=%lu\n",
+                  static_cast<unsigned>(strlen(payload)),
+                  sent ? 1 : 0,
+                  static_cast<unsigned long>(millis()));
+#endif
+    return sent;
+  }
+  const size_t payloadWritten = Serial.write(reinterpret_cast<const uint8_t*>(payload), strlen(payload));
+  const size_t newlineWritten = Serial.write('\n');
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+  Serial.printf("USB TX JSON line length=%u wrote=%u ok=%d at_ms=%lu\n",
+                static_cast<unsigned>(strlen(payload)),
+                static_cast<unsigned>(payloadWritten + newlineWritten),
+                (payloadWritten == strlen(payload) && newlineWritten == 1) ? 1 : 0,
+                static_cast<unsigned long>(millis()));
+#endif
+  return true;
+#else
+  (void)payload;
+  return false;
+#endif
+}
+
+bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  if (!usbSerialClientConnected || length > USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES ||
+      (length > 0 && payload == nullptr)) {
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+    Serial.printf("USB TX frame skipped type=0x%02x length=%u connected=%d\n",
+                  type,
+                  static_cast<unsigned>(length),
+                  usbSerialClientConnected ? 1 : 0);
+#endif
+    return false;
+  }
+
+  uint8_t header[16] = {
+    'S', 'C', 'U', '1',
+    kUsbSerialVersion,
+    type,
+    flags,
+    0,
+  };
+  writeLe32(header + 8, usbSerialTxSeq++);
+  writeLe32(header + 12, static_cast<uint32_t>(length));
+
+  uint32_t crc = 0xFFFFFFFFUL;
+  crc = crc32Update(crc, header + 4, 12);
+  if (length > 0) {
+    crc = crc32Update(crc, payload, length);
+  }
+  crc = ~crc;
+
+  uint8_t crcBytes[4];
+  writeLe32(crcBytes, crc);
+  const size_t headerWritten = Serial.write(header, sizeof(header));
+  size_t payloadWritten = 0;
+  if (length > 0) {
+    payloadWritten = Serial.write(payload, length);
+  }
+  const size_t crcWritten = Serial.write(crcBytes, sizeof(crcBytes));
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+  if (type == kUsbSerialTypePong || type == kUsbSerialTypeJson || type == kUsbSerialTypeError) {
+    Serial.printf("USB TX frame type=0x%02x seq=%lu length=%u wrote=%u/%u at_ms=%lu\n",
+                  type,
+                  static_cast<unsigned long>(usbSerialTxSeq - 1),
+                  static_cast<unsigned>(length),
+                  static_cast<unsigned>(headerWritten + payloadWritten + crcWritten),
+                  static_cast<unsigned>(sizeof(header) + length + sizeof(crcBytes)),
+                  static_cast<unsigned long>(millis()));
+  }
+#endif
+  return true;
+#else
+  (void)type;
+  (void)payload;
+  (void)length;
+  (void)flags;
+  return false;
+#endif
+}
+
+bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context) {
+  (void)context;
+  return sendUsbSerialFrame(kUsbSerialTypeMicPcm, payload, length);
+}
+
 void sendAffectionState(const char* requestId) {
-  if (!wsServer.hasClient()) {
+  if (!wsServer.hasClient() && !usbSerialClientConnected) {
     return;
   }
 
@@ -1963,11 +2193,14 @@ void sendAffectionState(const char* requestId) {
 
   String body;
   serializeJson(doc, body);
-  wsServer.sendText(body.c_str());
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
 }
 
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now) {
-  if (!wsServer.hasClient() || event == nullptr || phase == nullptr) {
+  if ((!wsServer.hasClient() && !usbSerialClientConnected) || event == nullptr || phase == nullptr) {
     return;
   }
 
@@ -1980,11 +2213,14 @@ void sendInteractionEvent(const char* event, const char* phase, unsigned long no
 
   String body;
   serializeJson(doc, body);
-  wsServer.sendText(body.c_str());
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
 }
 
 bool sendCameraButtonEvent(unsigned long now) {
-  if (!wsServer.hasClient()) {
+  if (!appClientConnected()) {
     return false;
   }
   updateCameraButtonPending(now);
@@ -2008,7 +2244,10 @@ bool sendCameraButtonEvent(unsigned long now) {
 
   String body;
   serializeJson(doc, body);
-  wsServer.sendText(body.c_str());
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
   Serial.printf("[interaction] camera_button pressed seq=%lu\n",
                 static_cast<unsigned long>(cameraButtonEventSeq));
   return true;
@@ -2018,7 +2257,7 @@ void updateCameraButtonPending(unsigned long now) {
   if (!cameraButtonPending) {
     return;
   }
-  if (!wsServer.hasClient()) {
+  if (!appClientConnected()) {
     clearCameraButtonPending("disconnect");
     return;
   }
@@ -2064,28 +2303,28 @@ void handleAffectionEventCommand(JsonDocument& doc) {
                           (strcmp(eventName, "talk") == 0 ||
                            strcmp(eventName, "positive_talk") == 0 ||
                            strcmp(eventName, "negative_talk") == 0);
-  applyAffectionResult(result, now, true, doc["requestId"] | nullptr, deferDelta);
+  applyAffectionResult(result, now, true, doc["requestId"] | "", deferDelta);
   if (result.duplicate) {
-    sendAffectionState(doc["requestId"] | nullptr);
+    sendAffectionState(doc["requestId"] | "");
   }
 }
 
 void handleAffectionGetCommand(JsonDocument& doc) {
-  sendAffectionState(doc["requestId"] | nullptr);
+  sendAffectionState(doc["requestId"] | "");
 }
 
 void handleAffectionResetCommand(JsonDocument& doc) {
   const int value = doc["value"] | 500;
   const unsigned long now = millis();
   const AffectionApplyResult result = affectionController.reset(value);
-  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+  applyAffectionResult(result, now, true, doc["requestId"] | "");
 }
 
 void handleAffectionDebugAdjustCommand(JsonDocument& doc) {
   const int delta = doc["delta"] | 0;
   const unsigned long now = millis();
   const AffectionApplyResult result = affectionController.debugAdjust(delta);
-  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+  applyAffectionResult(result, now, true, doc["requestId"] | "");
 }
 
 void handleAffectionDebugSetCommand(JsonDocument& doc) {
@@ -2111,9 +2350,9 @@ void handleAffectionDebugSetCommand(JsonDocument& doc) {
     confusion,
     persist
   );
-  applyAffectionResult(result, now, true, doc["requestId"] | nullptr);
+  applyAffectionResult(result, now, true, doc["requestId"] | "");
   if (!result.applied) {
-    sendAffectionState(doc["requestId"] | nullptr);
+    sendAffectionState(doc["requestId"] | "");
   }
 }
 
@@ -2189,6 +2428,476 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
   } else {
     Serial.printf("[json] unsupported type: %s\n", type);
   }
+}
+
+void handleUsbSerialLine(const uint8_t* payload, size_t length) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  if (payload == nullptr || length == 0) {
+    return;
+  }
+  usbSerialFramedMode = false;
+  handleUsbSerialJsonPayload(payload, length);
+#else
+  (void)payload;
+  (void)length;
+#endif
+}
+
+void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, payload, length);
+  if (error) {
+    if (usbSerialClientConnected) {
+      JsonDocument err;
+      err["type"] = "error";
+      err["source"] = "usb_serial";
+      err["error"] = "json_parse";
+      err["detail"] = error.c_str();
+      String body;
+      serializeJson(err, body);
+      sendUsbSerialJson(body.c_str());
+    }
+    return;
+  }
+
+  usbSerialClientConnected = true;
+  usbSerialLastRxMs = millis();
+  audioController.setUsbSerialClientConnected(true);
+  updateMicStatusOverlay();
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+  Serial.printf("USB client connected at_ms=%lu framed=%d\n",
+                static_cast<unsigned long>(usbSerialLastRxMs),
+                usbSerialFramedMode ? 1 : 0);
+#endif
+
+  const char* type = doc["type"] | "";
+  if (strcmp(type, "ping") == 0) {
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+    Serial.printf("USB ping JSON received id=%s at_ms=%lu framed=%d\n",
+                  doc["id"] | "",
+                  static_cast<unsigned long>(millis()),
+                  usbSerialFramedMode ? 1 : 0);
+#endif
+    JsonDocument pong;
+    pong["type"] = "pong";
+    const char* id = doc["id"] | "";
+    if (id != nullptr && id[0] != '\0') {
+      pong["id"] = id;
+    }
+    pong["timestampMs"] = millis();
+
+    String body;
+    serializeJson(pong, body);
+    const bool sent = sendUsbSerialJson(body.c_str());
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+    Serial.printf("USB pong JSON sent ok=%d at_ms=%lu\n",
+                  sent ? 1 : 0,
+                  static_cast<unsigned long>(millis()));
+#endif
+    return;
+  }
+  if (strcmp(type, "capture.request") == 0) {
+    handleUsbSerialCaptureRequest(doc);
+    return;
+  }
+
+  clearCameraButtonPending("usb_serial");
+  handleJsonCommand(payload, length);
+#else
+  (void)payload;
+  (void)length;
+#endif
+}
+
+void handleUsbSerialCaptureRequest(JsonDocument& doc) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  const char* requestId = doc["id"] | "";
+  JsonDocument start;
+  start["type"] = "capture.start";
+  if (requestId[0] != '\0') {
+    start["id"] = requestId;
+  }
+
+  faceController.setPhotoFaceMode(true);
+  faceController.showFace("photo_0");
+  const bool micPausedForCapture = CAMERA_PAUSE_MIC_DURING_CAPTURE
+                                     ? audioController.pauseMicForCapture()
+                                     : false;
+
+  if (!cameraManager.isReady() && !cameraManager.init()) {
+    audioController.resumeMicAfterCapture(micPausedForCapture);
+    JsonDocument end;
+    end["type"] = "capture.end";
+    if (requestId[0] != '\0') {
+      end["id"] = requestId;
+    }
+    end["ok"] = false;
+    end["error"] = "camera_not_ready";
+    String body;
+    serializeJson(end, body);
+    sendUsbSerialJson(body.c_str());
+    return;
+  }
+
+  uint8_t* jpg = nullptr;
+  size_t jpgLen = 0;
+  if (!cameraManager.captureJpeg(&jpg, &jpgLen)) {
+    cameraManager.deinit();
+    audioController.resumeMicAfterCapture(micPausedForCapture);
+    JsonDocument end;
+    end["type"] = "capture.end";
+    if (requestId[0] != '\0') {
+      end["id"] = requestId;
+    }
+    end["ok"] = false;
+    end["error"] = "capture_failed";
+    String body;
+    serializeJson(end, body);
+    sendUsbSerialJson(body.c_str());
+    return;
+  }
+
+  start["contentType"] = "image/jpeg";
+  start["length"] = static_cast<uint32_t>(jpgLen);
+  String body;
+  serializeJson(start, body);
+  sendUsbSerialJson(body.c_str());
+
+  size_t offset = 0;
+  while (offset < jpgLen) {
+    const size_t chunk = min(static_cast<size_t>(USB_SERIAL_CAPTURE_CHUNK_BYTES), jpgLen - offset);
+    sendUsbSerialFrame(kUsbSerialTypeCaptureImageChunk, jpg + offset, chunk);
+    offset += chunk;
+    delay(1);
+  }
+
+  cameraManager.releaseBuffer(jpg);
+  cameraManager.deinit();
+  delay(80);
+  audioController.resumeMicAfterCapture(micPausedForCapture);
+  audioController.deferNextSpeakerStartUntil(millis() + AUDIO_AFTER_CAPTURE_SPEAKER_DELAY_MS);
+
+  JsonDocument end;
+  end["type"] = "capture.end";
+  if (requestId[0] != '\0') {
+    end["id"] = requestId;
+  }
+  end["ok"] = true;
+  body = "";
+  serializeJson(end, body);
+  sendUsbSerialJson(body.c_str());
+#else
+  (void)doc;
+#endif
+}
+
+void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  (void)flags;
+  usbSerialClientConnected = true;
+  usbSerialFramedMode = true;
+  usbSerialLastRxMs = millis();
+  audioController.setUsbSerialClientConnected(true);
+  updateMicStatusOverlay();
+
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+  if (type == kUsbSerialTypeJson || type == kUsbSerialTypeTtsPcm || type == kUsbSerialTypePing) {
+    Serial.printf("SCU1 rx type=0x%02x seq=%lu length=%u crc_ok=1\n",
+                  type,
+                  static_cast<unsigned long>(seq),
+                  static_cast<unsigned>(length));
+  }
+#endif
+
+  switch (type) {
+    case kUsbSerialTypeJson:
+      handleUsbSerialJsonPayload(payload, length);
+      break;
+    case kUsbSerialTypeTtsPcm: {
+      clearCameraButtonPending("usb_audio");
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+      const unsigned long now = millis();
+      if (usbSerialFirstPcmMs == 0) {
+        usbSerialFirstPcmMs = now;
+        if (usbSerialSpeakingReceivedMs != 0) {
+          Serial.printf("TTS timing speaking_to_first_pcm_ms=%lu\n",
+                        static_cast<unsigned long>(now - usbSerialSpeakingReceivedMs));
+        }
+      }
+      usbSerialLastPcmMs = now;
+      ++usbSerialTtsFrameCount;
+      usbSerialTtsTotalBytes += static_cast<uint32_t>(length);
+      uint32_t nonZeroSamples = 0;
+      int32_t peakAbs = 0;
+      const size_t sampleCount = length / sizeof(int16_t);
+      for (size_t i = 0; i < sampleCount; ++i) {
+        const int16_t sample = static_cast<int16_t>(
+          static_cast<uint16_t>(payload[i * 2]) |
+          (static_cast<uint16_t>(payload[i * 2 + 1]) << 8)
+        );
+        if (sample != 0) {
+          ++nonZeroSamples;
+        }
+        const int32_t absSample = sample == INT16_MIN ? 32768 : abs(sample);
+        if (absSample > peakAbs) {
+          peakAbs = absSample;
+        }
+      }
+      Serial.printf("USB TTS PCM received length=%u state=%s audio_state=%s total_usb_tts_bytes=%lu frame_count=%lu\n",
+                    static_cast<unsigned>(length),
+                    chanStateName(currentState),
+                    chanStateName(audioController.state()),
+                    static_cast<unsigned long>(usbSerialTtsTotalBytes),
+                    static_cast<unsigned long>(usbSerialTtsFrameCount));
+      if (audioController.state() != ChanState::Speaking) {
+        Serial.printf("USB TTS PCM dropped reason=not_speaking state=%s audio_state=%s\n",
+                      chanStateName(currentState),
+                      chanStateName(audioController.state()));
+      }
+      if (usbSerialTtsFrameCount <= 6 || (usbSerialTtsFrameCount % 10) == 0) {
+        Serial.printf("USB TTS PCM stats length=%u non_zero_samples=%lu peak_abs=%ld\n",
+                      static_cast<unsigned>(length),
+                      static_cast<unsigned long>(nonZeroSamples),
+                      static_cast<long>(peakAbs));
+      }
+#endif
+      audioController.onBinaryReceived(const_cast<uint8_t*>(payload), length);
+      break;
+    }
+    case kUsbSerialTypeCaptureRequest:
+      if (length > 0) {
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (!error) {
+          handleUsbSerialCaptureRequest(doc);
+        }
+      }
+      break;
+    case kUsbSerialTypePing: {
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+      Serial.printf("USB ping frame received seq=%lu length=%u at_ms=%lu\n",
+                    static_cast<unsigned long>(seq),
+                    static_cast<unsigned>(length),
+                    static_cast<unsigned long>(millis()));
+#endif
+      JsonDocument pong;
+      pong["type"] = "pong";
+      if (length > 0) {
+        JsonDocument ping;
+        if (!deserializeJson(ping, payload, length)) {
+          const char* id = ping["id"] | "";
+          if (id[0] != '\0') {
+            pong["id"] = id;
+          }
+        }
+      }
+      pong["timestampMs"] = millis();
+      String body;
+      serializeJson(pong, body);
+      const bool sent = sendUsbSerialFrame(kUsbSerialTypePong, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+      Serial.printf("USB pong frame sent ok=%d at_ms=%lu\n",
+                    sent ? 1 : 0,
+                    static_cast<unsigned long>(millis()));
+#endif
+      break;
+    }
+    default: {
+      JsonDocument err;
+      err["type"] = "error";
+      err["source"] = "usb_serial";
+      err["error"] = "unsupported_frame_type";
+      err["frameType"] = type;
+      String body;
+      serializeJson(err, body);
+      sendUsbSerialJson(body.c_str());
+      break;
+    }
+  }
+#else
+  (void)type;
+  (void)flags;
+  (void)seq;
+  (void)payload;
+  (void)length;
+#endif
+}
+
+void updateUsbSerial(unsigned long now) {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  if (usbSerialClientConnected && now - usbSerialLastRxMs > USB_SERIAL_CLIENT_TIMEOUT_MS) {
+    usbSerialClientConnected = false;
+    usbSerialFramedMode = false;
+    audioController.setUsbSerialClientConnected(false);
+    updateMicStatusOverlay();
+    clearCameraButtonPending("usb_timeout");
+  }
+
+  uint8_t rxDiagFirstBytes[16] = {};
+  size_t rxDiagFirstLength = 0;
+  size_t rxDiagBytesRead = 0;
+  size_t budget = USB_SERIAL_READ_BUDGET_BYTES;
+  while (budget-- > 0 && Serial.available() > 0) {
+    const int value = Serial.read();
+    if (value < 0) {
+      break;
+    }
+    if (rxDiagFirstLength < sizeof(rxDiagFirstBytes)) {
+      rxDiagFirstBytes[rxDiagFirstLength++] = static_cast<uint8_t>(value);
+    }
+    ++rxDiagBytesRead;
+
+    const char ch = static_cast<char>(value);
+    switch (usbSerialRxState) {
+      case UsbSerialRxState::Line:
+        if (static_cast<uint8_t>(value) == kUsbSerialMagic[usbSerialMagicIndex]) {
+          if (usbSerialMagicIndex == 0) {
+            usbSerialLineLength = 0;
+            usbSerialLineOverflow = false;
+          }
+          usbSerialFrameHeader[usbSerialMagicIndex++] = static_cast<uint8_t>(value);
+          if (usbSerialMagicIndex == sizeof(kUsbSerialMagic)) {
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+            Serial.printf("USB RX SCU1 magic detected at_ms=%lu\n",
+                          static_cast<unsigned long>(millis()));
+#endif
+            usbSerialRxState = UsbSerialRxState::Header;
+            usbSerialHeaderIndex = sizeof(kUsbSerialMagic);
+            usbSerialMagicIndex = 0;
+          }
+          continue;
+        }
+        if (usbSerialMagicIndex != 0) {
+          for (uint8_t i = 0; i < usbSerialMagicIndex; ++i) {
+            if (usbSerialLineLength + 1 < USB_SERIAL_LINE_BUFFER_BYTES && !usbSerialLineOverflow) {
+              usbSerialLineBuffer[usbSerialLineLength++] = static_cast<char>(kUsbSerialMagic[i]);
+              usbSerialLineBuffer[usbSerialLineLength] = '\0';
+            }
+          }
+          usbSerialMagicIndex = 0;
+        }
+        if (ch == '\r') {
+          continue;
+        }
+        if (ch == '\n') {
+          if (!usbSerialLineOverflow && usbSerialLineLength > 0) {
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+            Serial.printf("USB RX raw JSON line length=%u at_ms=%lu\n",
+                          static_cast<unsigned>(usbSerialLineLength),
+                          static_cast<unsigned long>(millis()));
+#endif
+            handleUsbSerialLine(reinterpret_cast<const uint8_t*>(usbSerialLineBuffer), usbSerialLineLength);
+          }
+          usbSerialLineLength = 0;
+          usbSerialLineOverflow = false;
+          continue;
+        }
+
+        if (usbSerialLineLength + 1 >= USB_SERIAL_LINE_BUFFER_BYTES) {
+          usbSerialLineOverflow = true;
+          continue;
+        }
+        if (!usbSerialLineOverflow) {
+          usbSerialLineBuffer[usbSerialLineLength++] = ch;
+          usbSerialLineBuffer[usbSerialLineLength] = '\0';
+        }
+        break;
+
+      case UsbSerialRxState::Header:
+        usbSerialFrameHeader[usbSerialHeaderIndex++] = static_cast<uint8_t>(value);
+        if (usbSerialHeaderIndex >= sizeof(usbSerialFrameHeader)) {
+          usbSerialFrameLength = readLe32(usbSerialFrameHeader + 12);
+          usbSerialPayloadIndex = 0;
+          usbSerialCrcIndex = 0;
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+          Serial.printf("SCU1 header version=0x%02x type=0x%02x seq=%lu length=%lu at_ms=%lu\n",
+                        usbSerialFrameHeader[4],
+                        usbSerialFrameHeader[5],
+                        static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                        static_cast<unsigned long>(usbSerialFrameLength),
+                        static_cast<unsigned long>(millis()));
+#endif
+          if (usbSerialFrameHeader[4] != kUsbSerialVersion ||
+              usbSerialFrameLength > USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES) {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+            Serial.printf("SCU1 invalid header version=0x%02x seq=%lu length=%lu max=%u\n",
+                          usbSerialFrameHeader[4],
+                          static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                          static_cast<unsigned long>(usbSerialFrameLength),
+                          static_cast<unsigned>(USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES));
+#endif
+            usbSerialRxState = UsbSerialRxState::DropFrame;
+          } else {
+            usbSerialRxState = usbSerialFrameLength == 0 ? UsbSerialRxState::Crc : UsbSerialRxState::Payload;
+          }
+        }
+        break;
+
+      case UsbSerialRxState::Payload:
+        usbSerialFramePayload[usbSerialPayloadIndex++] = static_cast<uint8_t>(value);
+        if (usbSerialPayloadIndex >= usbSerialFrameLength) {
+          usbSerialCrcIndex = 0;
+          usbSerialRxState = UsbSerialRxState::Crc;
+        }
+        break;
+
+      case UsbSerialRxState::Crc:
+        usbSerialFrameCrcBytes[usbSerialCrcIndex++] = static_cast<uint8_t>(value);
+        if (usbSerialCrcIndex >= sizeof(usbSerialFrameCrcBytes)) {
+          uint32_t crc = 0xFFFFFFFFUL;
+          crc = crc32Update(crc, usbSerialFrameHeader + 4, 12);
+          if (usbSerialFrameLength > 0) {
+            crc = crc32Update(crc, usbSerialFramePayload, usbSerialFrameLength);
+          }
+          crc = ~crc;
+          const uint32_t actualCrc = readLe32(usbSerialFrameCrcBytes);
+          if (crc == actualCrc) {
+            handleUsbSerialFrame(usbSerialFrameHeader[5],
+                                 usbSerialFrameHeader[6],
+                                 readLe32(usbSerialFrameHeader + 8),
+                                 usbSerialFramePayload,
+                                 usbSerialFrameLength);
+          } else {
+#if USB_SERIAL_TTS_DIAG_LOG_ENABLED
+            Serial.printf("SCU1 crc mismatch seq=%lu expected=0x%08lx actual=0x%08lx length=%lu\n",
+                          static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                          static_cast<unsigned long>(crc),
+                          static_cast<unsigned long>(actualCrc),
+                          static_cast<unsigned long>(usbSerialFrameLength));
+#endif
+          }
+          usbSerialRxState = UsbSerialRxState::Line;
+          usbSerialHeaderIndex = 0;
+          usbSerialPayloadIndex = 0;
+          usbSerialCrcIndex = 0;
+        }
+        break;
+
+      case UsbSerialRxState::DropFrame:
+        usbSerialRxState = UsbSerialRxState::Line;
+        usbSerialMagicIndex = 0;
+        usbSerialLineLength = 0;
+        usbSerialLineOverflow = false;
+        break;
+      }
+  }
+#if USB_SERIAL_RX_DIAG_LOG_ENABLED
+  if (rxDiagBytesRead > 0 &&
+      (usbSerialRxDiagEventCount < 40 || rxDiagFirstLength >= sizeof(kUsbSerialMagic))) {
+    ++usbSerialRxDiagEventCount;
+    Serial.printf("USB RX bytes length=%u first%u=",
+                  static_cast<unsigned>(rxDiagBytesRead),
+                  static_cast<unsigned>(rxDiagFirstLength));
+    printHexBytes(rxDiagFirstBytes, rxDiagFirstLength);
+    Serial.printf(" state=%u at_ms=%lu\n",
+                  static_cast<unsigned>(usbSerialRxState),
+                  static_cast<unsigned long>(millis()));
+  }
+#endif
+#else
+  (void)now;
+#endif
 }
 
 void onWsText(uint8_t clientId, const uint8_t* payload, size_t length) {
@@ -2317,12 +3026,12 @@ void updateTouch(unsigned long now) {
   }
 
   if (touch.wasClicked()) {
-    if (!infoScreenVisible && wsClientConnected &&
+    if (!infoScreenVisible && appClientConnected() &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 144, 40, 72)) {
       sendCameraButtonEvent(now);
       return;
     }
-    if (!infoScreenVisible && wsClientConnected &&
+    if (!infoScreenVisible && appClientConnected() &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 80, 40, 80)) {
       audioController.setMicMuted(!audioController.micMuted());
       updateMicStatusOverlay();
@@ -2453,7 +3162,13 @@ void updateListeningNod(unsigned long now) {
 
 void setup() {
   M5StackChan.begin();
-  Serial.begin(115200);
+  Serial.setRxBufferSize(USB_SERIAL_RX_BUFFER_BYTES);
+  Serial.begin(USB_SERIAL_BAUD);
+  Serial.printf("[boot] reset_reason=%d usb_baud=%lu rx_buffer=%u at_ms=%lu\n",
+                static_cast<int>(esp_reset_reason()),
+                static_cast<unsigned long>(USB_SERIAL_BAUD),
+                static_cast<unsigned>(USB_SERIAL_RX_BUFFER_BYTES),
+                static_cast<unsigned long>(millis()));
 
   randomSeed(esp_random());
   networkMode = loadNetworkMode();
@@ -2478,6 +3193,7 @@ void setup() {
   faceController.setAffectionState(affectionController.state());
   motionController.begin();
   audioController.begin(&wsServer);
+  audioController.setMicPacketSender(sendUsbSerialMicPacket, nullptr);
   audioController.setVolume(deviceSettings.volume);
 
   wsServer.onText(onWsText);
@@ -2514,6 +3230,7 @@ void loop() {
   updateTouch(now);
   updateBackTouch(now);
   updateShake(now);
+  updateUsbSerial(now);
   updateWiFi(now);
 
   if (wsStarted) {
