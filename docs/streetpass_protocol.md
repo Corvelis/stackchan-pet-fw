@@ -292,9 +292,3 @@ Main fields:
 - `pauseReason`
 
 When `paused=true`, `pauseReason` is one of `listening`, `speaking`, or `playback`.
-
-## Non-Published Test Implementations
-
-A BLE fake peer was used during development. That implementation is not part of
-the public firmware release. The public repository should contain the Stack-chan
-device-side implementation and the external API contract documented here.

@@ -444,8 +444,3 @@ HTTP `/status` の `streetpass` object には、同期状態と BLE 状態を含
 - `pauseReason`
 
 `paused=true` の場合、`pauseReason` は `listening`, `speaking`, `playback` のいずれかです。
-
-## 公開対象外のテスト実装
-
-開発中は別デバイスを BLE fake peer として使っていましたが、その実装は公開対象外です。
-公開リポジトリでは、Stack-chan 本体側の実装と、この仕様に基づく外部アプリ向け API だけを扱います。
