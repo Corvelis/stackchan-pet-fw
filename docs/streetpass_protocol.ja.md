@@ -60,7 +60,7 @@ Public Card は UTF-8 JSON です。
   "v": 1,
   "profileId": "stc-a1b2c3d4",
   "cardSeq": 3,
-  "name": "Yuma's Stack-chan",
+  "name": "Stack-chan",
   "message": "また会ったね",
   "source": "stackchan"
 }
@@ -231,7 +231,7 @@ WebSocket JSON と USB Serial JSON frame は同じメッセージを受け付け
   "enabled": true,
   "shareProfile": true,
   "profileId": "stc-a1b2c3d4",
-  "name": "Yuma's Stack-chan",
+  "name": "Stack-chan",
   "message": "また会ったね",
   "cardSeq": 3
 }
@@ -245,7 +245,7 @@ WebSocket JSON と USB Serial JSON frame は同じメッセージを受け付け
   "requestId": "req-2",
   "enabled": true,
   "shareProfile": true,
-  "name": "Yuma's Stack-chan",
+  "name": "Stack-chan",
   "message": "また会ったね"
 }
 ```
@@ -278,7 +278,7 @@ WebSocket JSON と USB Serial JSON frame は同じメッセージを受け付け
     {
       "recordId": 1042,
       "peerKey": "stc-peer-001",
-      "name": "Yuma's Stack-chan",
+      "name": "Stack-chan",
       "message": "また会ったね",
       "cardSeq": 3,
       "unread": true,

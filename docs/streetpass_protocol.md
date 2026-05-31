@@ -61,7 +61,7 @@ Public Card is UTF-8 JSON:
   "v": 1,
   "profileId": "stc-a1b2c3d4",
   "cardSeq": 3,
-  "name": "Yuma's Stack-chan",
+  "name": "Stack-chan",
   "message": "また会ったね",
   "source": "stackchan"
 }
@@ -207,7 +207,7 @@ Response:
   "requestId": "req-2",
   "enabled": true,
   "shareProfile": true,
-  "name": "Yuma's Stack-chan",
+  "name": "Stack-chan",
   "message": "また会ったね"
 }
 ```
