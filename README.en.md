@@ -19,6 +19,8 @@ implementations are out of scope.
 - USB CDC / USB Serial control channel for Android direct USB connections.
 - HTTP camera capture and status endpoints.
 - On-face camera button event for requesting client-side capture handling.
+- BLE StreetPass-style exchange between Stack-chan devices.
+- StreetPass profile, latest 30 encounter records, unread notification, and sync API for companion apps.
 - STA Wi-Fi mode, SoftAP direct-connection mode, and USB Serial mode.
 - Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
 - Local petting and shake reactions.
@@ -61,6 +63,7 @@ Required:
 - `data/`: local LittleFS data directory. Runtime PNGs are ignored by Git.
 - `docs/device_affection_api.md`: detailed device-side affection API notes.
 - `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
+- `docs/streetpass_protocol.md`: StreetPass BLE and JSON API details.
 
 Optional:
 
@@ -388,6 +391,36 @@ builds may print diagnostic text on the same CDC port, so clients should scan
 for the `SCU1` magic and resynchronize instead of assuming every byte belongs to
 a frame. See `docs/usb_serial_protocol.md` for the complete protocol and Android
 client notes.
+
+## StreetPass
+
+StreetPass uses BLE to exchange a Stack-chan profile card with nearby devices.
+The device stores only the latest 30 encounter records; companion apps should
+fetch those records over WebSocket or USB Serial JSON and keep long-term history
+on the app side.
+
+Device UI:
+
+- The normal face screen shows an envelope icon when unread encounters exist.
+- The `Pass` settings tab shows StreetPass On/Off, the local profile, and history.
+- History is shown newest first and can be deleted one record at a time.
+- Japanese names and messages are displayed as UTF-8; half-width katakana is normalized to full-width katakana for display.
+
+Audio coexistence:
+
+- BLE scan, GATT, and advertisement stop while the device is listening with the microphone streaming, speaking, or draining playback.
+- If the microphone is turned off and `micStreaming=false`, StreetPass can run even while the high-level state is `Listening`.
+- Display-off mode keeps StreetPass and minimal communication tasks running while reducing display and touch work.
+
+Companion app APIs:
+
+- `streetpass.time.set`: sync UTC time.
+- `streetpass.profile.get` / `streetpass.profile.set`: read or edit the local profile.
+- `streetpass.encounters.get`: fetch encounter records.
+- `streetpass.encounters.ack`: mark records as synced or read.
+- `streetpass.encounters.delete`: delete specific device-side records.
+
+See `docs/streetpass_protocol.md` for the full BLE and JSON API specification.
 
 ## WebSocket JSON Commands
 

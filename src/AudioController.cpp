@@ -883,7 +883,9 @@ void AudioController::updateSpeakerPlayback() {
       break;
     }
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+#if VERBOSE_LOG_ENABLED
     Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
+#endif
     ++queuedThisUpdate;
   }
 
@@ -895,7 +897,9 @@ void AudioController::updateSpeakerPlayback() {
     memset(buffer, 0, AUDIO_PLAYBACK_CHUNK_BYTES);
     readRxBytes(reinterpret_cast<uint8_t*>(buffer), remaining);
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+#if VERBOSE_LOG_ENABLED
     Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
+#endif
   }
 
   if (pendingIdleAfterPlayback_ && rxAvailable() == 0 && M5.Speaker.isPlaying(AUDIO_SPEAKER_CHANNEL) == 0) {

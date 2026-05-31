@@ -17,16 +17,17 @@ WebSocket, or HTTP.
 The firmware starts USB CDC on boot with:
 
 ```text
-baud: 115200 logical default
+baud: 921600
 data bits: 8
 parity: none
 stop bits: 1
 flow control: none
 ```
 
-USB CDC does not use the baud rate as a physical UART clock. Android clients may
-open the port at `115200` or `921600`; both have worked in testing as long as
-the port is otherwise configured as 8N1 with no flow control.
+USB CDC does not use the baud rate as a physical UART clock, but the firmware
+and companion apps should use `921600` consistently so the same USB session can
+carry audio, camera, JSON, and StreetPass traffic without reconnecting at a
+different baud rate. Configure the port as 8N1 with no flow control.
 
 After opening the port, the client should wait briefly, drain any startup text,
 then send a ping. The client should not depend on DTR/RTS for protocol state.
@@ -103,7 +104,7 @@ the firmware responds in the same framed or line mode.
 ## JSON Commands
 
 SCU1 type `0x01` carries the same JSON command/event payloads used by the
-WebSocket API, including:
+WebSocket API. StreetPass commands use this same JSON transport.
 
 ```json
 {"type":"state","value":"listening"}
@@ -114,6 +115,8 @@ WebSocket API, including:
 {"type":"motion","name":"center"}
 {"type":"affection.event","id":"phone_001","event":"petting","source":"phone","intensity":1.0}
 {"type":"affection.debug_set","requestId":"phone_002","affection":700,"persist":false}
+{"type":"streetpass.profile.get","requestId":"sp_profile_001"}
+{"type":"streetpass.encounters.get","requestId":"sp_enc_001","sinceRecordId":0,"limit":30}
 ```
 
 The firmware sends JSON events such as:

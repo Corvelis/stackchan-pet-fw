@@ -10,6 +10,7 @@ downloads the libraries listed in `platformio.ini` during setup.
 | `m5stack/M5Unified` | MIT | M5Stack unified device library. |
 | `m5stack/M5GFX` | MIT, with bundled components under additional permissive/font licenses | See the M5GFX repository for bundled component license details. |
 | `bblanchon/ArduinoJson` | MIT | Header-only JSON library. |
+| `h2zero/NimBLE-Arduino` | Apache-2.0 | BLE stack wrapper used for StreetPass advertising, scanning, and GATT. Includes NimBLE components and a NOTICE file from upstream. |
 | `m5stack/StackChan-BSP` | MIT | StackChan board support package. |
 
 The WebSocket endpoint is implemented with ESP-IDF `esp_http_server`, which is
