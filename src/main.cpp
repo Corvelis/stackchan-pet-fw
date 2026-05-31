@@ -5,9 +5,11 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <M5StackChan.h>
+#include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <math.h>
 #include <qrcodegen.h>
+#include <time.h>
 
 #include "AffectionController.h"
 #include "AppState.h"
@@ -15,6 +17,8 @@
 #include "CameraManager.h"
 #include "FaceController.h"
 #include "MotionController.h"
+#include "StreetPassController.h"
+#include "StreetPassProtocol.h"
 #include "WebSocketServerController.h"
 #include "config.h"
 
@@ -24,6 +28,7 @@ WebSocketServerController wsServer;
 AudioController audioController;
 CameraManager cameraManager;
 AffectionController affectionController;
+StreetPassController streetPassController;
 WebServer httpServer(HTTP_PORT);
 Preferences preferences;
 
@@ -38,6 +43,7 @@ enum class SettingsPage : uint8_t {
   Audio = 2,
   Servo = 3,
   Power = 4,
+  StreetPass = 5,
 };
 
 enum class NetworkQrType : uint8_t {
@@ -77,6 +83,8 @@ DeviceSettings deviceSettings;
 ThermalStatus thermalStatus;
 bool vadActive = false;
 bool infoScreenVisible = false;
+bool streetPassProfileVisible = false;
+uint8_t streetPassHistoryPage = 0;
 bool displayOn = true;
 bool wsStarted = false;
 bool httpStarted = false;
@@ -143,6 +151,34 @@ unsigned long usbSerialSpeakingReceivedMs = 0;
 unsigned long usbSerialFirstPcmMs = 0;
 unsigned long usbSerialLastPcmMs = 0;
 uint32_t usbSerialRxDiagEventCount = 0;
+bool streetPassBleReady = false;
+bool streetPassScanActive = false;
+bool streetPassExchangeInProgress = false;
+bool streetPassLastEnabled = false;
+bool streetPassAdvertising = false;
+bool streetPassBlePaused = false;
+bool streetPassGattServerConnected = false;
+bool streetPassForceNextExchange = false;
+volatile bool streetPassInboundConnectedEvent = false;
+volatile bool streetPassInboundDisconnectedEvent = false;
+volatile int streetPassInboundDisconnectReason = 0;
+volatile bool streetPassInboundWritePending = false;
+volatile size_t streetPassInboundWriteLength = 0;
+char streetPassInboundWriteBuffer[384] = {};
+unsigned long streetPassScanStartedMs = 0;
+unsigned long nextStreetPassScanMs = 0;
+unsigned long nextStreetPassExchangeMs = 0;
+unsigned long nextStreetPassNtpSyncMs = 0;
+unsigned long streetPassBleSettleUntilMs = 0;
+bool streetPassNtpConfigured = false;
+uint32_t streetPassAdvertisedCardSeq = 0;
+uint32_t streetPassAdvertisedPeerToken = 0;
+bool streetPassAdvertisedEnabled = false;
+NimBLEServer* streetPassGattServer = nullptr;
+NimBLEClient* streetPassGattClient = nullptr;
+NimBLECharacteristic* streetPassInfoCharacteristic = nullptr;
+NimBLECharacteristic* streetPassPublicCardCharacteristic = nullptr;
+NimBLECharacteristic* streetPassEncounterWriteCharacteristic = nullptr;
 enum class UsbSerialRxState : uint8_t {
   Line,
   Header,
@@ -157,6 +193,20 @@ struct WifiCredential {
 };
 
 constexpr size_t kMaxWifiCredentials = 5;
+constexpr uint8_t kStreetPassCandidateCount = 8;
+constexpr unsigned long STREETPASS_SCAN_DURATION_MS = 5000;
+constexpr unsigned long STREETPASS_SCAN_IDLE_INTERVAL_MS = 12500;
+constexpr unsigned long STREETPASS_SCAN_BUSY_INTERVAL_MS = 60000;
+constexpr unsigned long STREETPASS_OBSERVE_MIN_MS = 1500;
+constexpr uint8_t STREETPASS_OBSERVE_MIN_COUNT = 2;
+constexpr int8_t STREETPASS_RSSI_MIN_DBM = -75;
+constexpr unsigned long STREETPASS_CONNECT_RETRY_MS = 3UL * 60UL * 60UL * 1000UL;
+constexpr unsigned long STREETPASS_CONNECT_PREPARE_MS = 300;
+constexpr unsigned long STREETPASS_GATT_SETTLE_MS = 1000;
+constexpr unsigned long STREETPASS_FORCE_PASSIVE_GRACE_MS = 5000;
+constexpr unsigned long STREETPASS_NTP_RETRY_MS = 10000;
+constexpr unsigned long STREETPASS_NTP_REFRESH_MS = 6UL * 60UL * 60UL * 1000UL;
+constexpr uint32_t STREETPASS_VALID_UNIX_MIN = 1700000000UL;
 constexpr unsigned long CAMERA_BUTTON_COOLDOWN_MS = 2000;
 constexpr unsigned long CAMERA_BUTTON_RESPONSE_TIMEOUT_MS = 30000;
 constexpr bool AUTH_FACE_BASE_SWITCH_ENABLED = false;
@@ -170,14 +220,60 @@ uint8_t wifiConnectAttempts = 0;
 uint8_t qrCodeBuffer[qrcodegen_BUFFER_LEN_MAX];
 uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
 
+struct StreetPassBleCandidate {
+  bool active = false;
+  String address;
+  String name;
+  String advertisementKey;
+  NimBLEAddress bleAddress;
+  uint8_t addressType = 0;
+  uint32_t peerToken = 0;
+  bool hasPeerToken = false;
+  uint32_t firstSeenMs = 0;
+  uint32_t lastSeenMs = 0;
+  uint32_t lastAttemptMs = 0;
+  uint16_t seenCount = 0;
+  int8_t rssiMax = -127;
+  bool exchangeQueued = false;
+};
+
+StreetPassBleCandidate streetPassCandidates[kStreetPassCandidateCount];
+
 void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
 bool sendCameraButtonEvent(unsigned long now);
 bool appClientConnected();
 void updateUsbSerial(unsigned long now);
+void updateWiFi(unsigned long now);
+void beginStreetPassBle();
+void updateStreetPassBle(unsigned long now);
+void updateStreetPassInboundEvents(unsigned long now, bool processWrites);
+void restoreStreetPassTimeFromRtc(unsigned long now);
+void writeStreetPassRtcTime(uint32_t unixTime);
+void clearStreetPassBleCandidates();
+void resetStreetPassBleAttemptCooldowns();
+bool updateDisplayOffStreetPassMode(unsigned long now);
+String makeStreetPassInfoJson();
+String makeStreetPassPublicCardJson();
+String makeStreetPassAdvertisementName();
+uint32_t streetPassFnv1a(const String& value);
+uint32_t streetPassPeerToken();
+bool streetPassManufacturerData(const std::string& manufacturer);
+bool streetPassPeerTokenFromAdvertisement(const NimBLEAdvertisedDevice* device, uint32_t& token);
+bool streetPassShouldInitiate(uint32_t peerToken, const String& peerAddress);
+void updateStreetPassGattCharacteristics();
+void updateStreetPassAdvertising();
+void restartStreetPassAdvertising();
+void stopStreetPassAdvertising(const char* reason);
+void rememberStreetPassAdvertisedDevice(const NimBLEAdvertisedDevice* device, unsigned long now);
+bool streetPassBusyForExchange();
+const char* streetPassBusyReason();
+bool exchangeStreetPassCandidate(StreetPassBleCandidate& candidate, unsigned long now);
 bool sendUsbSerialJson(const char* payload);
 bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags = 0);
 bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context);
+void writePongResponse(JsonDocument& response, JsonDocument& request);
+void sendPongResponse(JsonDocument& request);
 void handleUsbSerialLine(const uint8_t* payload, size_t length);
 void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length);
 void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length);
@@ -186,13 +282,17 @@ void updateCameraButtonPending(unsigned long now);
 void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
 void applyListeningPresentation(unsigned long now);
+void updateDeferredFaceState();
+void updateDeferredFaceMode();
 AuthFaceMode displayAuthFaceMode(AuthFaceMode mode);
 bool audioBusyForUiEffects();
 void updatePendingAffectionDelta();
 void drawInfoScreen();
+bool streetPassPageVisible();
 void applyDisplayBrightness();
 void applyLowPowerMode(bool enabled, bool persist);
 bool audioBusyForServoCalibration();
+void drawStreetPassNotificationOverlay();
 
 constexpr uint8_t kUsbSerialMagic[4] = {'S', 'C', 'U', '1'};
 constexpr uint8_t kUsbSerialVersion = 0x01;
@@ -217,6 +317,57 @@ const char* chanStateName(ChanState state) {
   }
   return "Unknown";
 }
+
+class StreetPassScanCallbacks : public NimBLEScanCallbacks {
+public:
+  void onDiscovered(const NimBLEAdvertisedDevice* advertisedDevice) override {
+    rememberStreetPassAdvertisedDevice(advertisedDevice, millis());
+  }
+
+  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
+    (void)advertisedDevice;
+  }
+};
+
+StreetPassScanCallbacks streetPassScanCallbacks;
+
+class StreetPassServerCallbacks : public NimBLEServerCallbacks {
+public:
+  void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
+    (void)server;
+    (void)connInfo;
+    streetPassInboundConnectedEvent = true;
+  }
+
+  void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
+    (void)server;
+    (void)connInfo;
+    streetPassInboundDisconnectReason = reason;
+    streetPassInboundDisconnectedEvent = true;
+  }
+};
+
+class StreetPassEncounterWriteCallbacks : public NimBLECharacteristicCallbacks {
+public:
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo) override {
+    (void)connInfo;
+    if (characteristic == nullptr) {
+      return;
+    }
+    if (streetPassInboundWritePending) {
+      return;
+    }
+    std::string value = characteristic->getValue();
+    const size_t length = min(value.size(), sizeof(streetPassInboundWriteBuffer) - 1);
+    memcpy(streetPassInboundWriteBuffer, value.data(), length);
+    streetPassInboundWriteBuffer[length] = '\0';
+    streetPassInboundWriteLength = length;
+    streetPassInboundWritePending = true;
+  }
+};
+
+StreetPassServerCallbacks streetPassServerCallbacks;
+StreetPassEncounterWriteCallbacks streetPassEncounterWriteCallbacks;
 
 uint32_t readLe32(const uint8_t* data) {
   return static_cast<uint32_t>(data[0]) |
@@ -307,6 +458,799 @@ bool audioBusyForUiEffects() {
 
 bool appClientConnected() {
   return wsClientConnected || usbSerialClientConnected;
+}
+
+bool streetPassPageVisible() {
+  return infoScreenVisible && settingsPage == SettingsPage::StreetPass && displayOn;
+}
+
+bool streetPassBusyForExchange() {
+  return streetPassBusyReason()[0] != '\0';
+}
+
+const char* streetPassBusyReason() {
+  const bool activelyListening = (currentState == ChanState::Listening ||
+                                  audioController.state() == ChanState::Listening) &&
+                                 audioController.isMicStreaming();
+  if (activelyListening) {
+    return "listening";
+  }
+  if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    return "speaking";
+  }
+  if (audioController.isPlaybackDraining()) {
+    return "playback";
+  }
+  return "";
+}
+
+uint32_t unixFromUtcParts(int year, int month, int day, int hour, int minute, int second) {
+  tm value = {};
+  value.tm_year = year - 1900;
+  value.tm_mon = month - 1;
+  value.tm_mday = day;
+  value.tm_hour = hour;
+  value.tm_min = minute;
+  value.tm_sec = second;
+  value.tm_isdst = 0;
+  setenv("TZ", "UTC", 1);
+  tzset();
+  return static_cast<uint32_t>(mktime(&value));
+}
+
+bool validStreetPassUnix(uint32_t unixTime) {
+  return unixTime >= STREETPASS_VALID_UNIX_MIN;
+}
+
+String makeStreetPassInfoJson() {
+  const StreetPassProfile& profile = streetPassController.profile();
+  JsonDocument doc;
+  doc["v"] = STREETPASS_PROTOCOL_VERSION;
+  doc["role"] = "stackchan";
+  doc["name"] = "Stack-chan";
+  doc["cardSeq"] = profile.cardSeq;
+  doc["caps"] = "public_card,encounter_write";
+  String body;
+  serializeJson(doc, body);
+  return body;
+}
+
+String makeStreetPassPublicCardJson() {
+  const StreetPassProfile& profile = streetPassController.profile();
+  JsonDocument doc;
+  doc["v"] = STREETPASS_PROTOCOL_VERSION;
+  doc["profileId"] = profile.shareProfile ? profile.profileId : "";
+  doc["cardSeq"] = profile.cardSeq;
+  doc["name"] = profile.shareProfile ? profile.name : "";
+  doc["message"] = profile.shareProfile ? profile.message : "";
+  doc["source"] = "stackchan";
+  String body;
+  serializeJson(doc, body);
+  return body;
+}
+
+String makeStreetPassAdvertisementName() {
+  return String("STC-") + String(streetPassController.profile().cardSeq);
+}
+
+uint32_t streetPassFnv1a(const String& value) {
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < value.length(); ++i) {
+    hash ^= static_cast<uint8_t>(value[i]);
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+uint16_t streetPassNameHash(const String& value) {
+  const uint32_t hash = streetPassFnv1a(value);
+  return static_cast<uint16_t>((hash >> 16) ^ (hash & 0xffff));
+}
+
+uint32_t streetPassPeerToken() {
+  const StreetPassProfile& profile = streetPassController.profile();
+  uint32_t token = streetPassFnv1a(profile.profileId);
+  if (token == 0) {
+    token = 1;
+  }
+  return token;
+}
+
+bool streetPassManufacturerData(const std::string& manufacturer) {
+  return manufacturer.length() >= 10 &&
+         static_cast<uint8_t>(manufacturer[2]) == 'S' &&
+         static_cast<uint8_t>(manufacturer[3]) == 'P';
+}
+
+bool streetPassPeerTokenFromAdvertisement(const NimBLEAdvertisedDevice* device, uint32_t& token) {
+  token = 0;
+  if (device == nullptr || !device->haveManufacturerData()) {
+    return false;
+  }
+  const std::string manufacturer = device->getManufacturerData();
+  if (!streetPassManufacturerData(manufacturer)) {
+    return false;
+  }
+  token = static_cast<uint32_t>(static_cast<uint8_t>(manufacturer[4])) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(manufacturer[5])) << 8) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(manufacturer[6])) << 16) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(manufacturer[7])) << 24);
+  return token != 0;
+}
+
+bool streetPassShouldInitiate(uint32_t peerToken, const String& peerAddress) {
+  const uint32_t ownToken = streetPassPeerToken();
+  if (peerToken == 0 || ownToken == 0) {
+    return true;
+  }
+  if (ownToken != peerToken) {
+    return ownToken < peerToken;
+  }
+
+  const String ownAddress = String(NimBLEDevice::getAddress().toString().c_str());
+  if (ownAddress.length() == 0 || peerAddress.length() == 0) {
+    return true;
+  }
+  return ownAddress < peerAddress;
+}
+
+String bytesToHexString(const std::string& data) {
+  static const char* hex = "0123456789abcdef";
+  String out;
+  out.reserve(data.length() * 2);
+  for (size_t i = 0; i < data.length(); ++i) {
+    const uint8_t value = static_cast<uint8_t>(data[i]);
+    out += hex[value >> 4];
+    out += hex[value & 0x0f];
+  }
+  return out;
+}
+
+String streetPassAdvertisementKey(const NimBLEAdvertisedDevice* device) {
+  if (device == nullptr) {
+    return "";
+  }
+
+  if (device->haveManufacturerData()) {
+    const std::string manufacturer = device->getManufacturerData();
+    if (streetPassManufacturerData(manufacturer)) {
+      char buffer[16];
+      snprintf(buffer,
+               sizeof(buffer),
+               "sp-name:%02x%02x",
+               static_cast<unsigned>(static_cast<uint8_t>(manufacturer[8])),
+               static_cast<unsigned>(static_cast<uint8_t>(manufacturer[9])));
+      return String(buffer);
+    }
+  }
+
+  String key = device->haveName() ? String(device->getName().c_str()) : String();
+  if (device->haveManufacturerData()) {
+    key += "|m:";
+    key += bytesToHexString(device->getManufacturerData());
+  }
+  return key;
+}
+
+void updateStreetPassGattCharacteristics() {
+  if (streetPassInfoCharacteristic != nullptr) {
+    const String info = makeStreetPassInfoJson();
+    streetPassInfoCharacteristic->setValue(reinterpret_cast<const uint8_t*>(info.c_str()), info.length());
+  }
+  if (streetPassPublicCardCharacteristic != nullptr) {
+    const String card = makeStreetPassPublicCardJson();
+    streetPassPublicCardCharacteristic->setValue(reinterpret_cast<const uint8_t*>(card.c_str()), card.length());
+  }
+}
+
+void updateStreetPassAdvertising() {
+  if (!streetPassBleReady) {
+    return;
+  }
+
+  const StreetPassProfile& profile = streetPassController.profile();
+  const bool shouldAdvertise = profile.enabled && profile.shareProfile;
+  const uint32_t peerToken = streetPassPeerToken();
+  const bool needsRefresh = shouldAdvertise &&
+                            (!streetPassAdvertising ||
+                             streetPassAdvertisedCardSeq != profile.cardSeq ||
+                             streetPassAdvertisedPeerToken != peerToken ||
+                             streetPassAdvertisedEnabled != shouldAdvertise);
+  if (!shouldAdvertise) {
+    if (streetPassAdvertising) {
+      stopStreetPassAdvertising("profile_off");
+    }
+    return;
+  }
+  if (!needsRefresh) {
+    return;
+  }
+
+  updateStreetPassGattCharacteristics();
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  adv->stop();
+  adv->clearData();
+  const String name = makeStreetPassAdvertisementName();
+  const uint16_t nameHash = streetPassNameHash(profile.name);
+  uint8_t manufacturerData[10] = {
+    0xff, 0xff, 'S', 'P',
+    static_cast<uint8_t>(peerToken & 0xff),
+    static_cast<uint8_t>((peerToken >> 8) & 0xff),
+    static_cast<uint8_t>((peerToken >> 16) & 0xff),
+    static_cast<uint8_t>((peerToken >> 24) & 0xff),
+    static_cast<uint8_t>(nameHash & 0xff),
+    static_cast<uint8_t>((nameHash >> 8) & 0xff)
+  };
+  adv->setName(name.c_str());
+  adv->setManufacturerData(manufacturerData, sizeof(manufacturerData));
+  adv->setMinInterval(160);
+  adv->setMaxInterval(320);
+  adv->enableScanResponse(true);
+  adv->start();
+  streetPassAdvertising = true;
+  streetPassAdvertisedEnabled = true;
+  streetPassAdvertisedCardSeq = profile.cardSeq;
+  streetPassAdvertisedPeerToken = peerToken;
+  Serial.printf("[streetpass] advertising started name=%s token=%08lx\n",
+                name.c_str(),
+                static_cast<unsigned long>(peerToken));
+}
+
+void restartStreetPassAdvertising() {
+  if (!streetPassBleReady) {
+    return;
+  }
+  streetPassAdvertising = false;
+  streetPassAdvertisedEnabled = false;
+  streetPassAdvertisedPeerToken = 0;
+  updateStreetPassAdvertising();
+}
+
+void stopStreetPassAdvertising(const char* reason) {
+  if (!streetPassBleReady || !streetPassAdvertising) {
+    return;
+  }
+  NimBLEDevice::getAdvertising()->stop();
+  streetPassAdvertising = false;
+  streetPassAdvertisedEnabled = false;
+  streetPassAdvertisedPeerToken = 0;
+  Serial.printf("[streetpass] advertising stopped reason=%s\n", reason);
+}
+
+bool readStreetPassRtcUnix(uint32_t& unixTime) {
+  if (!M5.Rtc.isEnabled()) {
+    return false;
+  }
+  if (M5.Rtc.getVoltLow()) {
+    Serial.println("[streetpass] rtc ignored: voltage low");
+    return false;
+  }
+
+  m5::rtc_date_t date;
+  m5::rtc_time_t time;
+  if (!M5.Rtc.getDateTime(&date, &time)) {
+    Serial.println("[streetpass] rtc read failed");
+    return false;
+  }
+  if (date.year < 2023 || date.year > 2099 || date.month < 1 || date.month > 12 ||
+      date.date < 1 || date.date > 31 || time.hours > 23 || time.minutes > 59 || time.seconds > 59) {
+    Serial.printf("[streetpass] rtc invalid %04d-%02d-%02d %02d:%02d:%02d\n",
+                  date.year,
+                  date.month,
+                  date.date,
+                  time.hours,
+                  time.minutes,
+                  time.seconds);
+    return false;
+  }
+
+  unixTime = unixFromUtcParts(date.year, date.month, date.date, time.hours, time.minutes, time.seconds);
+  return validStreetPassUnix(unixTime);
+}
+
+void restoreStreetPassTimeFromRtc(unsigned long now) {
+  uint32_t unixTime = 0;
+  if (!readStreetPassRtcUnix(unixTime)) {
+    return;
+  }
+  if (streetPassController.syncTime(unixTime, "UTC", now)) {
+    Serial.printf("[streetpass] rtc time restored unix=%lu\n", static_cast<unsigned long>(unixTime));
+  }
+}
+
+void writeStreetPassRtcTime(uint32_t unixTime) {
+  if (!validStreetPassUnix(unixTime) || !M5.Rtc.isEnabled()) {
+    return;
+  }
+  time_t raw = static_cast<time_t>(unixTime);
+  tm utc = {};
+  gmtime_r(&raw, &utc);
+  M5.Rtc.setDateTime(&utc);
+  Serial.printf("[streetpass] rtc time written unix=%lu\n", static_cast<unsigned long>(unixTime));
+}
+
+void updateStreetPassNetworkTime(unsigned long now) {
+  if (networkMode != NetworkMode::Sta || WiFi.status() != WL_CONNECTED || now < nextStreetPassNtpSyncMs) {
+    return;
+  }
+
+  if (!streetPassNtpConfigured) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+    streetPassNtpConfigured = true;
+  }
+
+  const time_t unixTime = time(nullptr);
+  if (unixTime >= static_cast<time_t>(STREETPASS_VALID_UNIX_MIN)) {
+    const uint32_t syncedUnix = static_cast<uint32_t>(unixTime);
+    if (streetPassController.syncTime(syncedUnix, "UTC", now)) {
+      Serial.printf("[streetpass] ntp time synced unix=%lu\n", static_cast<unsigned long>(unixTime));
+      writeStreetPassRtcTime(syncedUnix);
+    }
+    nextStreetPassNtpSyncMs = now + STREETPASS_NTP_REFRESH_MS;
+    return;
+  }
+
+  nextStreetPassNtpSyncMs = now + STREETPASS_NTP_RETRY_MS;
+}
+
+void beginStreetPassBle() {
+  if (streetPassBleReady) {
+    return;
+  }
+
+  NimBLEDevice::init("StackChan StreetPass");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+
+  streetPassGattServer = NimBLEDevice::createServer();
+  streetPassGattServer->setCallbacks(&streetPassServerCallbacks);
+  NimBLEService* service = streetPassGattServer->createService(STREETPASS_SERVICE_UUID);
+  streetPassInfoCharacteristic = service->createCharacteristic(STREETPASS_INFO_UUID, NIMBLE_PROPERTY::READ);
+  streetPassPublicCardCharacteristic = service->createCharacteristic(STREETPASS_PUBLIC_CARD_UUID, NIMBLE_PROPERTY::READ);
+  streetPassEncounterWriteCharacteristic = service->createCharacteristic(STREETPASS_ENCOUNTER_WRITE_UUID, NIMBLE_PROPERTY::WRITE);
+  streetPassEncounterWriteCharacteristic->setCallbacks(&streetPassEncounterWriteCallbacks);
+  updateStreetPassGattCharacteristics();
+  service->start();
+  streetPassGattServer->start();
+
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(&streetPassScanCallbacks, true);
+  scan->setActiveScan(false);
+  scan->setInterval(80);
+  scan->setWindow(80);
+  streetPassBleReady = true;
+  nextStreetPassScanMs = millis() + 2000;
+  updateStreetPassAdvertising();
+  Serial.println("[streetpass] BLE scan ready");
+}
+
+void clearStreetPassBleCandidates() {
+  for (uint8_t i = 0; i < kStreetPassCandidateCount; ++i) {
+    streetPassCandidates[i] = StreetPassBleCandidate();
+  }
+  streetPassForceNextExchange = true;
+  nextStreetPassExchangeMs = millis();
+  nextStreetPassScanMs = millis();
+  Serial.println("[streetpass] BLE candidates cleared");
+}
+
+void resetStreetPassBleAttemptCooldowns() {
+  for (uint8_t i = 0; i < kStreetPassCandidateCount; ++i) {
+    streetPassCandidates[i].lastAttemptMs = 0;
+    streetPassCandidates[i].exchangeQueued = false;
+    if (streetPassCandidates[i].active) {
+      streetPassCandidates[i].firstSeenMs = millis();
+      streetPassCandidates[i].seenCount = 0;
+    }
+  }
+  nextStreetPassExchangeMs = millis();
+  nextStreetPassScanMs = millis();
+  Serial.println("[streetpass] BLE attempt cooldowns reset");
+}
+
+void updateStreetPassInboundEvents(unsigned long now, bool processWrites) {
+  if (streetPassInboundConnectedEvent) {
+    streetPassInboundConnectedEvent = false;
+    streetPassGattServerConnected = true;
+    if (streetPassScanActive) {
+      NimBLEDevice::getScan()->stop();
+      streetPassScanActive = false;
+    }
+    Serial.println("[streetpass] inbound GATT connected");
+  }
+
+  if (processWrites && streetPassInboundWritePending) {
+    char body[sizeof(streetPassInboundWriteBuffer)] = {};
+    const size_t length = min(static_cast<size_t>(streetPassInboundWriteLength), sizeof(body) - 1);
+    memcpy(body, streetPassInboundWriteBuffer, length);
+    streetPassInboundWritePending = false;
+    streetPassInboundWriteLength = 0;
+    const bool ok = streetPassController.recordPublicCard(body, -127, now);
+    Serial.printf("[streetpass] encounter write received bytes=%u ok=%d\n",
+                  static_cast<unsigned>(length),
+                  ok ? 1 : 0);
+    if (ok && streetPassPageVisible()) {
+      streetPassController.markAllRead();
+      drawInfoScreen();
+    }
+    if (ok) {
+      streetPassForceNextExchange = false;
+    }
+  }
+
+  if (streetPassInboundDisconnectedEvent) {
+    const int reason = streetPassInboundDisconnectReason;
+    streetPassInboundDisconnectedEvent = false;
+    streetPassGattServerConnected = false;
+    streetPassBleSettleUntilMs = now + STREETPASS_GATT_SETTLE_MS;
+    nextStreetPassScanMs = streetPassBleSettleUntilMs;
+    nextStreetPassExchangeMs = streetPassBleSettleUntilMs;
+    Serial.printf("[streetpass] inbound GATT disconnected reason=%d\n", reason);
+  }
+}
+
+bool updateDisplayOffStreetPassMode(unsigned long now) {
+  if (displayOn) {
+    return false;
+  }
+
+  updateUsbSerial(now);
+  updateWiFi(now);
+  updateStreetPassNetworkTime(now);
+  streetPassController.update(now);
+  updateStreetPassBle(now);
+
+  if (wsStarted) {
+    wsServer.loop();
+  }
+  if (httpStarted && (now % 200) < 20) {
+    httpServer.handleClient();
+  }
+  updateCameraButtonPending(now);
+  audioController.update(now);
+  updateDeferredFaceState();
+  updateDeferredFaceMode();
+  delay(30);
+  return true;
+}
+
+void rememberStreetPassAdvertisedDevice(const NimBLEAdvertisedDevice* device, unsigned long now) {
+  if (!streetPassBleReady || device == nullptr || !streetPassController.enabled()) {
+    return;
+  }
+  const bool hasStreetPassManufacturer = device->haveManufacturerData() &&
+                                         streetPassManufacturerData(device->getManufacturerData());
+  if (!hasStreetPassManufacturer) {
+    return;
+  }
+
+  const String address = String(device->getAddress().toString().c_str());
+  const String advertisedName = device->haveName() ? String(device->getName().c_str()) : String();
+  const String advertisementKey = streetPassAdvertisementKey(device);
+  uint32_t peerToken = 0;
+  const bool hasPeerToken = streetPassPeerTokenFromAdvertisement(device, peerToken);
+  const bool normalShouldInitiate = !hasPeerToken || streetPassShouldInitiate(peerToken, address);
+  StreetPassBleCandidate* candidate = nullptr;
+  StreetPassBleCandidate* empty = nullptr;
+  uint8_t oldestIndex = 0;
+  for (uint8_t i = 0; i < kStreetPassCandidateCount; ++i) {
+    StreetPassBleCandidate& item = streetPassCandidates[i];
+    if (!item.active && empty == nullptr) {
+      empty = &item;
+    }
+    if (item.active && item.address == address) {
+      candidate = &item;
+      break;
+    }
+    if (item.lastSeenMs < streetPassCandidates[oldestIndex].lastSeenMs) {
+      oldestIndex = i;
+    }
+  }
+  if (candidate == nullptr) {
+    candidate = empty != nullptr ? empty : &streetPassCandidates[oldestIndex];
+    *candidate = StreetPassBleCandidate();
+    candidate->active = true;
+    candidate->address = address;
+    candidate->name = advertisedName;
+    candidate->advertisementKey = advertisementKey;
+    candidate->bleAddress = device->getAddress();
+    candidate->addressType = device->getAddressType();
+    candidate->peerToken = peerToken;
+    candidate->hasPeerToken = hasPeerToken;
+    candidate->firstSeenMs = static_cast<uint32_t>(now);
+    candidate->rssiMax = device->getRSSI();
+    Serial.printf("[streetpass] seen addr=%s type=%u rssi=%d token=%08lx initiate=%d\n",
+                  candidate->address.c_str(),
+                  static_cast<unsigned>(candidate->addressType),
+                  static_cast<int>(candidate->rssiMax),
+                  static_cast<unsigned long>(peerToken),
+                  (normalShouldInitiate || streetPassForceNextExchange) ? 1 : 0);
+  }
+  if (advertisedName.length() > 0 || advertisementKey.length() > 0) {
+    const bool advertisementChanged = candidate->advertisementKey.length() > 0 && candidate->advertisementKey != advertisementKey;
+    candidate->name = advertisedName;
+    candidate->advertisementKey = advertisementKey;
+    if (advertisementChanged) {
+      candidate->firstSeenMs = static_cast<uint32_t>(now);
+      candidate->seenCount = 0;
+      candidate->lastAttemptMs = 0;
+      candidate->exchangeQueued = false;
+      Serial.printf("[streetpass] adv changed addr=%s key=%s\n",
+                    candidate->address.c_str(),
+                    candidate->advertisementKey.c_str());
+    }
+  }
+  candidate->peerToken = peerToken;
+  candidate->hasPeerToken = hasPeerToken;
+
+  candidate->lastSeenMs = static_cast<uint32_t>(now);
+  candidate->seenCount = min<uint16_t>(static_cast<uint16_t>(candidate->seenCount + 1), 65535);
+  candidate->rssiMax = max<int8_t>(candidate->rssiMax, device->getRSSI());
+
+  if (!normalShouldInitiate && streetPassForceNextExchange &&
+      candidate->lastSeenMs - candidate->firstSeenMs < STREETPASS_FORCE_PASSIVE_GRACE_MS) {
+    candidate->exchangeQueued = false;
+    return;
+  }
+
+  if (!normalShouldInitiate && !streetPassForceNextExchange) {
+    candidate->exchangeQueued = false;
+    return;
+  }
+
+  const bool ready = candidate->seenCount >= STREETPASS_OBSERVE_MIN_COUNT &&
+                     candidate->lastSeenMs - candidate->firstSeenMs >= STREETPASS_OBSERVE_MIN_MS &&
+                     candidate->rssiMax >= STREETPASS_RSSI_MIN_DBM &&
+                     (candidate->lastAttemptMs == 0 || now - candidate->lastAttemptMs >= STREETPASS_CONNECT_RETRY_MS);
+  if (ready && !candidate->exchangeQueued) {
+    candidate->exchangeQueued = true;
+    nextStreetPassExchangeMs = now;
+    Serial.printf("[streetpass] candidate ready addr=%s seen=%u rssi=%d\n",
+                  candidate->address.c_str(),
+                  static_cast<unsigned>(candidate->seenCount),
+                  static_cast<int>(candidate->rssiMax));
+  }
+}
+
+bool exchangeStreetPassCandidate(StreetPassBleCandidate& candidate, unsigned long now) {
+  if (!candidate.active || candidate.address.length() == 0) {
+    return false;
+  }
+  if (streetPassGattServerConnected) {
+    candidate.exchangeQueued = false;
+    nextStreetPassExchangeMs = now + 1000;
+    Serial.printf("[streetpass] exchange deferred inbound addr=%s\n", candidate.address.c_str());
+    return false;
+  }
+
+  candidate.lastAttemptMs = static_cast<uint32_t>(now);
+  candidate.exchangeQueued = false;
+  Serial.printf("[streetpass] exchange start addr=%s rssi=%d\n",
+                candidate.address.c_str(),
+                static_cast<int>(candidate.rssiMax));
+  const bool resumeAdvertising = streetPassAdvertising;
+  if (resumeAdvertising) {
+    stopStreetPassAdvertising("exchange");
+    delay(STREETPASS_CONNECT_PREPARE_MS);
+  }
+  auto finishExchange = [&](bool result) {
+    streetPassBleSettleUntilMs = millis() + STREETPASS_GATT_SETTLE_MS;
+    nextStreetPassScanMs = streetPassBleSettleUntilMs;
+    nextStreetPassExchangeMs = streetPassBleSettleUntilMs;
+    return result;
+  };
+
+  NimBLEClient* client = streetPassGattClient;
+  if (client != nullptr && client->isConnected()) {
+    client->disconnect();
+  }
+  if (client == nullptr) {
+    client = NimBLEDevice::createClient();
+    streetPassGattClient = client;
+  }
+  if (client == nullptr) {
+    Serial.println("[streetpass] create client failed");
+    return finishExchange(false);
+  }
+  client->setConnectTimeout(5000);
+  client->setConnectionParams(24, 40, 0, 80);
+
+  bool ok = false;
+  String publicCard;
+  bool connected = client->connect(candidate.bleAddress, true, false, false);
+  if (!connected) {
+    const int firstError = client->getLastError();
+    Serial.printf("[streetpass] connect failed addr=%s type=%u err=%d\n",
+                  candidate.address.c_str(),
+                  static_cast<unsigned>(candidate.addressType),
+                  firstError);
+  }
+
+  if (!connected) {
+    Serial.printf("[streetpass] exchange skipped addr=%s err=%d\n",
+                  candidate.address.c_str(),
+                  client->getLastError());
+    return finishExchange(false);
+  } else {
+    NimBLERemoteService* service = client->getService(STREETPASS_SERVICE_UUID);
+    if (service == nullptr) {
+      Serial.println("[streetpass] service not found");
+    } else {
+      NimBLERemoteCharacteristic* card = service->getCharacteristic(STREETPASS_PUBLIC_CARD_UUID);
+      if (card == nullptr || !card->canRead()) {
+        Serial.println("[streetpass] public card not readable");
+      } else {
+        NimBLEAttValue value = card->readValue();
+        publicCard = String(value.c_str()).substring(0, value.length());
+        ok = streetPassController.recordPublicCard(publicCard.c_str(), candidate.rssiMax, now);
+        Serial.printf("[streetpass] public card read bytes=%u ok=%d\n",
+                      static_cast<unsigned>(value.length()),
+                      ok ? 1 : 0);
+      }
+
+      NimBLERemoteCharacteristic* write = service->getCharacteristic(STREETPASS_ENCOUNTER_WRITE_UUID);
+      if (write != nullptr && write->canWrite()) {
+        const StreetPassProfile& profile = streetPassController.profile();
+        JsonDocument receipt;
+        receipt["v"] = STREETPASS_PROTOCOL_VERSION;
+        receipt["type"] = "encounter.card";
+        receipt["receivedOk"] = ok;
+        receipt["profileId"] = profile.profileId;
+        receipt["name"] = profile.name;
+        receipt["message"] = profile.message;
+        receipt["cardSeq"] = profile.cardSeq;
+        receipt["timestampMs"] = static_cast<uint32_t>(now);
+        String body;
+        serializeJson(receipt, body);
+        write->writeValue(body.c_str(), body.length(), false);
+      }
+    }
+    client->disconnect();
+  }
+
+  if (ok) {
+    streetPassForceNextExchange = false;
+    Serial.printf("[streetpass] exchanged addr=%s card=%s\n",
+                  candidate.address.c_str(),
+                  publicCard.c_str());
+    candidate.firstSeenMs = static_cast<uint32_t>(now);
+    candidate.lastSeenMs = static_cast<uint32_t>(now);
+    candidate.seenCount = 0;
+    candidate.exchangeQueued = false;
+    if (streetPassPageVisible()) {
+      streetPassController.markAllRead();
+      drawInfoScreen();
+    }
+  }
+  if (!ok) {
+    streetPassForceNextExchange = false;
+  }
+  return finishExchange(ok);
+}
+
+void updateStreetPassBle(unsigned long now) {
+  const bool enabled = streetPassController.enabled();
+  if (enabled != streetPassLastEnabled) {
+    streetPassLastEnabled = enabled;
+    Serial.printf("[streetpass] %s\n", enabled ? "enabled" : "disabled");
+  }
+
+  if (!enabled) {
+    if (streetPassBleReady && streetPassScanActive) {
+      NimBLEDevice::getScan()->stop();
+      streetPassScanActive = false;
+    }
+    stopStreetPassAdvertising("disabled");
+    streetPassBlePaused = false;
+    streetPassBleSettleUntilMs = 0;
+    return;
+  }
+
+  if (!streetPassBleReady) {
+    beginStreetPassBle();
+    return;
+  }
+
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  const char* busyReason = streetPassBusyReason();
+  updateStreetPassInboundEvents(now, busyReason[0] == '\0');
+
+  if (busyReason[0] != '\0') {
+    if (streetPassScanActive) {
+      scan->stop();
+      streetPassScanActive = false;
+    }
+    stopStreetPassAdvertising(busyReason);
+    if (!streetPassBlePaused) {
+      Serial.printf("[streetpass] paused reason=%s currentState=%s audioState=%s vad=%d mic=%d playback=%d\n",
+                    busyReason,
+                    chanStateName(currentState),
+                    chanStateName(audioController.state()),
+                    vadActive ? 1 : 0,
+                    audioController.isMicStreaming() ? 1 : 0,
+                    audioController.isPlaybackDraining() ? 1 : 0);
+    }
+    streetPassBlePaused = true;
+    nextStreetPassScanMs = now + STREETPASS_SCAN_BUSY_INTERVAL_MS;
+    return;
+  }
+  if (streetPassBlePaused) {
+    streetPassBlePaused = false;
+    nextStreetPassScanMs = now;
+    streetPassBleSettleUntilMs = 0;
+    Serial.printf("[streetpass] resumed currentState=%s audioState=%s vad=%d mic=%d playback=%d\n",
+                  chanStateName(currentState),
+                  chanStateName(audioController.state()),
+                  vadActive ? 1 : 0,
+                  audioController.isMicStreaming() ? 1 : 0,
+                  audioController.isPlaybackDraining() ? 1 : 0);
+  }
+
+  if (streetPassGattServerConnected) {
+    if (streetPassScanActive) {
+      scan->stop();
+      streetPassScanActive = false;
+    }
+    nextStreetPassScanMs = now + 1000;
+    return;
+  }
+
+  if (streetPassBleSettleUntilMs != 0 && now < streetPassBleSettleUntilMs) {
+    if (streetPassScanActive) {
+      scan->stop();
+      streetPassScanActive = false;
+    }
+    nextStreetPassScanMs = streetPassBleSettleUntilMs;
+    return;
+  }
+  if (streetPassBleSettleUntilMs != 0 && now >= streetPassBleSettleUntilMs) {
+    streetPassBleSettleUntilMs = 0;
+  }
+
+  updateStreetPassAdvertising();
+
+  if (streetPassScanActive && now - streetPassScanStartedMs >= STREETPASS_SCAN_DURATION_MS) {
+    scan->stop();
+    streetPassScanActive = false;
+    restartStreetPassAdvertising();
+    const unsigned long interval = STREETPASS_SCAN_IDLE_INTERVAL_MS;
+    nextStreetPassScanMs = now + interval;
+    Serial.printf("[streetpass] scan stop next=%lums\n", interval);
+  }
+
+  if (!streetPassScanActive && now >= nextStreetPassScanMs) {
+    const bool started = scan->start(0, false, false);
+    if (started) {
+      streetPassScanStartedMs = now;
+      streetPassScanActive = true;
+      Serial.println("[streetpass] scan start");
+    } else {
+      nextStreetPassScanMs = now + STREETPASS_SCAN_IDLE_INTERVAL_MS;
+      Serial.println("[streetpass] scan start failed");
+    }
+  }
+
+  if (streetPassExchangeInProgress || now < nextStreetPassExchangeMs) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < kStreetPassCandidateCount; ++i) {
+    StreetPassBleCandidate& candidate = streetPassCandidates[i];
+    if (!candidate.active || !candidate.exchangeQueued) {
+      continue;
+    }
+    streetPassExchangeInProgress = true;
+    if (streetPassScanActive) {
+      scan->stop();
+      streetPassScanActive = false;
+      restartStreetPassAdvertising();
+      nextStreetPassScanMs = now + STREETPASS_SCAN_IDLE_INTERVAL_MS;
+      delay(STREETPASS_CONNECT_PREPARE_MS);
+    }
+    exchangeStreetPassCandidate(candidate, now);
+    streetPassExchangeInProgress = false;
+    nextStreetPassExchangeMs = now + 1000;
+    return;
+  }
 }
 
 void updatePendingAffectionDelta() {
@@ -1366,6 +2310,18 @@ void handleStatusRequest() {
   doc["pmicTempC"] = thermalStatus.pmicTempC;
   doc["batteryLevel"] = M5.Power.getBatteryLevel();
   doc["charging"] = externalPowerPresent();
+  JsonObject streetpass = doc["streetpass"].to<JsonObject>();
+  streetPassController.writeStatus(streetpass);
+  streetpass["bleReady"] = streetPassBleReady;
+  streetpass["scanActive"] = streetPassScanActive;
+  streetpass["advertising"] = streetPassAdvertising;
+  streetpass["exchangeInProgress"] = streetPassExchangeInProgress;
+  streetpass["gattServerConnected"] = streetPassGattServerConnected;
+  streetpass["peerToken"] = streetPassPeerToken();
+  streetpass["paused"] = streetPassBusyForExchange();
+  streetpass["pauseReason"] = streetPassBusyReason();
+  doc["currentState"] = chanStateName(currentState);
+  doc["audioState"] = chanStateName(audioController.state());
   if (networkMode == NetworkMode::SoftAp) {
     doc["ip"] = WiFi.softAPIP().toString();
     doc["stations"] = WiFi.softAPgetStationNum();
@@ -1431,6 +2387,8 @@ const char* settingsPageName(SettingsPage page) {
       return "Servo";
     case SettingsPage::Power:
       return "Power";
+    case SettingsPage::StreetPass:
+      return "StreetPass";
     case SettingsPage::Network:
     default:
       return "Network";
@@ -1442,6 +2400,7 @@ void drawButton(int32_t x, int32_t y, int32_t w, int32_t h, const char* label, b
   const uint16_t fill = active ? M5.Display.color565(20, 52, 38) : TFT_BLACK;
   M5.Display.fillRoundRect(x, y, w, h, 5, fill);
   M5.Display.drawRoundRect(x, y, w, h, 5, border);
+  M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(TFT_WHITE, fill);
   M5.Display.setTextSize(1);
@@ -1449,7 +2408,171 @@ void drawButton(int32_t x, int32_t y, int32_t w, int32_t h, const char* label, b
   M5.Display.setTextDatum(top_left);
 }
 
+void appendUtf8Codepoint(String& out, uint32_t cp) {
+  if (cp <= 0x7f) {
+    out += static_cast<char>(cp);
+  } else if (cp <= 0x7ff) {
+    out += static_cast<char>(0xc0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  } else if (cp <= 0xffff) {
+    out += static_cast<char>(0xe0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  } else {
+    out += static_cast<char>(0xf0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+    out += static_cast<char>(0x80 | (cp & 0x3f));
+  }
+}
+
+uint32_t readUtf8Codepoint(const String& text, size_t& index) {
+  const uint8_t b0 = static_cast<uint8_t>(text[index++]);
+  if ((b0 & 0x80) == 0) {
+    return b0;
+  }
+  if ((b0 & 0xe0) == 0xc0 && index < text.length()) {
+    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
+    return ((b0 & 0x1f) << 6) | (b1 & 0x3f);
+  }
+  if ((b0 & 0xf0) == 0xe0 && index + 1 < text.length()) {
+    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
+    const uint8_t b2 = static_cast<uint8_t>(text[index++]);
+    return ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+  }
+  if ((b0 & 0xf8) == 0xf0 && index + 2 < text.length()) {
+    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
+    const uint8_t b2 = static_cast<uint8_t>(text[index++]);
+    const uint8_t b3 = static_cast<uint8_t>(text[index++]);
+    return ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+  }
+  return 0xfffd;
+}
+
+uint32_t halfwidthKanaToFullwidth(uint32_t cp) {
+  static const uint16_t map[] = {
+    0x3002, 0x300c, 0x300d, 0x3001, 0x30fb, 0x30f2, 0x30a1, 0x30a3,
+    0x30a5, 0x30a7, 0x30a9, 0x30e3, 0x30e5, 0x30e7, 0x30c3, 0x30fc,
+    0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ab, 0x30ad, 0x30af,
+    0x30b1, 0x30b3, 0x30b5, 0x30b7, 0x30b9, 0x30bb, 0x30bd, 0x30bf,
+    0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ca, 0x30cb, 0x30cc, 0x30cd,
+    0x30ce, 0x30cf, 0x30d2, 0x30d5, 0x30d8, 0x30db, 0x30de, 0x30df,
+    0x30e0, 0x30e1, 0x30e2, 0x30e4, 0x30e6, 0x30e8, 0x30e9, 0x30ea,
+    0x30eb, 0x30ec, 0x30ed, 0x30ef, 0x30f3, 0x3099, 0x309a
+  };
+  if (cp < 0xff61 || cp > 0xff9f) {
+    return cp;
+  }
+  return map[cp - 0xff61];
+}
+
+uint32_t voicedKatakana(uint32_t base, uint32_t mark) {
+  if (mark == 0xff9e) {
+    switch (base) {
+      case 0x30a6: return 0x30f4;
+      case 0x30ab: return 0x30ac;
+      case 0x30ad: return 0x30ae;
+      case 0x30af: return 0x30b0;
+      case 0x30b1: return 0x30b2;
+      case 0x30b3: return 0x30b4;
+      case 0x30b5: return 0x30b6;
+      case 0x30b7: return 0x30b8;
+      case 0x30b9: return 0x30ba;
+      case 0x30bb: return 0x30bc;
+      case 0x30bd: return 0x30be;
+      case 0x30bf: return 0x30c0;
+      case 0x30c1: return 0x30c2;
+      case 0x30c4: return 0x30c5;
+      case 0x30c6: return 0x30c7;
+      case 0x30c8: return 0x30c9;
+      case 0x30cf: return 0x30d0;
+      case 0x30d2: return 0x30d3;
+      case 0x30d5: return 0x30d6;
+      case 0x30d8: return 0x30d9;
+      case 0x30db: return 0x30dc;
+      default: return base;
+    }
+  }
+  if (mark == 0xff9f) {
+    switch (base) {
+      case 0x30cf: return 0x30d1;
+      case 0x30d2: return 0x30d4;
+      case 0x30d5: return 0x30d7;
+      case 0x30d8: return 0x30da;
+      case 0x30db: return 0x30dd;
+      default: return base;
+    }
+  }
+  return base;
+}
+
+String normalizeHalfwidthKanaForDisplay(const String& text) {
+  String out;
+  out.reserve(text.length());
+  for (size_t i = 0; i < text.length();) {
+    const uint32_t cp = readUtf8Codepoint(text, i);
+    if (cp >= 0xff61 && cp <= 0xff9f) {
+      const uint32_t base = halfwidthKanaToFullwidth(cp);
+      if (i < text.length()) {
+        size_t markIndex = i;
+        const uint32_t mark = readUtf8Codepoint(text, markIndex);
+        if (mark == 0xff9e || mark == 0xff9f) {
+          appendUtf8Codepoint(out, voicedKatakana(base, mark));
+          i = markIndex;
+          continue;
+        }
+      }
+      appendUtf8Codepoint(out, base);
+    } else {
+      appendUtf8Codepoint(out, cp);
+    }
+  }
+  return out;
+}
+
+void drawUtf8Clipped(int32_t x, int32_t y, int32_t w, int32_t h, const String& text,
+                     uint16_t color = TFT_WHITE, uint16_t background = TFT_BLACK) {
+  String displayText = normalizeHalfwidthKanaForDisplay(text);
+  displayText.replace("\r", " ");
+  displayText.replace("\n", " ");
+  displayText.replace("\t", " ");
+  M5.Display.setFont(&fonts::efontJA_12);
+  M5.Display.setTextDatum(top_left);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(color, background);
+  if (M5.Display.textWidth(displayText) > w) {
+    const String suffix = "...";
+    const int32_t suffixWidth = M5.Display.textWidth(suffix);
+    String shortened;
+    shortened.reserve(displayText.length());
+    for (size_t i = 0; i < displayText.length();) {
+      const size_t before = i;
+      const uint32_t cp = readUtf8Codepoint(displayText, i);
+      String candidate = shortened;
+      appendUtf8Codepoint(candidate, cp);
+      candidate += suffix;
+      if (before > 0 && M5.Display.textWidth(candidate) > w) {
+        break;
+      }
+      if (before == 0 && M5.Display.textWidth(candidate) > w) {
+        shortened = suffixWidth <= w ? suffix : "";
+        break;
+      }
+      appendUtf8Codepoint(shortened, cp);
+    }
+    if (shortened.length() > 0 && shortened != suffix) {
+      shortened += suffix;
+    }
+    displayText = shortened;
+  }
+  M5.Display.setClipRect(x, y, w, h);
+  M5.Display.drawString(displayText, x, y);
+  M5.Display.clearClipRect();
+  M5.Display.setFont(&fonts::Font0);
+}
+
 void drawSlider(int32_t x, int32_t y, int32_t w, const char* label, int value, int minValue, int maxValue) {
+  M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setCursor(x, y);
@@ -1463,11 +2586,12 @@ void drawSlider(int32_t x, int32_t y, int32_t w, const char* label, int value, i
 }
 
 void drawSettingsTabs() {
-  drawButton(6, 206, 58, 26, "Net", settingsPage == SettingsPage::Network);
-  drawButton(68, 206, 58, 26, "Disp", settingsPage == SettingsPage::Display);
-  drawButton(130, 206, 58, 26, "Audio", settingsPage == SettingsPage::Audio);
-  drawButton(192, 206, 58, 26, "Servo", settingsPage == SettingsPage::Servo);
-  drawButton(254, 206, 60, 26, "Pwr", settingsPage == SettingsPage::Power);
+  drawButton(4, 206, 50, 26, "Net", settingsPage == SettingsPage::Network);
+  drawButton(57, 206, 50, 26, "Disp", settingsPage == SettingsPage::Display);
+  drawButton(110, 206, 50, 26, "Aud", settingsPage == SettingsPage::Audio);
+  drawButton(163, 206, 50, 26, "Srv", settingsPage == SettingsPage::Servo);
+  drawButton(216, 206, 48, 26, "Pwr", settingsPage == SettingsPage::Power);
+  drawButton(267, 206, 49, 26, "Pass", settingsPage == SettingsPage::StreetPass);
 }
 
 void drawNetworkSettingsPage() {
@@ -1611,6 +2735,77 @@ void drawPowerSettingsPage() {
   drawButton(150, 144, 150, 28, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
 }
 
+void drawStreetPassSettingsPage() {
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(18, 54);
+  M5.Display.printf("StreetPass: %s\n", streetPassController.enabled() ? "On" : "Off");
+  M5.Display.printf("Stored: %u/%u\n",
+                    static_cast<unsigned>(streetPassController.storedCount()),
+                    static_cast<unsigned>(StreetPassController::kMaxRecords));
+  M5.Display.printf("Unsynced: %u\n", static_cast<unsigned>(streetPassController.unsyncedCount()));
+  M5.Display.printf("Dropped: %lu\n", static_cast<unsigned long>(streetPassController.droppedCount()));
+
+  drawButton(182, 54, 116, 28, streetPassController.enabled() ? "Turn Off" : "Turn On",
+             streetPassController.enabled());
+  drawButton(182, 88, 116, 28, streetPassProfileVisible ? "History" : "Profile",
+             streetPassProfileVisible);
+
+  if (streetPassProfileVisible) {
+    const StreetPassProfile& profile = streetPassController.profile();
+    M5.Display.setTextColor(M5.Display.color565(255, 220, 90), TFT_BLACK);
+    M5.Display.setCursor(18, 118);
+    M5.Display.println("My profile");
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.setCursor(18, 138);
+    M5.Display.print("Name:");
+    drawUtf8Clipped(58, 136, 244, 18, profile.name);
+    M5.Display.setCursor(18, 158);
+    M5.Display.print("Msg :");
+    drawUtf8Clipped(58, 156, 244, 18, profile.message);
+    return;
+  }
+
+  constexpr uint8_t kStreetPassRowsPerPage = 3;
+  const uint8_t storedCount = streetPassController.storedCount();
+  const uint8_t pageCount = max<uint8_t>(1, (storedCount + kStreetPassRowsPerPage - 1) / kStreetPassRowsPerPage);
+  if (streetPassHistoryPage >= pageCount) {
+    streetPassHistoryPage = pageCount - 1;
+  }
+  const uint8_t startIndex = streetPassHistoryPage * kStreetPassRowsPerPage;
+  const uint8_t count = storedCount > startIndex
+                          ? min<uint8_t>(storedCount - startIndex, kStreetPassRowsPerPage)
+                          : 0;
+
+  M5.Display.setTextColor(M5.Display.color565(255, 220, 90), TFT_BLACK);
+  M5.Display.setCursor(18, 104);
+  M5.Display.printf("History %u/%u", static_cast<unsigned>(streetPassHistoryPage + 1), static_cast<unsigned>(pageCount));
+  drawButton(108, 98, 30, 22, "<", streetPassHistoryPage > 0);
+  drawButton(144, 98, 30, 22, ">", streetPassHistoryPage + 1 < pageCount);
+
+  int32_t y = 126;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint8_t recordIndex = storedCount - 1 - (startIndex + i);
+    const StreetPassRecord* record = streetPassController.recordAt(recordIndex);
+    if (record == nullptr) {
+      continue;
+    }
+    M5.Display.setCursor(18, y);
+    M5.Display.setTextColor(record->synced ? M5.Display.color565(100, 220, 150) : M5.Display.color565(255, 205, 90), TFT_BLACK);
+    M5.Display.print(record->synced ? "OK" : "WAIT");
+    drawUtf8Clipped(54, y - 1, 208, 15, record->peerName);
+    drawUtf8Clipped(54, y + 12, 208, 15, record->peerMessage, M5.Display.color565(190, 198, 205));
+    drawButton(270, y - 2, 42, 22, "DEL");
+    y += 28;
+  }
+  if (count == 0) {
+    M5.Display.setTextColor(M5.Display.color565(190, 198, 205), TFT_BLACK);
+    M5.Display.setCursor(18, 126);
+    M5.Display.println("No encounters yet");
+  }
+}
+
 void drawInfoScreen() {
   lastInfoDrawMs = millis();
   M5.Display.fillScreen(TFT_BLACK);
@@ -1618,6 +2813,7 @@ void drawInfoScreen() {
     drawNetworkQrScreen();
     return;
   }
+  M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(2);
   M5.Display.setCursor(12, 16);
@@ -1635,6 +2831,9 @@ void drawInfoScreen() {
       break;
     case SettingsPage::Power:
       drawPowerSettingsPage();
+      break;
+    case SettingsPage::StreetPass:
+      drawStreetPassSettingsPage();
       break;
     case SettingsPage::Network:
     default:
@@ -1660,6 +2859,9 @@ void setInfoScreenVisible(bool visible) {
   faceController.setEnabled(displayOn && !visible);
   applyDisplayBrightness();
   if (visible) {
+    if (settingsPage == SettingsPage::StreetPass) {
+      streetPassController.markAllRead();
+    }
     drawInfoScreen();
   }
 }
@@ -1710,33 +2912,42 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
     return true;
   }
 
-  if (touchIn(touch, 6, 206, 58, 26)) {
+  if (touchIn(touch, 4, 206, 50, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Network;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 68, 206, 58, 26)) {
+  if (touchIn(touch, 57, 206, 50, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Display;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 130, 206, 58, 26)) {
+  if (touchIn(touch, 110, 206, 50, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Audio;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 192, 206, 58, 26)) {
+  if (touchIn(touch, 163, 206, 50, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Servo;
     drawInfoScreen();
     return true;
   }
-  if (touchIn(touch, 254, 206, 60, 26)) {
+  if (touchIn(touch, 216, 206, 48, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Power;
+    drawInfoScreen();
+    return true;
+  }
+  if (touchIn(touch, 267, 206, 49, 26)) {
+    activeNetworkQr = NetworkQrType::None;
+    settingsPage = SettingsPage::StreetPass;
+    streetPassProfileVisible = false;
+    streetPassHistoryPage = 0;
+    streetPassController.markAllRead();
     drawInfoScreen();
     return true;
   }
@@ -1793,6 +3004,65 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
       applyLowPowerMode(!deviceSettings.lowPowerMode, true);
       return true;
     }
+  } else if (settingsPage == SettingsPage::StreetPass) {
+    if (touchIn(touch, 182, 54, 116, 28)) {
+      JsonDocument request;
+      JsonDocument response;
+      request["type"] = "streetpass.profile.set";
+      request["enabled"] = !streetPassController.enabled();
+      streetPassController.handleJsonCommand(request, response, millis());
+      drawInfoScreen();
+      return true;
+    }
+    if (touchIn(touch, 182, 88, 116, 28)) {
+      streetPassProfileVisible = !streetPassProfileVisible;
+      drawInfoScreen();
+      return true;
+    }
+    if (!streetPassProfileVisible) {
+      constexpr uint8_t kStreetPassRowsPerPage = 3;
+      const uint8_t storedCount = streetPassController.storedCount();
+      const uint8_t pageCount = max<uint8_t>(1, (storedCount + kStreetPassRowsPerPage - 1) / kStreetPassRowsPerPage);
+      if (touchIn(touch, 108, 98, 30, 22)) {
+        if (streetPassHistoryPage > 0) {
+          --streetPassHistoryPage;
+          drawInfoScreen();
+        }
+        return true;
+      }
+      if (touchIn(touch, 144, 98, 30, 22)) {
+        if (streetPassHistoryPage + 1 < pageCount) {
+          ++streetPassHistoryPage;
+          drawInfoScreen();
+        }
+        return true;
+      }
+      const uint8_t startIndex = streetPassHistoryPage * kStreetPassRowsPerPage;
+      const uint8_t count = storedCount > startIndex
+                              ? min<uint8_t>(storedCount - startIndex, kStreetPassRowsPerPage)
+                              : 0;
+      for (uint8_t i = 0; i < count; ++i) {
+        const int32_t y = 126 + static_cast<int32_t>(i) * 28;
+        if (!touchIn(touch, 270, y - 2, 42, 22)) {
+          continue;
+        }
+        const uint8_t recordIndex = storedCount - 1 - (startIndex + i);
+        const StreetPassRecord* record = streetPassController.recordAt(recordIndex);
+        if (record != nullptr) {
+          JsonDocument request;
+          JsonDocument response;
+          request["type"] = "streetpass.encounters.delete";
+          JsonArray ids = request["recordIds"].to<JsonArray>();
+          ids.add(record->recordId);
+          streetPassController.handleJsonCommand(request, response, millis());
+          if ((response["deletedCount"] | 0) > 0) {
+            clearStreetPassBleCandidates();
+          }
+        }
+        drawInfoScreen();
+        return true;
+      }
+    }
   }
 
   return false;
@@ -1803,6 +3073,27 @@ void drawLowPowerPrompt() {
     return;
   }
   drawButton(M5.Display.width() - 132, M5.Display.height() - 44, 66, 30, "LOW", true);
+}
+
+void drawStreetPassNotificationOverlay() {
+  const uint8_t unread = streetPassController.unreadCount();
+  if (!displayOn || infoScreenVisible || unread == 0) {
+    return;
+  }
+
+  const int32_t x = M5.Display.width() - 31;
+  const int32_t y = 42;
+  const uint16_t color = M5.Display.color565(255, 220, 90);
+  M5.Display.drawRect(x, y, 22, 15, color);
+  M5.Display.drawLine(x, y, x + 11, y + 8, color);
+  M5.Display.drawLine(x + 22, y, x + 11, y + 8, color);
+  if (unread > 1) {
+    M5.Display.fillCircle(x + 22, y - 2, 6, TFT_RED);
+    M5.Display.setTextColor(TFT_WHITE, TFT_RED);
+    M5.Display.setTextSize(1);
+    M5.Display.setCursor(x + 19, y - 6);
+    M5.Display.print(min<uint8_t>(unread, 9));
+  }
 }
 
 void setState(ChanState state) {
@@ -2183,6 +3474,30 @@ bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context
   return sendUsbSerialFrame(kUsbSerialTypeMicPcm, payload, length);
 }
 
+void writePongResponse(JsonDocument& response, JsonDocument& request) {
+  response["type"] = "pong";
+  const char* requestId = request["requestId"] | "";
+  if (requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  const char* id = request["id"] | "";
+  if (id[0] != '\0') {
+    response["id"] = id;
+  }
+  response["timestampMs"] = millis();
+}
+
+void sendPongResponse(JsonDocument& request) {
+  JsonDocument pong;
+  writePongResponse(pong, request);
+  String body;
+  serializeJson(pong, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+}
+
 void sendAffectionState(const char* requestId) {
   if (!wsServer.hasClient() && !usbSerialClientConnected) {
     return;
@@ -2356,6 +3671,37 @@ void handleAffectionDebugSetCommand(JsonDocument& doc) {
   }
 }
 
+bool handleStreetPassCommand(JsonDocument& doc) {
+  const char* commandType = doc["type"] | "";
+  const uint16_t beforeProfileNameHash = streetPassNameHash(streetPassController.profile().name);
+  JsonDocument response;
+  if (!streetPassController.handleJsonCommand(doc, response, millis())) {
+    return false;
+  }
+  if (strcmp(commandType, "streetpass.time.set") == 0 && (response["ok"] | false)) {
+    writeStreetPassRtcTime(doc["unixTime"] | 0);
+  }
+  if (strcmp(commandType, "streetpass.profile.set") == 0 &&
+      beforeProfileNameHash != streetPassNameHash(streetPassController.profile().name)) {
+    resetStreetPassBleAttemptCooldowns();
+  }
+  if (strcmp(commandType, "streetpass.encounters.delete") == 0 && (response["deletedCount"] | 0) > 0) {
+    clearStreetPassBleCandidates();
+  }
+
+  String body;
+  serializeJson(response, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+  if (streetPassPageVisible()) {
+    streetPassController.markAllRead();
+    drawInfoScreen();
+  }
+  return true;
+}
+
 void handleJsonCommand(const uint8_t* payload, size_t length) {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload, length);
@@ -2380,7 +3726,9 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
     }
   }
 #endif
-  if (strcmp(type, "state") == 0) {
+  if (strcmp(type, "ping") == 0) {
+    sendPongResponse(doc);
+  } else if (strcmp(type, "state") == 0) {
     const char* value = doc["value"] | "";
     handleStateCommand(value);
   } else if (strcmp(type, "affection.event") == 0) {
@@ -2393,6 +3741,10 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
     handleAffectionDebugAdjustCommand(doc);
   } else if (strcmp(type, "affection.debug_set") == 0) {
     handleAffectionDebugSetCommand(doc);
+  } else if (strncmp(type, "streetpass.", 11) == 0) {
+    if (!handleStreetPassCommand(doc)) {
+      Serial.printf("[streetpass] unsupported type: %s\n", type);
+    }
   } else if (strcmp(type, "auth") == 0) {
     const char* result = doc["result"] | "";
     handleAuthCommand(result);
@@ -2480,12 +3832,7 @@ void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length) {
                   usbSerialFramedMode ? 1 : 0);
 #endif
     JsonDocument pong;
-    pong["type"] = "pong";
-    const char* id = doc["id"] | "";
-    if (id != nullptr && id[0] != '\0') {
-      pong["id"] = id;
-    }
-    pong["timestampMs"] = millis();
+    writePongResponse(pong, doc);
 
     String body;
     serializeJson(pong, body);
@@ -2682,17 +4029,11 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
                     static_cast<unsigned long>(millis()));
 #endif
       JsonDocument pong;
-      pong["type"] = "pong";
+      JsonDocument ping;
       if (length > 0) {
-        JsonDocument ping;
-        if (!deserializeJson(ping, payload, length)) {
-          const char* id = ping["id"] | "";
-          if (id[0] != '\0') {
-            pong["id"] = id;
-          }
-        }
+        deserializeJson(ping, payload, length);
       }
-      pong["timestampMs"] = millis();
+      writePongResponse(pong, ping);
       String body;
       serializeJson(pong, body);
       const bool sent = sendUsbSerialFrame(kUsbSerialTypePong, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
@@ -2946,7 +4287,7 @@ void connectWiFi() {
 
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_AP);
-    WiFi.setSleep(false);
+    WiFi.setSleep(true);
     const bool configOk = WiFi.softAPConfig(localIP, gateway, subnet);
     const bool apOk = WiFi.softAP(AP_SSID, AP_PASSWORD);
 
@@ -2962,7 +4303,7 @@ void connectWiFi() {
   }
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
+  WiFi.setSleep(true);
   if (!isWifiCredentialConfigured(currentWifiIndex) && !selectNextConfiguredWifi()) {
     Serial.println("[wifi] no STA credentials configured");
     drawBootScreen("WiFi setup AP");
@@ -3190,6 +4531,9 @@ void setup() {
     faceController.setThermalFaceMode(ThermalFaceMode::LowPower);
   }
   affectionController.begin(&preferences);
+  streetPassController.begin(&preferences);
+  restoreStreetPassTimeFromRtc(millis());
+  beginStreetPassBle();
   faceController.setAffectionState(affectionController.state());
   motionController.begin();
   audioController.begin(&wsServer);
@@ -3225,6 +4569,9 @@ void loop() {
   };
 #endif
   updateButtons(now);
+  if (updateDisplayOffStreetPassMode(now)) {
+    return;
+  }
   updateThermalStatus(now);
   updateMicStatusOverlay();
   updateTouch(now);
@@ -3232,6 +4579,8 @@ void loop() {
   updateShake(now);
   updateUsbSerial(now);
   updateWiFi(now);
+  updateStreetPassNetworkTime(now);
+  streetPassController.update(now);
 
   if (wsStarted) {
 #if FACE_DIAG_LOG_ENABLED
@@ -3252,6 +4601,7 @@ void loop() {
 #endif
   }
   updateCameraButtonPending(now);
+  updateStreetPassBle(now);
 
   if (!interactionsReady(now)) {
     if (displayOn) {
@@ -3312,6 +4662,7 @@ void loop() {
       lastFaceUpdateMs = now;
       faceController.update(now);
       drawLowPowerPrompt();
+      drawStreetPassNotificationOverlay();
     }
 #if FACE_DIAG_LOG_ENABLED
   } else if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
