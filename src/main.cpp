@@ -96,6 +96,7 @@ unsigned long lastInfoDrawMs = 0;
 bool pendingStateAfterPlayback = false;
 ChanState deferredStateAfterPlayback = ChanState::Idle;
 unsigned long deferredStateReadyMs = 0;
+bool pendingSpeakingFaceState = false;
 bool pendingFaceModeNormalAfterPlayback = false;
 unsigned long deferredFaceModeReadyMs = 0;
 unsigned long wsAudioSettleUntilMs = 0;
@@ -283,6 +284,7 @@ void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
 void applyListeningPresentation(unsigned long now);
 void updateDeferredFaceState();
+void updateSpeakingFaceStateAfterPlayback();
 void updateDeferredFaceMode();
 AuthFaceMode displayAuthFaceMode(AuthFaceMode mode);
 bool audioBusyForUiEffects();
@@ -3101,8 +3103,8 @@ void setState(ChanState state) {
     if (state == ChanState::Speaking && audioController.state() != ChanState::Speaking) {
       pendingStateAfterPlayback = false;
       deferredStateReadyMs = 0;
+      pendingSpeakingFaceState = true;
       wsAudioSettleUntilMs = 0;
-      faceController.restartSpeakingAnimation();
       audioController.setState(ChanState::Speaking);
       applyDisplayBrightness();
       Serial.println("[state] speaking resynced");
@@ -3132,7 +3134,12 @@ void setState(ChanState state) {
                   static_cast<long>(wsAudioSettleUntilMs - millis()));
     wsAudioSettleUntilMs = 0;
   }
-  faceController.setState(state);
+  if (state == ChanState::Speaking) {
+    pendingSpeakingFaceState = true;
+  } else {
+    pendingSpeakingFaceState = false;
+    faceController.setState(state);
+  }
   audioController.setState(state);
   applyDisplayBrightness();
 
@@ -3159,10 +3166,26 @@ void setState(ChanState state) {
     audioController.setRemoteVadActive(false);
     cancelListeningNod(false);
     motionController.holdCurrentPose();
-    faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
   }
 
   Serial.printf("[state] changed to %d\n", static_cast<int>(state));
+}
+
+void updateSpeakingFaceStateAfterPlayback() {
+  if (!pendingSpeakingFaceState) {
+    return;
+  }
+  if (currentState != ChanState::Speaking) {
+    pendingSpeakingFaceState = false;
+    return;
+  }
+  if (!audioController.hasPlaybackStarted()) {
+    return;
+  }
+
+  pendingSpeakingFaceState = false;
+  faceController.setState(ChanState::Speaking);
+  faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
 }
 
 void updateDeferredFaceState() {
@@ -4608,6 +4631,7 @@ void loop() {
       drawInitializeScreen(now);
     }
     audioController.update(now);
+    updateSpeakingFaceStateAfterPlayback();
     updateAffectionState(now);
     motionController.update(now);
     return;
@@ -4631,6 +4655,7 @@ void loop() {
       drawInfoScreen();
     }
     audioController.update(now);
+    updateSpeakingFaceStateAfterPlayback();
     updateAffectionState(now);
     updateDeferredFaceState();
     updateDeferredFaceMode();
@@ -4645,6 +4670,7 @@ void loop() {
   unsigned long stepStartedAt = millis();
 #endif
   audioController.update(now);
+  updateSpeakingFaceStateAfterPlayback();
 #if FACE_DIAG_LOG_ENABLED
   logFaceDiagStep("audioController.update", stepStartedAt);
   stepStartedAt = millis();

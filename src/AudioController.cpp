@@ -117,6 +117,10 @@ bool AudioController::isPlaybackDraining() const {
   return pendingIdleAfterPlayback_;
 }
 
+bool AudioController::hasPlaybackStarted() const {
+  return state_ == ChanState::Speaking && playbackStarted_;
+}
+
 bool AudioController::pauseMicForCapture() {
   if (!micEnabled_) {
     return false;

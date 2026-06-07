@@ -20,6 +20,7 @@ public:
   void setState(ChanState state);
   ChanState state() const;
   bool isPlaybackDraining() const;
+  bool hasPlaybackStarted() const;
   bool pauseMicForCapture();
   void resumeMicAfterCapture(bool wasPaused);
   void deferNextSpeakerStartUntil(unsigned long timestampMs);
