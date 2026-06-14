@@ -1,0 +1,14 @@
+{
+  "photo_blink_talk.png": "photo_blink.png",
+  "talk_guarded_0.png": "idle_guarded_0.png",
+  "talk_attached_0.png": "idle_attached_0.png",
+  "pet_blink_guarded_0.png": "pet_guarded_0.png",
+  "shake_guarded_0.png": "furifuri_0.png",
+  "shake_guarded_1.png": "furifuri_1.png",
+  "shake_attached_0.png": "furifuri_0.png",
+  "shake_attached_1.png": "furifuri_1.png",
+  "exhausted_blink.png": "tired_blink.png",
+  "low_power_0.png": "exhausted_0.png",
+  "low_power_talk.png": "exhausted_talk.png",
+  "low_power_blink.png": "tired_blink.png"
+}

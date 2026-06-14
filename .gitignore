@@ -8,10 +8,16 @@ dist/
 .vscode/launch.json
 .vscode/ipch/
 .DS_Store
+__pycache__/
+*.pyc
+tools/**/.DS_Store
+tools/**/__pycache__/
+tools/**/*.pyc
+tools/face_image_builder/build_faces_from_sprite_sheet/models/*.onnx
 assets/.DS_Store
 assets/**/.DS_Store
 assets/
-data/*.png
+backups/
 src/config_private.h
 docs/face_image_inventory.ja.md
 docs/face_image_usage_analysis.ja.md
