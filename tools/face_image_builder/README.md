@@ -8,7 +8,7 @@
 
 ## 全体の流れ
 
-1. `generate_sprite_sheet/` の素材を使って、画像生成AIで 6x6 スプライトシートを作ります。
+1. `generate_sprite_sheet/` に入っているプロンプト等を使用し、画像生成AIで 6x6 スプライトシートを作ります。
 2. `build_faces_from_sprite_sheet/` のCLIで、スプライトシートを48枚のPNGへ分割します。
 3. 生成したPNGをファームウェアの `data/` に配置します。
 4. PlatformIOでLittleFSへアップロードします。
@@ -61,6 +61,6 @@ tools/face_image_builder/
 
 ## 詳細
 
-画像生成AIでスプライトシートを作る方法は、`generate_sprite_sheet/README.md` を読んでください。
+画像生成AIでスプライトシートを作る方法は、`generate_sprite_sheet/README.md` をご参照ください。
 
-スプライトシートを分割して `data/` に入れる方法は、`build_faces_from_sprite_sheet/README.md` を読んでください。
+スプライトシートを分割して `data/` に入れる方法は、`build_faces_from_sprite_sheet/README.md` をご参照ください。

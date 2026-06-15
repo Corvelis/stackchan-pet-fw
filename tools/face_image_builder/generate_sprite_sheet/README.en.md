@@ -2,9 +2,9 @@
 
 [Japanese](README.md)
 
-This directory contains assets for generating a 6x6 face sprite sheet for Stack-chan pet firmware with image generation AI tools such as ChatGPT Image or Gemini.
+This directory describes the assets and steps for generating a 6x6 face sprite sheet for Stack-chan pet firmware with image generation AI tools such as ChatGPT Image or Gemini.
 
-The actual splitting step that creates the 48 firmware PNG files lives in `tools/face_image_builder/build_faces_from_sprite_sheet/`.
+The splitting step that creates the 48 firmware PNG files is handled separately in `tools/face_image_builder/build_faces_from_sprite_sheet/`.
 
 ## Files
 
@@ -36,23 +36,21 @@ Prompt:
   the full text of sprite_sheet_prompt.md
 ```
 
-`grid_template_6x6.png` is Image A in the prompt. It is the fixed 6x6 grid template.
+`grid_template_6x6.png` is the fixed 6x6 grid template.
 
-Image B should be one face image for the character you want to generate. The images in `references/` are only examples used while testing this repository.
+Image B should be one face image for the character you want to generate. The images in `references/` are sample reference images used while testing this repository.
+Choose one mostly front-facing image where the hairstyle, eyes, outfit, and accessories are easy to see.
 
-You do not need to use the images in `references/`. For your own character, choose one mostly front-facing image where the hairstyle, eyes, outfit, and accessories are easy to see.
-
-`sprite_sheet_prompt.md` is the completed prompt. Paste it as-is into the image generation AI.
+`sprite_sheet_prompt.md` is the prompt I used. Edit it as needed.
 
 ## Image Generation Steps
 
-Use ChatGPT Image 2.0 / gpt-image-2.0 or a Gemini + nano banana style image generation UI to create the sprite sheet from Image A, Image B, and the prompt.
-
-You can do this from a smartphone app chat UI. No dedicated API or script is required.
+Use the ChatGPT or Gemini app to create a sprite sheet from Image A, Image B, and the prompt.
+You can also use an API, but a smartphone app chat UI is enough.
 
 Steps:
 
-1. Open ChatGPT or Gemini and switch to a state where it can generate images.
+1. Open a ChatGPT or Gemini chat where image generation is available.
 2. Attach `grid_template_6x6.png`.
 3. Attach one face image of your choice.
 4. Paste the full text of `sprite_sheet_prompt.md` into the message field.

@@ -2,17 +2,17 @@
 
 [English](README.en.md)
 
-`build_faces.py` は、画像生成AIなどで作った正方形の 6x6 顔スプライトシートから、Stack-chan pet firmware の `data/` に置ける 240x240 PNG 顔画像を生成するCLIです。
+`build_faces.py` は、画像生成AIなどで作った正方形の 6x6 顔スプライトシートから、Stack-chan pet firmware の `data/` に置く 240x240 PNG 顔画像を生成するCLIです。
 
 36セルを切り出したあと、ファームウェアが参照する追加画像をコピー補完し、合計48枚のPNGを作ります。
 
-画像生成AIに渡すプロンプト、グリッドテンプレート、参考顔画像は `tools/face_image_builder/generate_sprite_sheet/` に置きます。
+スプライトシートの作成方法は `tools/face_image_builder/generate_sprite_sheet/` に置いてあります。
 
 このフォルダは、完成したスプライトシートをファームウェア用画像へ変換するためのものです。
 
 ## まず使うコマンド
 
-Python 3 が動く macOS / Windows / Ubuntu を想定しています。
+実行環境はPython 3 が動く macOS / Windows / Ubuntu を想定しています。
 
 初回だけ、依存ライブラリを入れます。
 
@@ -20,17 +20,17 @@ Python 3 が動く macOS / Windows / Ubuntu を想定しています。
 python -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
 ```
 
-顔位置合わせ用モデルは、`build_faces.py` の初回実行時に自動でダウンロードされます。
-
-画像生成AIで作ったスプライトシートを `data/` に入れる場合は、このコマンドを使います。
+画像生成AIで作ったスプライトシートをファームウェアで使用するために `data/` に入れる場合は、下記のコマンドを使用します。
 
 ```bash
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data --backup-existing --detect-grid --clean
 ```
 
-このコマンドで、36セルの切り出し、顔位置合わせ、顔サイズ正規化、コピー補完まで行い、ファームウェアが参照する48枚のPNGを `data/` に揃えます。
+上記のコマンドで、36セルの切り出し、顔位置合わせ、顔サイズ正規化、コピー補完まで行い、ファームウェアが参照する48枚のPNGを `data/` に入れます。
 
-`--backup-existing` を付けているので、既存の `data/*.png` は `backups/data_faces_YYYYMMDD_HHMMSS/` に退避されます。
+`--backup-existing` オプションを付けると、既存の `data/*.png` は `backups/data_faces_YYYYMMDD_HHMMSS/` に退避されます。
+
+※顔位置合わせ用にAIモデルを使用していますが、モデルファイルは、`build_faces.py` の初回実行時に自動でダウンロードします。
 
 生成後、LittleFSへアップロードします。
 

@@ -2,9 +2,9 @@
 
 [English](README.en.md)
 
-このフォルダは、ChatGPT Image や Gemini などの画像生成AIで、Stack-chan pet firmware 用の 6x6 顔スプライトシートを作るための素材置き場です。
+ChatGPT Image や Gemini などの画像生成AIで、Stack-chan pet firmware 用の 6x6 顔スプライトシートを作るための素材や手順を記載しています。
 
-分割してファームウェア用の48枚のPNGを作る処理は、隣の `tools/face_image_builder/build_faces_from_sprite_sheet/` に分けています。
+分割してファームウェア用の48枚のPNGを作る処理は、`tools/face_image_builder/build_faces_from_sprite_sheet/` に分けています。
 
 ## ファイル構成
 
@@ -36,19 +36,17 @@ Prompt:
   sprite_sheet_prompt.md の全文
 ```
 
-`grid_template_6x6.png` は、プロンプト内の Image A です。6列x6行のグリッドそのものを固定するためのテンプレート画像です。
+`grid_template_6x6.png` は、6列x6行のグリッドそのものを固定するためのテンプレート画像です。
 
-Image B には、作りたいキャラクターの好きな顔画像を1枚使います。`references/` には、このリポジトリで試したサンプル用の参考画像を置いているだけです。
+Image B には、作りたいキャラクターの好きな顔画像を1枚使います。`references/` には、このリポジトリで試したサンプル用の参考画像を置いています。
+Image B には正面寄りで、髪型・目・服・アクセサリが分かりやすい顔画像を1枚選んでください。
 
-自分のキャラクターで作る場合は、`references/` の画像にこだわる必要はありません。正面寄りで、髪型・目・服・アクセサリが分かりやすい顔画像を1枚選んでください。
-
-`sprite_sheet_prompt.md` は完成済みプロンプトです。内容は編集せず、そのまま画像生成AIに貼り付けて使います。
+`sprite_sheet_prompt.md` は私が使用したプロンプトです。適宜編集してご使用ください。
 
 ## 画像生成の手順
 
-ChatGPT Image 2.0 / gpt-image-2.0 や Gemini + nano banana 系の画像生成UIで、Image A、Image B、プロンプトを使ってスプライトシートを作ります。
-
-スマホアプリのチャットUIからでも作れます。専用のAPIやスクリプトは不要です。
+ChatGPTやGeminiのアプリを使用し、Image A、Image B、プロンプトを用いてスプライトシートを作成します。
+APIなどからも作成可能ですが、スマホアプリのチャットUIからでも作成可能です。
 
 手順:
 

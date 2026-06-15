@@ -4,16 +4,9 @@
 
 This directory contains tools for building face image sets for Stack-chan pet firmware.
 
-The workflow is:
-
-1. Generate a 6x6 face sprite sheet with an image generation AI.
-2. Split the sprite sheet into the 48 PNG files used by the firmware.
-3. Install the generated PNG files into `data/`.
-4. Upload `data/` to LittleFS with PlatformIO.
-
 ## Workflow
 
-1. Use the assets in `generate_sprite_sheet/` to generate a 6x6 sprite sheet with an image generation AI.
+1. Use the prompt and related files in `generate_sprite_sheet/` to generate a 6x6 sprite sheet with an image generation AI.
 2. Use the CLI in `build_faces_from_sprite_sheet/` to split the sprite sheet into 48 PNG files.
 3. Install the generated PNG files into the firmware `data/` directory.
 4. Upload the LittleFS image with PlatformIO.
@@ -66,6 +59,6 @@ tools/face_image_builder/
 
 ## Details
 
-Read `generate_sprite_sheet/README.en.md` for the image generation workflow in English.
+Refer to `generate_sprite_sheet/README.en.md` for the image generation workflow in English.
 
-Read `build_faces_from_sprite_sheet/README.en.md` for the sprite sheet splitting CLI in English.
+Refer to `build_faces_from_sprite_sheet/README.en.md` for the sprite sheet splitting CLI in English.
