@@ -1,0 +1,9 @@
+MIT License
+
+The bundled `anime_face_detect_v1.4_n.onnx` model is distributed as part of
+deepghs/anime_face_detection, which is published under the MIT license on
+Hugging Face:
+
+https://huggingface.co/deepghs/anime_face_detection
+
+Keep this notice with redistributed copies of the model.

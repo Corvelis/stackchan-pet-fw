@@ -60,7 +60,7 @@ Required:
 
 - `platformio.ini`: PlatformIO build configuration.
 - `src/`: firmware source code.
-- `data/`: local LittleFS data directory. Runtime PNGs are ignored by Git.
+- `data/`: LittleFS face image directory. Default PNG files are included.
 - `docs/device_affection_api.md`: detailed device-side affection API notes.
 - `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
 - `docs/streetpass_protocol.md`: StreetPass BLE and JSON API details.
@@ -68,6 +68,7 @@ Required:
 Optional:
 
 - `.vscode/extensions.json`: editor recommendation only.
+- `tools/face_image_builder/`: tools for building face image sets from AI-generated sprite sheets.
 
 Ignored:
 
@@ -75,7 +76,6 @@ Ignored:
 - `.DS_Store`: macOS metadata.
 - `src/config_private.h`: local Wi-Fi credentials.
 - `assets/`: local source/reference image assets.
-- `data/*.png`: runtime face images derived from third-party character materials.
 
 ## Setup
 
@@ -125,7 +125,13 @@ Release builds should define `STACKCHAN_RELEASE_BUILD` so `src/config_private.h`
 ## Face Images
 
 The firmware loads face images from LittleFS using the paths in `src/config.h`.
-Place 240 x 240 PNG files with these exact names under `data/`.
+Default 240 x 240 PNG face images are included under `data/`.
+To replace them with your own images, place PNG files with these exact names under `data/`.
+
+To generate the face images from a 6x6 sprite sheet created with image generation AI,
+use [`tools/face_image_builder/`](tools/face_image_builder/). It includes the prompt,
+grid template, sprite sheet splitting CLI, and `data/` installation workflow.
+
 Folders under `assets/` are only source/reference work areas and are not read
 directly by the firmware. Rename/export the runtime images to the filenames
 below, place them directly under `data/`, then run `pio run --target uploadfs`
@@ -178,9 +184,11 @@ closed-mouth speaking frame.
 | Attached shake | `shake_attached_0.png`, `shake_attached_1.png` |
 | Thermal and low power | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
 
-The local image set used during development was prepared from
-"つくよみちゃん万能立ち絵素材（花兎*様）". These image files are not included in
-this repository. Download the original material from the official distribution
+This repository includes default PNG files generated from sample 01 in
+`tools/face_image_builder/`. The "Example source from Tsukuyomi-chan standing
+material" column is only a reference for manually preparing replacement images.
+The original Tsukuyomi-chan material itself is not included in this repository.
+If you use it, download the original material from the official distribution
 page, follow its terms, export the required 240 x 240 PNGs, and place them in
 `data/`.
 
