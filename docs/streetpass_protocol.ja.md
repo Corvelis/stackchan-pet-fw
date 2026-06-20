@@ -71,7 +71,7 @@ Public Card は UTF-8 JSON です。
 - `v`: protocol version。現在は `1`。
 - `profileId`: 同じ相手を識別するための ID。初回起動時に生成し、Preferences に保存します。
 - `cardSeq`: プロフィール変更時に増える sequence。
-- `name`: 表示名。UTF-8 で最大 32 bytes。
+- `name`: 表示名。UTF-8 で最大 48 bytes。
 - `message`: ひとことメッセージ。UTF-8 で最大 80 bytes。
 - `source`: 任意の送信元識別子。
 
@@ -146,7 +146,7 @@ GATT 失敗時は候補止まりで、履歴には保存しません。
 
 - 外部アプリからの `streetpass.time.set`
 - STA Wi-Fi 接続中の NTP
-- CoreS3 の RTC からの起動時復元
+- RTC が使えるデバイスでは、RTC からの起動時復元
 
 本体は時刻同期時に RTC へ UTC を書き込みます。再起動後は RTC から時刻を復元できる場合があります。
 常時 NTP を取り続けるのではなく、接続中に一定間隔で補正します。
@@ -192,7 +192,7 @@ WebSocket JSON と USB Serial JSON frame は同じメッセージを受け付け
 
 - `enabled`: `true`
 - `shareProfile`: `true`
-- `name`: `Stack-chan`
+- `name`: CoreS3 は `Stack-chan`、StopWatch は `StopWatch`、AtomS3R Chatbot は `ｽﾀｯｸﾁｬﾝ ミニマル`
 - `message`: `Konnichiwa`
 - `cardSeq`: `1`
 - `profileId`: 初回起動時に生成して Preferences に保存
@@ -200,7 +200,7 @@ WebSocket JSON と USB Serial JSON frame は同じメッセージを受け付け
 保存上限:
 
 - encounters: 30 件
-- `name`: UTF-8 32 bytes
+- `name`: UTF-8 48 bytes
 - `message`: UTF-8 80 bytes
 - `peerKey`: UTF-8 48 bytes
 
@@ -415,6 +415,9 @@ StreetPass ページ:
 - 各履歴には同期状態、名前、メッセージを表示します。
 - 履歴は個別に削除できます。
 - 時刻、RSSI、recordId、詳細な遭遇回数は表示しません。
+
+表示や操作方法はデバイスごとに異なります。CoreS3 はタッチ UI、StopWatch は丸画面 UI、
+AtomS3R Chatbot は BtnA 中心の小画面 UI で操作します。
 
 日本語表示:
 

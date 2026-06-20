@@ -1,13 +1,13 @@
 # USB Serial Protocol
 
-This document describes the USB CDC / USB Serial interface used by the
-Stack-chan CoreS3 firmware. It is intended for Android clients that open the
-CoreS3 USB port with Android USB Host APIs.
+This document describes the USB CDC / USB Serial interface used by the CoreS3,
+StopWatch, and AtomS3R Chatbot firmware. It is intended for Android clients that
+open the device USB port with Android USB Host APIs.
 
 The existing Wi-Fi APIs remain available:
 
 - WebSocket: `ws://<stack-chan-ip>:8080/`
-- HTTP capture: `POST http://<stack-chan-ip>/capture`
+- HTTP capture: `POST http://<stack-chan-ip>/capture`. This succeeds only on camera-equipped CoreS3 devices.
 
 USB Serial is an additional transport. It does not replace STA, SoftAP,
 WebSocket, or HTTP.
@@ -83,8 +83,8 @@ are recommended.
 | `0x01` JSON | both | UTF-8 JSON command/event |
 | `0x02` TTS PCM | client to device | raw signed 16-bit little-endian PCM, 16 kHz mono |
 | `0x03` MIC PCM | device to client | existing `MIC1` packet |
-| `0x04` capture request | client to device | JSON request payload |
-| `0x05` capture image chunk | device to client | JPEG bytes |
+| `0x04` capture request | client to device | JSON request payload. Fails on devices without cameras |
+| `0x05` capture image chunk | device to client | JPEG bytes. Sent only after successful CoreS3 capture |
 | `0x06` ACK | reserved | currently unused |
 | `0x07` ERROR | device to client | JSON error payload |
 | `0x08` PING | client to device | optional JSON payload |
@@ -115,6 +115,8 @@ WebSocket API. StreetPass commands use this same JSON transport.
 {"type":"motion","name":"center"}
 {"type":"affection.event","id":"phone_001","event":"petting","source":"phone","intensity":1.0}
 {"type":"affection.debug_set","requestId":"phone_002","affection":700,"persist":false}
+{"type":"audio.speaker_test","requestId":"spk_001","durationMs":450}
+{"type":"audio.mic_test","requestId":"mic_001","durationMs":600}
 {"type":"streetpass.profile.get","requestId":"sp_profile_001"}
 {"type":"streetpass.encounters.get","requestId":"sp_enc_001","sinceRecordId":0,"limit":30}
 ```
@@ -165,7 +167,9 @@ payload     signed 16-bit little-endian PCM
 
 ## Capture
 
-USB Serial capture uses JSON plus image chunks:
+USB Serial capture uses JSON plus image chunks. It succeeds only on
+camera-equipped CoreS3 devices. StopWatch and AtomS3R Chatbot return an error
+such as `camera_not_ready`.
 
 Client request:
 
@@ -191,6 +195,33 @@ On error:
 ```json
 {"type":"capture.end","id":"cap_001","ok":false,"error":"camera_not_ready"}
 ```
+
+## Audio Diagnostics
+
+The firmware exposes simple audio diagnostics through both JSON commands and
+HTTP endpoints.
+
+Speaker test:
+
+```json
+{"type":"audio.speaker_test","requestId":"spk_001","durationMs":450}
+```
+
+Response:
+
+```json
+{"type":"audio.speaker_test","requestId":"spk_001","ok":true,"durationMs":450}
+```
+
+Mic test:
+
+```json
+{"type":"audio.mic_test","requestId":"mic_001","durationMs":600}
+```
+
+The response includes metrics such as `peak`, `rms`, `dc`, `clipCount`,
+`chunks`, and `underruns`. HTTP `/speaker-test` and `/mic-test` provide the same
+diagnostic entry points.
 
 ## Receiver Requirements
 

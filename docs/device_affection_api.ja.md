@@ -246,21 +246,23 @@ Phase values:
 | `repeat` | 継続中または再検知。アプリ側は通常 TTS を間引きます。 |
 | `end` | 継続イベントの終了。 |
 | `instant` | `session_start`, `level_up`, `level_down` などの単発イベント。 |
-| `pressed` | `camera_button` などの本体側ボタン押下。 |
+| `pressed` | `camera_button` などの本体側操作。 |
 
 `interaction.event.source` は `device` 固定です。`level_up` / `level_down` は、
 先に `affection.state` を broadcast してから送信します。
 
-`camera_button` は WebSocket または USB Serial クライアント接続中だけ送信します。
-ボタンイベント用の単調増加する `seq` を含み、画像 binary は含みません。ネットワーク接続の
-クライアントは HTTP `POST /capture` を呼んで JPEG を取得してください。USB Serial クライアントは
-`capture.request` JSON message を送ります。送信後は、クライアントから次の text/binary 応答を
-受けるか 30 秒タイムアウトするまで、本体側で再押下を無視します。
+`camera_button` は CoreS3 のカメラ表示を押したときに、WebSocket または USB Serial
+クライアント接続中だけ送信します。ボタンイベント用の単調増加する `seq` を含み、
+画像 binary は含みません。ネットワーク接続のクライアントは HTTP `POST /capture` を呼んで
+JPEG を取得してください。USB Serial クライアントは `capture.request` JSON message を送ります。
+送信後は、クライアントから次の text/binary 応答を受けるか 30 秒タイムアウトするまで、
+本体側で再押下を無視します。StopWatch / AtomS3R Chatbot はカメラ非搭載のため、
+このカメラ表示イベントと画像取得は使えません。
 
 ## TTS と接続モード
 
 WebSocket または USB Serial クライアントが 1 つ以上接続している場合は connected mode とします。
-connected mode では、本体はテンプレート TTS を鳴らさず、物理イベント通知、表情、
+connected mode では、本体はテンプレート TTS を鳴らさず、本体イベント通知、表情、
 モーションのみを担当します。TTS はスマホ側が生成し、接続中の transport に合わせて本体へ送ります。
 ネットワーク接続では WebSocket binary frame、USB Serial 接続では SCU1 type `0x02` frame を使います。
 

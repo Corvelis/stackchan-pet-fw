@@ -1,11 +1,14 @@
 #include "CameraManager.h"
 
-#include <esp_camera.h>
-#include <img_converters.h>
-
 #include "config.h"
 
+#if STACKCHAN_HAS_CAMERA
+#include <esp_camera.h>
+#include <img_converters.h>
+#endif
+
 bool CameraManager::init() {
+#if STACKCHAN_HAS_CAMERA
   camera_config_t cameraConfig = {};
   cameraConfig.pin_pwdn = -1;
   cameraConfig.pin_reset = -1;
@@ -49,6 +52,11 @@ bool CameraManager::init() {
   ready_ = true;
   Serial.println("[camera] ready");
   return true;
+#else
+  ready_ = false;
+  Serial.println("[camera] unavailable on this device");
+  return false;
+#endif
 }
 
 bool CameraManager::isReady() const {
@@ -56,6 +64,7 @@ bool CameraManager::isReady() const {
 }
 
 void CameraManager::deinit() {
+#if STACKCHAN_HAS_CAMERA
   if (!ready_) {
     return;
   }
@@ -67,9 +76,13 @@ void CameraManager::deinit() {
     Serial.println("[camera] deinit");
   }
   ready_ = false;
+#else
+  ready_ = false;
+#endif
 }
 
 bool CameraManager::captureJpeg(uint8_t** buffer, size_t* length) {
+#if STACKCHAN_HAS_CAMERA
   if (!ready_ || buffer == nullptr || length == nullptr) {
     return false;
   }
@@ -124,10 +137,23 @@ bool CameraManager::captureJpeg(uint8_t** buffer, size_t* length) {
   Serial.printf("[camera] captured jpeg: %u bytes\n", static_cast<unsigned>(*length));
 #endif
   return true;
+#else
+  if (buffer != nullptr) {
+    *buffer = nullptr;
+  }
+  if (length != nullptr) {
+    *length = 0;
+  }
+  return false;
+#endif
 }
 
 void CameraManager::releaseBuffer(uint8_t* buffer) {
+#if STACKCHAN_HAS_CAMERA
   if (buffer != nullptr) {
     free(buffer);
   }
+#else
+  (void)buffer;
+#endif
 }

@@ -69,7 +69,7 @@ Public Card is UTF-8 JSON:
 
 Limits:
 
-- `name`: UTF-8, max 32 bytes.
+- `name`: UTF-8, max 48 bytes.
 - `message`: UTF-8, max 80 bytes.
 
 ## Encounter Conditions
@@ -143,7 +143,7 @@ Time sources:
 
 - app-provided `streetpass.time.set`,
 - NTP while connected in STA Wi-Fi mode,
-- CoreS3 RTC restored at boot.
+- boot-time RTC restore on devices where RTC is available.
 
 Current implementation values:
 
@@ -171,7 +171,7 @@ Initial profile:
 
 - `enabled`: `true`
 - `shareProfile`: `true`
-- `name`: `Stack-chan`
+- `name`: `Stack-chan` on CoreS3, `StopWatch` on StopWatch, and `ｽﾀｯｸﾁｬﾝ ミニマル` on AtomS3R Chatbot
 - `message`: `Konnichiwa`
 - `cardSeq`: `1`
 - `profileId`: generated on first boot and stored in Preferences
@@ -179,7 +179,7 @@ Initial profile:
 Storage limits:
 
 - encounters: 30 records
-- `name`: UTF-8 32 bytes
+- `name`: UTF-8 48 bytes
 - `message`: UTF-8 80 bytes
 - `peerKey`: UTF-8 48 bytes
 
@@ -268,6 +268,10 @@ Firmware-side grouping uses elapsed UTC seconds, not local calendar days.
 - Records can be deleted one at a time.
 - Japanese UTF-8 is displayed; half-width katakana is normalized to full-width
   katakana for display only.
+
+Display layout and controls differ by target. CoreS3 uses the touch UI,
+StopWatch uses the round display UI, and AtomS3R Chatbot uses the small-display
+BtnA-centered UI.
 
 ## Status API
 

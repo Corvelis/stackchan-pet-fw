@@ -7,6 +7,7 @@
 
 #include "AffectionController.h"
 #include "AppState.h"
+#include "config.h"
 
 enum class AuthFaceMode {
   Unknown,
@@ -36,10 +37,13 @@ public:
   void setEnabled(bool enabled);
   void setThermalFaceMode(ThermalFaceMode mode);
   void setBatteryState(int level, bool charging);
+  void setClockText(const String& text, bool valid);
   void setMicState(bool connected, bool muted, bool streaming);
   void setCameraButtonPending(bool pending);
   void setAffectionState(const AffectionState& state);
   void showAffectionDelta(int delta, unsigned long now);
+  void prepareSpeakingCache(AuthFaceMode authMode);
+  void startSpeaking(AuthFaceMode authMode);
   void update(unsigned long now);
 
 private:
@@ -60,6 +64,17 @@ private:
   void showBaseFace();
   void drawFace(const char* path);
   bool drawCachedTalkFace(const char* path);
+#if STACKCHAN_ROUND_DISPLAY
+  bool drawRoundCachedTalkFace(const char* path);
+  bool prepareRoundTalkCache(const char* path0, const char* path1);
+  bool loadRoundBaseFaceToCanvas(M5Canvas& canvas, const char* path);
+#endif
+  int32_t faceImageDrawSize() const;
+  int32_t faceImageDrawX() const;
+  int32_t faceImageDrawY() const;
+  float faceImageScale() const;
+  template <typename Target>
+  bool drawFaceImageTarget(Target& target, File& file) const;
   void drawAffectionOverlay(unsigned long now);
   void drawAffectionOverlayOnCanvas(unsigned long now);
   void drawBatteryOverlay();
@@ -68,6 +83,14 @@ private:
   void drawCameraOverlayOnCanvas();
   void drawMicOverlay();
   void drawMicOverlayOnCanvas();
+  template <typename Target>
+  void drawRoundAffectionOverlayTarget(Target& target, unsigned long now);
+  template <typename Target>
+  void drawRoundBatteryOverlayTarget(Target& target);
+  template <typename Target>
+  void drawRoundCameraOverlayTarget(Target& target);
+  template <typename Target>
+  void drawRoundMicOverlayTarget(Target& target);
   bool overlaysNeedRefresh(unsigned long now) const;
   void drawHeart(M5GFX& target, int32_t cx, int32_t cy, int32_t size, uint16_t color);
   void drawHeart(M5Canvas& target, int32_t cx, int32_t cy, int32_t size, uint16_t color);
@@ -80,6 +103,12 @@ private:
 
   M5Canvas canvas_;
   M5Canvas talkCanvas_[kTalkCacheSetCount][2];
+#if STACKCHAN_ROUND_DISPLAY
+  M5Canvas roundTalkCanvas_[2];
+  String roundTalkCachePath_[2];
+  bool roundTalkCacheReady_[2] = {};
+  bool roundTalkCacheAllocated_[2] = {};
+#endif
   ChanState state_ = ChanState::Idle;
   AuthFaceMode authFaceMode_ = AuthFaceMode::Unknown;
   bool photoFaceMode_ = false;
@@ -107,6 +136,13 @@ private:
   int batteryLevel_ = -1;
   bool batteryCharging_ = false;
   bool batteryOverlayDirty_ = true;
+  String clockText_;
+  bool clockValid_ = false;
+#if CLOCK_DISPLAY_ENABLED
+  bool clockOverlayDirty_ = true;
+#else
+  bool clockOverlayDirty_ = false;
+#endif
   bool micConnected_ = false;
   bool micMuted_ = false;
   bool micStreaming_ = false;

@@ -2,7 +2,9 @@
 
 [English](README.en.md)
 
-`build_faces.py` は、画像生成AIなどで作った正方形の 6x6 顔スプライトシートから、Stack-chan pet firmware の `data/` に置く 240x240 PNG 顔画像を生成するCLIです。
+`build_faces.py` は、画像生成AIなどで作った正方形の 6x6 顔スプライトシートから、
+Stack-chan pet firmware の実機用画像ディレクトリに置く PNG 顔画像を生成するCLIです。
+デフォルト出力は CoreS3 用の 240x240 です。
 
 36セルを切り出したあと、ファームウェアが参照する追加画像をコピー補完し、合計48枚のPNGを作ります。
 
@@ -20,39 +22,66 @@
 python -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
 ```
 
-画像生成AIで作ったスプライトシートをファームウェアで使用するために `data/` に入れる場合は、下記のコマンドを使用します。
+画像生成AIで作ったスプライトシートを CoreS3 用の `data/` に入れる場合は、下記のコマンドを使用します。
 
 ```bash
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data --backup-existing --detect-grid --clean
 ```
 
-上記のコマンドで、36セルの切り出し、顔位置合わせ、顔サイズ正規化、コピー補完まで行い、ファームウェアが参照する48枚のPNGを `data/` に入れます。
+上記のコマンドで、36セルの切り出し、顔位置合わせ、顔サイズ正規化、コピー補完まで行い、
+ファームウェアが参照する48枚のPNGを `data/` に入れます。
 
 `--backup-existing` オプションを付けると、既存の `data/*.png` は `backups/data_faces_YYYYMMDD_HHMMSS/` に退避されます。
+
+StopWatch / AtomS3R Chatbot 用に直接出力する場合は、出力先と `--output-size` を変えます。
+
+```bash
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_stopwatch --backup-existing --detect-grid --clean --output-size 386
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_atoms3r --backup-existing --detect-grid --clean --output-size 128
+```
+
+既存の CoreS3 用 `data/` から StopWatch / AtomS3R Chatbot 用の画像ディレクトリをまとめて生成することもできます。
+
+```bash
+python3 scripts/generate_device_assets.py all
+```
+
+個別に生成する場合:
+
+```bash
+python3 scripts/generate_device_assets.py stopwatch
+python3 scripts/generate_device_assets.py atoms3r
+```
+
+別の CoreS3 用画像ディレクトリを元にする場合は `--source` を指定します。
+
+```bash
+python3 scripts/generate_device_assets.py all --source path/to/core-data
+```
 
 ※顔位置合わせ用にAIモデルを使用していますが、モデルファイルは、`build_faces.py` の初回実行時に自動でダウンロードします。
 
 生成後、LittleFSへアップロードします。
 
 ```bash
-pio run -e m5stack-cores3 -t uploadfs
+pio run -e <env> -t uploadfs
 ```
 
 ファームウェア本体も更新する場合:
 
 ```bash
-pio run -e m5stack-cores3 -t upload
+pio run -e <env> -t upload
 ```
 
 ## 出力を確認してから使う場合
 
-いきなり `data/` に入れず、作業用フォルダで確認したい場合は `--out` を使います。
+いきなり実機用の画像ディレクトリに入れず、作業用フォルダで確認したい場合は `--out` を使います。
 
 ```bash
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces --detect-grid --clean
 ```
 
-問題なければ、上の `--install-to data` のコマンドで `data/` に反映します。
+問題なければ、上の `--install-to <画像ディレクトリ>` のコマンドで対象デバイス用ディレクトリに反映します。
 
 ## 仮想環境を使う場合
 

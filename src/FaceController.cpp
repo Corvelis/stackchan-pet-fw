@@ -47,6 +47,25 @@ void FaceController::setState(ChanState state) {
   }
 }
 
+void FaceController::prepareSpeakingCache(AuthFaceMode authMode) {
+#if STACKCHAN_ROUND_DISPLAY
+  const AuthFaceMode previousAuthMode = authFaceMode_;
+  authFaceMode_ = authMode;
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+  authFaceMode_ = previousAuthMode;
+#else
+  (void)authMode;
+#endif
+}
+
+void FaceController::startSpeaking(AuthFaceMode authMode) {
+  authFaceMode_ = authMode;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
+  setState(ChanState::Speaking);
+}
+
 void FaceController::restartSpeakingAnimation() {
 #if FACE_DIAG_LOG_ENABLED
   Serial.printf("[face_diag] restartSpeaking lip=%d age=%lu current=%s\n",
@@ -189,6 +208,9 @@ void FaceController::setPhotoFaceMode(bool enabled) {
 #endif
   photoFaceMode_ = enabled;
   photoMasterFaceMode_ = false;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -211,6 +233,9 @@ void FaceController::setPhotoMasterFaceMode(bool enabled) {
 #endif
   photoMasterFaceMode_ = enabled;
   photoFaceMode_ = false;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -232,6 +257,9 @@ void FaceController::setPetFaceMode(bool enabled) {
   logSpeakingInterference("setPet", enabled ? 1 : 0);
 #endif
   petFaceMode_ = enabled;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -253,6 +281,9 @@ void FaceController::setShakeFaceMode(bool enabled) {
   logSpeakingInterference("setShake", enabled ? 1 : 0);
 #endif
   shakeFaceMode_ = enabled;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -274,6 +305,9 @@ void FaceController::setAuthFaceMode(AuthFaceMode mode) {
   logSpeakingInterference("setAuth", static_cast<int>(mode));
 #endif
   authFaceMode_ = mode;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   if (state_ == ChanState::Speaking) {
     return;
   }
@@ -319,6 +353,9 @@ void FaceController::setThermalFaceMode(ThermalFaceMode mode) {
   logSpeakingInterference("setThermal", static_cast<int>(mode));
 #endif
   thermalFaceMode_ = mode;
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
@@ -336,6 +373,18 @@ void FaceController::setBatteryState(int level, bool charging) {
   batteryLevel_ = level;
   batteryCharging_ = charging;
   batteryOverlayDirty_ = true;
+  if (enabled_) {
+    drawBatteryOverlay();
+  }
+}
+
+void FaceController::setClockText(const String& text, bool valid) {
+  if (clockText_ == text && clockValid_ == valid) {
+    return;
+  }
+  clockText_ = text;
+  clockValid_ = valid;
+  clockOverlayDirty_ = true;
   if (enabled_) {
     drawBatteryOverlay();
   }
@@ -382,6 +431,9 @@ void FaceController::setAffectionState(const AffectionState& state) {
   affectionOverlayDirty_ = true;
   if (enabled_) {
     if (oldTier != newTier && !photoFaceMode_ && !photoMasterFaceMode_ && authFaceMode_ == AuthFaceMode::Unknown) {
+#if STACKCHAN_ROUND_DISPLAY
+      prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#endif
       currentPath_ = "";
       showBaseFace();
     }
@@ -439,7 +491,7 @@ void FaceController::update(unsigned long now) {
   lastSpeakingUpdateMs_ = 0;
 #endif
 
-  if (affectionOverlayDirty_ || batteryOverlayDirty_ || cameraOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
+  if (affectionOverlayDirty_ || batteryOverlayDirty_ || clockOverlayDirty_ || cameraOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
     drawAffectionOverlay(now);
     drawBatteryOverlay();
     drawCameraOverlay();
@@ -739,8 +791,6 @@ void FaceController::drawFace(const char* path) {
   }
 
   currentPath_ = path;
-  const int32_t x = (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
-  const int32_t y = (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
 
   if (!LittleFS.exists(path)) {
     Serial.printf("[face] missing file: %s\n", path);
@@ -760,7 +810,7 @@ void FaceController::drawFace(const char* path) {
   bool ok = false;
   if (canvasReady_) {
     canvas_.fillScreen(TFT_BLACK);
-    ok = canvas_.drawPng(&file, x, y);
+    ok = drawFaceImageTarget(canvas_, file);
     if (ok) {
       drawAffectionOverlayOnCanvas(millis());
       drawBatteryOverlayOnCanvas();
@@ -770,7 +820,7 @@ void FaceController::drawFace(const char* path) {
     }
   } else {
     M5.Display.fillScreen(TFT_BLACK);
-    ok = M5.Display.drawPng(&file, x, y);
+    ok = drawFaceImageTarget(M5.Display, file);
   }
   file.close();
   if (!ok) {
@@ -783,12 +833,264 @@ void FaceController::drawFace(const char* path) {
   }
 }
 
-void FaceController::drawAffectionOverlay(unsigned long now) {
+int32_t FaceController::faceImageDrawSize() const {
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t displaySize = min(M5.Display.width(), M5.Display.height());
+  const int32_t maxDrawSize = max<int32_t>(1, displaySize - ROUND_FACE_IMAGE_MARGIN_PX * 2);
+  const int32_t scaledSize = static_cast<int32_t>(FACE_IMAGE_WIDTH * ROUND_FACE_IMAGE_MAX_SCALE + 0.5f);
+  return min(maxDrawSize, scaledSize);
+#else
+  return FACE_IMAGE_WIDTH;
+#endif
+}
+
+int32_t FaceController::faceImageDrawX() const {
+  return (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
+}
+
+int32_t FaceController::faceImageDrawY() const {
+  return (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
+}
+
+float FaceController::faceImageScale() const {
+#if STACKCHAN_ROUND_DISPLAY
+  return static_cast<float>(faceImageDrawSize()) / static_cast<float>(FACE_IMAGE_WIDTH);
+#else
+  return 1.0f;
+#endif
+}
+
+template <typename Target>
+bool FaceController::drawFaceImageTarget(Target& target, File& file) const {
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t drawSize = faceImageDrawSize();
+  const int32_t x = (M5.Display.width() - drawSize) / 2;
+  const int32_t y = (M5.Display.height() - drawSize) / 2;
+  return target.drawPng(&file,
+                        x,
+                        y,
+                        drawSize,
+                        drawSize,
+                        0,
+                        0,
+                        faceImageScale(),
+                        faceImageScale(),
+                        datum_t::top_left);
+#else
+  return target.drawPng(&file, faceImageDrawX(), faceImageDrawY());
+#endif
+}
+
+template <typename Target>
+void FaceController::drawRoundAffectionOverlayTarget(Target& target, unsigned long now) {
   lastAffectionOverlayMs_ = now;
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
     affectionDeltaUntilMs_ = 0;
     affectionDelta_ = 0;
   }
+
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  const int32_t outerR = min(M5.Display.width(), M5.Display.height()) / 2 - 8;
+  const int32_t innerR = outerR - 16;
+  const float startAngle = 205.0f;
+  const float endAngle = 335.0f;
+  const float amount = static_cast<float>(constrain(affectionState_.affection, 0, 1000)) / 1000.0f;
+  const uint16_t track = M5.Display.color565(48, 44, 50);
+  const uint16_t color = affectionColor();
+
+  target.fillArc(cx, cy, outerR, innerR, startAngle, endAngle, track);
+  if (amount > 0.0f) {
+    target.fillArc(cx, cy, outerR, innerR, startAngle, startAngle + (endAngle - startAngle) * amount, color);
+  }
+
+  if (affectionDelta_ != 0) {
+    const bool positive = affectionDelta_ > 0;
+    const uint16_t deltaColor = positive ? M5.Display.color565(255, 92, 150) : M5.Display.color565(128, 96, 120);
+    const String text = String(affectionDelta_ > 0 ? "+" : "") + String(affectionDelta_);
+    const uint16_t labelBg = M5.Display.color565(10, 8, 12);
+    const uint16_t labelBorder = positive ? M5.Display.color565(132, 48, 82) : M5.Display.color565(78, 64, 74);
+    const int32_t labelW = 112;
+    const int32_t labelH = 34;
+    const int32_t labelY = cy - outerR + 38;
+    target.fillRoundRect(cx - labelW / 2, labelY - labelH / 2, labelW, labelH, 16, labelBg);
+    target.drawRoundRect(cx - labelW / 2, labelY - labelH / 2, labelW, labelH, 16, labelBorder);
+    drawHeart(target, cx - 30, labelY, 10, deltaColor);
+    target.setFont(&fonts::Font0);
+    target.setTextDatum(middle_left);
+    target.setTextSize(2);
+    target.setTextColor(deltaColor, labelBg);
+    target.drawString(text, cx - 8, labelY);
+    target.setTextDatum(top_left);
+  }
+
+  affectionOverlayDirty_ = false;
+}
+
+template <typename Target>
+void FaceController::drawRoundBatteryOverlayTarget(Target& target) {
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t w = 30;
+  const int32_t h = 14;
+  const int32_t nubW = 3;
+  const int32_t gap = clockText_.isEmpty() ? 0 : 10;
+  const int32_t statusCy = M5.Display.height() - 25;
+  const uint16_t border = M5.Display.color565(210, 220, 210);
+  const uint16_t dim = M5.Display.color565(80, 86, 82);
+  const uint16_t fill = batteryLevel_ >= 0 && batteryLevel_ <= 20
+                          ? M5.Display.color565(255, 92, 80)
+                          : M5.Display.color565(82, 220, 128);
+
+  target.setFont(&fonts::Font0);
+  target.setTextSize(2);
+  const int32_t textW = clockText_.isEmpty() ? 0 : target.textWidth(clockText_);
+  const int32_t batteryW = w + nubW;
+  const int32_t totalW = textW + gap + batteryW;
+  const int32_t startX = cx - totalW / 2;
+  const int32_t x = startX + textW + gap;
+  const int32_t y = statusCy - h / 2;
+  const int32_t clearX = max<int32_t>(0, startX - 8);
+  const int32_t clearY = max<int32_t>(0, statusCy - 18);
+  const int32_t clearW = min<int32_t>(M5.Display.width() - clearX, totalW + 18);
+  const int32_t clearH = min<int32_t>(M5.Display.height() - clearY, 34);
+
+  target.fillRect(clearX, clearY, clearW, clearH, TFT_BLACK);
+
+  if (!clockText_.isEmpty()) {
+    const uint16_t clockColor = clockValid_ ? M5.Display.color565(235, 240, 238) : M5.Display.color565(112, 116, 118);
+    target.setTextDatum(middle_left);
+    target.setTextColor(clockColor, TFT_BLACK);
+    target.drawString(clockText_, startX, statusCy);
+    target.setTextDatum(top_left);
+  }
+
+  target.drawRect(x, y, w, h, border);
+  target.drawRect(x + w, y + 4, nubW, h - 8, border);
+
+  if (batteryLevel_ >= 0) {
+    const int32_t fillW = map(constrain(batteryLevel_, 0, 100), 0, 100, 0, w - 4);
+    if (fillW > 0) {
+      target.fillRect(x + 2, y + 2, fillW, h - 4, fill);
+    }
+  } else {
+    target.drawLine(x + 6, y + 3, x + w - 7, y + h - 4, dim);
+  }
+
+  if (batteryCharging_) {
+    const uint16_t bolt = M5.Display.color565(255, 230, 90);
+    target.drawLine(x + 14, y + 2, x + 10, y + 8, bolt);
+    target.drawLine(x + 10, y + 8, x + 16, y + 8, bolt);
+    target.drawLine(x + 16, y + 8, x + 12, y + h - 2, bolt);
+  }
+
+  batteryOverlayDirty_ = false;
+  clockOverlayDirty_ = false;
+}
+
+template <typename Target>
+void FaceController::drawRoundCameraOverlayTarget(Target& target) {
+#if STACKCHAN_HAS_CAMERA
+  const int32_t size = min(M5.Display.width(), M5.Display.height());
+  const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
+  const int32_t cy = M5.Display.height() / 2 - size * 17 / 100;
+  const int32_t r = 28;
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
+  if (!micConnected_) {
+    cameraOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = cameraButtonPending_ ? M5.Display.color565(150, 150, 150) : M5.Display.color565(90, 170, 230);
+  const uint16_t fill = cameraButtonPending_ ? M5.Display.color565(32, 32, 36) : M5.Display.color565(14, 32, 46);
+  const uint16_t icon = cameraButtonPending_ ? M5.Display.color565(145, 150, 155) : M5.Display.color565(205, 232, 255);
+  target.fillCircle(cx, cy, r, fill);
+  target.drawCircle(cx, cy, r, border);
+  target.fillRect(cx - 11, cy - 4, 22, 14, icon);
+  target.fillRect(cx - 6, cy - 10, 10, 6, icon);
+  target.fillCircle(cx, cy + 3, 6, fill);
+  target.drawCircle(cx, cy + 3, 6, icon);
+  if (cameraButtonPending_) {
+    target.drawArc(cx, cy + 18, 6, 5, 30, 330, border);
+  }
+#else
+  (void)target;
+#endif
+  cameraOverlayDirty_ = false;
+}
+
+template <typename Target>
+void FaceController::drawRoundMicOverlayTarget(Target& target) {
+#if STACKCHAN_ROUND_DISPLAY
+  (void)target;
+  micOverlayDirty_ = false;
+#else
+  const int32_t size = min(M5.Display.width(), M5.Display.height());
+  const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
+  const int32_t cy = M5.Display.height() / 2 + size * 17 / 100;
+  const int32_t r = 28;
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
+  if (!micConnected_) {
+    micOverlayDirty_ = false;
+    return;
+  }
+
+  const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
+  const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
+  const uint16_t icon = micStreaming_ ? M5.Display.color565(120, 255, 175) : M5.Display.color565(210, 220, 210);
+  target.fillCircle(cx, cy, r, fill);
+  target.drawCircle(cx, cy, r, border);
+  target.fillRoundRect(cx - 5, cy - 13, 10, 22, 5, icon);
+  target.drawLine(cx - 10, cy + 4, cx - 10, cy + 10, icon);
+  target.drawLine(cx + 10, cy + 4, cx + 10, cy + 10, icon);
+  target.drawArc(cx, cy + 4, 12, 11, 0, 180, icon);
+  target.drawLine(cx, cy + 15, cx, cy + 22, icon);
+  target.drawLine(cx - 9, cy + 22, cx + 9, cy + 22, icon);
+  if (micMuted_) {
+    target.drawLine(cx - 14, cy - 16, cx + 14, cy + 17, border);
+    target.drawLine(cx - 13, cy - 16, cx + 15, cy + 17, border);
+  }
+  micOverlayDirty_ = false;
+#endif
+}
+
+void FaceController::drawAffectionOverlay(unsigned long now) {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundAffectionOverlayTarget(M5.Display, now);
+  return;
+#endif
+  lastAffectionOverlayMs_ = now;
+  if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
+    affectionDeltaUntilMs_ = 0;
+    affectionDelta_ = 0;
+  }
+
+#if STACKCHAN_SMALL_DISPLAY
+  {
+    const int32_t x = 6;
+    const int32_t y = M5.Display.height() - 10;
+    const int32_t w = 74;
+    const int32_t h = 4;
+    const int32_t fillW = map(constrain(affectionState_.affection, 0, 1000), 0, 1000, 0, w);
+    const uint16_t color = affectionColor();
+
+    M5.Display.fillRect(x - 2, y - 3, w + 44, h + 7, TFT_BLACK);
+    M5.Display.drawRect(x, y, w, h, M5.Display.color565(78, 70, 76));
+    if (fillW > 0) {
+      M5.Display.fillRect(x, y, fillW, h, color);
+    }
+    drawHeart(M5.Display, x + w + 9, y + 2, 5, color);
+    if (affectionDelta_ != 0) {
+      const bool positive = affectionDelta_ > 0;
+      const uint16_t deltaColor = positive ? M5.Display.color565(255, 92, 150) : M5.Display.color565(128, 96, 120);
+      M5.Display.setTextSize(1);
+      M5.Display.setTextColor(deltaColor, TFT_BLACK);
+      M5.Display.setCursor(x + w + 16, y - 4);
+      M5.Display.printf("%+d", affectionDelta_);
+    }
+    affectionOverlayDirty_ = false;
+    return;
+  }
+#endif
 
   const int32_t x = 4;
   const int32_t y = 22;
@@ -826,6 +1128,15 @@ void FaceController::drawAffectionOverlay(unsigned long now) {
 }
 
 void FaceController::drawBatteryOverlay() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundBatteryOverlayTarget(M5.Display);
+  return;
+#endif
+#if STACKCHAN_SMALL_DISPLAY
+  batteryOverlayDirty_ = false;
+  clockOverlayDirty_ = false;
+  return;
+#endif
   const int32_t x = M5.Display.width() - 34;
   const int32_t y = 10;
   const int32_t w = 24;
@@ -858,14 +1169,47 @@ void FaceController::drawBatteryOverlay() {
   }
 
   batteryOverlayDirty_ = false;
+  clockOverlayDirty_ = false;
 }
 
 void FaceController::drawAffectionOverlayOnCanvas(unsigned long now) {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundAffectionOverlayTarget(canvas_, now);
+  return;
+#endif
   lastAffectionOverlayMs_ = now;
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
     affectionDeltaUntilMs_ = 0;
     affectionDelta_ = 0;
   }
+
+#if STACKCHAN_SMALL_DISPLAY
+  {
+    const int32_t x = 6;
+    const int32_t y = M5.Display.height() - 10;
+    const int32_t w = 74;
+    const int32_t h = 4;
+    const int32_t fillW = map(constrain(affectionState_.affection, 0, 1000), 0, 1000, 0, w);
+    const uint16_t color = affectionColor();
+
+    canvas_.fillRect(x - 2, y - 3, w + 44, h + 7, TFT_BLACK);
+    canvas_.drawRect(x, y, w, h, M5.Display.color565(78, 70, 76));
+    if (fillW > 0) {
+      canvas_.fillRect(x, y, fillW, h, color);
+    }
+    drawHeart(canvas_, x + w + 9, y + 2, 5, color);
+    if (affectionDelta_ != 0) {
+      const bool positive = affectionDelta_ > 0;
+      const uint16_t deltaColor = positive ? M5.Display.color565(255, 92, 150) : M5.Display.color565(128, 96, 120);
+      canvas_.setTextSize(1);
+      canvas_.setTextColor(deltaColor, TFT_BLACK);
+      canvas_.setCursor(x + w + 16, y - 4);
+      canvas_.printf("%+d", affectionDelta_);
+    }
+    affectionOverlayDirty_ = false;
+    return;
+  }
+#endif
 
   const int32_t x = 4;
   const int32_t y = 22;
@@ -903,6 +1247,15 @@ void FaceController::drawAffectionOverlayOnCanvas(unsigned long now) {
 }
 
 void FaceController::drawBatteryOverlayOnCanvas() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundBatteryOverlayTarget(canvas_);
+  return;
+#endif
+#if STACKCHAN_SMALL_DISPLAY
+  batteryOverlayDirty_ = false;
+  clockOverlayDirty_ = false;
+  return;
+#endif
   const int32_t x = M5.Display.width() - 34;
   const int32_t y = 10;
   const int32_t w = 24;
@@ -935,9 +1288,40 @@ void FaceController::drawBatteryOverlayOnCanvas() {
   }
 
   batteryOverlayDirty_ = false;
+  clockOverlayDirty_ = false;
 }
 
 void FaceController::drawMicOverlay() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundMicOverlayTarget(M5.Display);
+  return;
+#endif
+#if STACKCHAN_SMALL_DISPLAY
+  {
+    const int32_t cx = M5.Display.width() - 13;
+    const int32_t cy = 13;
+    const int32_t r = 9;
+    const uint16_t border = !micConnected_
+                              ? M5.Display.color565(90, 94, 100)
+                              : (micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150));
+    const uint16_t fill = !micConnected_
+                            ? M5.Display.color565(22, 24, 28)
+                            : (micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30));
+    const uint16_t icon = !micConnected_
+                            ? M5.Display.color565(116, 122, 130)
+                            : (micStreaming_ ? M5.Display.color565(120, 255, 175) : M5.Display.color565(210, 220, 210));
+    M5.Display.fillCircle(cx, cy, r, fill);
+    M5.Display.drawCircle(cx, cy, r, border);
+    M5.Display.fillRoundRect(cx - 3, cy - 5, 6, 9, 3, icon);
+    M5.Display.drawLine(cx, cy + 4, cx, cy + 7, icon);
+    M5.Display.drawLine(cx - 4, cy + 7, cx + 4, cy + 7, icon);
+    if (micMuted_ || !micConnected_) {
+      M5.Display.drawLine(cx - 6, cy - 6, cx + 6, cy + 7, border);
+    }
+    micOverlayDirty_ = false;
+    return;
+  }
+#endif
   const int32_t w = 30;
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
@@ -967,6 +1351,14 @@ void FaceController::drawMicOverlay() {
 }
 
 void FaceController::drawCameraOverlay() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundCameraOverlayTarget(M5.Display);
+  return;
+#endif
+#if !STACKCHAN_HAS_CAMERA
+  cameraOverlayDirty_ = false;
+  return;
+#endif
   const int32_t w = 30;
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
@@ -993,6 +1385,14 @@ void FaceController::drawCameraOverlay() {
 }
 
 void FaceController::drawCameraOverlayOnCanvas() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundCameraOverlayTarget(canvas_);
+  return;
+#endif
+#if !STACKCHAN_HAS_CAMERA
+  cameraOverlayDirty_ = false;
+  return;
+#endif
   const int32_t w = 30;
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
@@ -1019,6 +1419,36 @@ void FaceController::drawCameraOverlayOnCanvas() {
 }
 
 void FaceController::drawMicOverlayOnCanvas() {
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundMicOverlayTarget(canvas_);
+  return;
+#endif
+#if STACKCHAN_SMALL_DISPLAY
+  {
+    const int32_t cx = M5.Display.width() - 13;
+    const int32_t cy = 13;
+    const int32_t r = 9;
+    const uint16_t border = !micConnected_
+                              ? M5.Display.color565(90, 94, 100)
+                              : (micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150));
+    const uint16_t fill = !micConnected_
+                            ? M5.Display.color565(22, 24, 28)
+                            : (micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30));
+    const uint16_t icon = !micConnected_
+                            ? M5.Display.color565(116, 122, 130)
+                            : (micStreaming_ ? M5.Display.color565(120, 255, 175) : M5.Display.color565(210, 220, 210));
+    canvas_.fillCircle(cx, cy, r, fill);
+    canvas_.drawCircle(cx, cy, r, border);
+    canvas_.fillRoundRect(cx - 3, cy - 5, 6, 9, 3, icon);
+    canvas_.drawLine(cx, cy + 4, cx, cy + 7, icon);
+    canvas_.drawLine(cx - 4, cy + 7, cx + 4, cy + 7, icon);
+    if (micMuted_ || !micConnected_) {
+      canvas_.drawLine(cx - 6, cy - 6, cx + 6, cy + 7, border);
+    }
+    micOverlayDirty_ = false;
+    return;
+  }
+#endif
   const int32_t w = 30;
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
@@ -1128,6 +1558,9 @@ uint16_t FaceController::blendColor(uint32_t from, uint32_t to, float t) const {
 }
 
 bool FaceController::drawCachedTalkFace(const char* path) {
+#if STACKCHAN_ROUND_DISPLAY
+  return drawRoundCachedTalkFace(path);
+#else
   int setIndex = -1;
   int index = -1;
   if (strcmp(path, FACE_TALK_0_PATH) == 0) {
@@ -1234,26 +1667,139 @@ bool FaceController::drawCachedTalkFace(const char* path) {
 
   const int32_t x = (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
   const int32_t y = (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
-  talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
   const unsigned long now = millis();
+#if STACKCHAN_SMALL_DISPLAY
+  const void* buffer = talkCanvas_[setIndex][index].getBuffer();
+  if (canvasReady_ && buffer != nullptr) {
+    canvas_.fillScreen(TFT_BLACK);
+    canvas_.pushImage(x, y, FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT, static_cast<const uint16_t*>(buffer));
+    drawAffectionOverlayOnCanvas(now);
+    drawBatteryOverlayOnCanvas();
+    drawCameraOverlayOnCanvas();
+    drawMicOverlayOnCanvas();
+    canvas_.pushSprite(&M5.Display, 0, 0);
+  } else {
+    talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
+    drawAffectionOverlay(now);
+    drawBatteryOverlay();
+    drawCameraOverlay();
+    drawMicOverlay();
+  }
+#else
+  talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
   if (overlaysNeedRefresh(now)) {
     drawAffectionOverlay(now);
     drawBatteryOverlay();
     drawCameraOverlay();
     drawMicOverlay();
   }
+#endif
+  return true;
+#endif
+}
+
+#if STACKCHAN_ROUND_DISPLAY
+bool FaceController::drawRoundCachedTalkFace(const char* path) {
+  if (state_ != ChanState::Speaking) {
+    return false;
+  }
+
+  const char* path0 = talkFacePath(0);
+  const char* path1 = talkFacePath(1);
+  int index = -1;
+  if (strcmp(path, path0) == 0) {
+    index = 0;
+  } else if (strcmp(path, path1) == 0) {
+    index = 1;
+  } else {
+    return false;
+  }
+
+  if (!prepareRoundTalkCache(path0, path1) || !roundTalkCacheReady_[index]) {
+    return false;
+  }
+
+  roundTalkCanvas_[index].pushSprite(&M5.Display, 0, 0);
+  const unsigned long now = millis();
+  drawAffectionOverlay(now);
+  drawBatteryOverlay();
+  drawCameraOverlay();
+  drawMicOverlay();
   return true;
 }
+
+bool FaceController::prepareRoundTalkCache(const char* path0, const char* path1) {
+  const char* paths[2] = {path0, path1};
+  bool ok = true;
+
+  for (uint8_t i = 0; i < 2; ++i) {
+    if (paths[i] == nullptr || paths[i][0] == '\0') {
+      roundTalkCacheReady_[i] = false;
+      ok = false;
+      continue;
+    }
+
+    if (roundTalkCacheReady_[i] && roundTalkCachePath_[i] == paths[i]) {
+      continue;
+    }
+
+    if (!roundTalkCacheAllocated_[i]) {
+      roundTalkCanvas_[i].setPsram(true);
+      roundTalkCanvas_[i].setColorDepth(16);
+      if (roundTalkCanvas_[i].createSprite(M5.Display.width(), M5.Display.height()) == nullptr) {
+        Serial.printf("[face] round talk cache %u allocate failed\n", static_cast<unsigned>(i));
+        roundTalkCacheReady_[i] = false;
+        ok = false;
+        continue;
+      }
+      roundTalkCacheAllocated_[i] = true;
+    }
+
+    roundTalkCacheReady_[i] = loadRoundBaseFaceToCanvas(roundTalkCanvas_[i], paths[i]);
+    roundTalkCachePath_[i] = paths[i];
+    ok &= roundTalkCacheReady_[i];
+    Serial.printf("[face] round talk cache %u %s: %s\n",
+                  static_cast<unsigned>(i),
+                  paths[i],
+                  roundTalkCacheReady_[i] ? "ready" : "failed");
+  }
+
+  return ok;
+}
+
+bool FaceController::loadRoundBaseFaceToCanvas(M5Canvas& canvas, const char* path) {
+  if (!LittleFS.exists(path)) {
+    Serial.printf("[face] missing round cache file: %s\n", path);
+    return false;
+  }
+
+  File file = LittleFS.open(path, "r");
+  if (!file) {
+    Serial.printf("[face] failed to open round cache file: %s\n", path);
+    return false;
+  }
+
+  canvas.fillScreen(TFT_BLACK);
+  const bool ok = drawFaceImageTarget(canvas, file);
+  file.close();
+  return ok;
+}
+#endif
 
 bool FaceController::overlaysNeedRefresh(unsigned long now) const {
   return affectionOverlayDirty_ ||
          batteryOverlayDirty_ ||
+         clockOverlayDirty_ ||
          cameraOverlayDirty_ ||
          micOverlayDirty_ ||
          (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_);
 }
 
 void FaceController::prepareTalkCache() {
+#if STACKCHAN_ROUND_DISPLAY
+  prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+  return;
+#else
   const char* paths[kTalkCacheSetCount][2] = {
     {FACE_TALK_0_PATH, FACE_TALK_1_PATH},
     {FACE_BAD_0_PATH, FACE_BAD_1_PATH},
@@ -1293,6 +1839,7 @@ void FaceController::prepareTalkCache() {
       Serial.printf("[face] talk cache %d:%d: %s\n", setIndex, i, talkCacheReady_[setIndex][i] ? "ready" : "failed");
     }
   }
+#endif
 }
 
 bool FaceController::loadPngToCanvas(M5Canvas& canvas, const char* path, int32_t x, int32_t y) {
