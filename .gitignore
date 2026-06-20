@@ -19,6 +19,6 @@ assets/**/.DS_Store
 assets/
 backups/
 src/config_private.h
-docs/face_image_inventory.ja.md
-docs/face_image_usage_analysis.ja.md
 scripts/audit_face_assets.py
+scripts/capture_mic_ws.py
+scripts/generate_stopwatch_assets.py

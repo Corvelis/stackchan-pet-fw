@@ -1,12 +1,13 @@
 # USB Serial Protocol
 
-この文書は、Stack-chan CoreS3 ファームウェアの USB CDC / USB Serial interface を説明します。
-Android 側で USB Host API から CoreS3 の USB port を開くクライアント向けの仕様です。
+この文書は、CoreS3 / StopWatch / AtomS3R Chatbot ファームウェアの
+USB CDC / USB Serial interface を説明します。
+Android 側で USB Host API からデバイスの USB port を開くクライアント向けの仕様です。
 
 既存の Wi-Fi API はそのまま残ります。
 
 - WebSocket: `ws://<stack-chan-ip>:8080/`
-- HTTP capture: `POST http://<stack-chan-ip>/capture`
+- HTTP capture: `POST http://<stack-chan-ip>/capture`。カメラ搭載の CoreS3 でだけ成功します。
 
 USB Serial は追加 transport であり、STA / SoftAP / WebSocket / HTTP を置き換えません。
 
@@ -78,8 +79,8 @@ version, type, flags, reserved, seq, length, payload
 | `0x01` JSON | 双方向 | UTF-8 JSON command/event |
 | `0x02` TTS PCM | client to device | raw signed 16-bit little-endian PCM, 16 kHz mono |
 | `0x03` MIC PCM | device to client | 既存の `MIC1` packet |
-| `0x04` capture request | client to device | JSON request payload |
-| `0x05` capture image chunk | device to client | JPEG bytes |
+| `0x04` capture request | client to device | JSON request payload。カメラ非搭載機種では失敗します |
+| `0x05` capture image chunk | device to client | JPEG bytes。CoreS3 capture 成功時のみ |
 | `0x06` ACK | reserved | 現状未使用 |
 | `0x07` ERROR | device to client | JSON error payload |
 | `0x08` PING | client to device | optional JSON payload |
@@ -110,6 +111,8 @@ StreetPass API も同じ JSON transport を使います。
 {"type":"motion","name":"center"}
 {"type":"affection.event","id":"phone_001","event":"petting","source":"phone","intensity":1.0}
 {"type":"affection.debug_set","requestId":"phone_002","affection":700,"persist":false}
+{"type":"audio.speaker_test","requestId":"spk_001","durationMs":450}
+{"type":"audio.mic_test","requestId":"mic_001","durationMs":600}
 {"type":"streetpass.profile.get","requestId":"sp_profile_001"}
 {"type":"streetpass.encounters.get","requestId":"sp_enc_001","sinceRecordId":0,"limit":30}
 ```
@@ -159,7 +162,8 @@ payload     signed 16-bit little-endian PCM
 
 ## Capture
 
-USB Serial capture は JSON と image chunk で扱います。
+USB Serial capture は JSON と image chunk で扱います。カメラ搭載の CoreS3 でだけ成功します。
+StopWatch / AtomS3R Chatbot では `camera_not_ready` などのエラーになります。
 
 client request:
 
@@ -184,6 +188,31 @@ device response:
 ```json
 {"type":"capture.end","id":"cap_001","ok":false,"error":"camera_not_ready"}
 ```
+
+## Audio Diagnostics
+
+音声まわりの疎通確認用に、JSON command と HTTP endpoint の両方で診断を実行できます。
+
+speaker test:
+
+```json
+{"type":"audio.speaker_test","requestId":"spk_001","durationMs":450}
+```
+
+response:
+
+```json
+{"type":"audio.speaker_test","requestId":"spk_001","ok":true,"durationMs":450}
+```
+
+mic test:
+
+```json
+{"type":"audio.mic_test","requestId":"mic_001","durationMs":600}
+```
+
+response には `peak`, `rms`, `dc`, `clipCount`, `chunks`, `underruns` などの測定値が入ります。
+HTTP では `/speaker-test` と `/mic-test` でも同じ用途の確認ができます。
 
 ## 受信側の注意
 

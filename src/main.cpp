@@ -4,7 +4,13 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <WebServer.h>
+
+#include "config.h"
+
+#if STACKCHAN_HAS_STACKCHAN_BSP
 #include <M5StackChan.h>
+#endif
+
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <math.h>
@@ -20,7 +26,6 @@
 #include "StreetPassController.h"
 #include "StreetPassProtocol.h"
 #include "WebSocketServerController.h"
-#include "config.h"
 
 FaceController faceController;
 MotionController motionController;
@@ -92,6 +97,8 @@ bool wsClientConnected = false;
 bool usbSerialClientConnected = false;
 NetworkQrType activeNetworkQr = NetworkQrType::None;
 unsigned long lastWifiCheckMs = 0;
+unsigned long wifiConnectStartedMs = 0;
+wl_status_t lastWifiStatus = WL_IDLE_STATUS;
 unsigned long lastInfoDrawMs = 0;
 bool pendingStateAfterPlayback = false;
 ChanState deferredStateAfterPlayback = ChanState::Idle;
@@ -121,6 +128,12 @@ unsigned long lastShakeTriggerMs = 0;
 unsigned long nextShakeMotionMs = 0;
 unsigned long lastShakeRepeatEventMs = 0;
 uint8_t shakeStrongSamples = 0;
+#if STACKCHAN_SMALL_DISPLAY
+bool smallDisplayFacePettingHold = false;
+uint8_t smallStreetPassView = 0;
+bool smallVolumeAdjustMode = false;
+unsigned long smallVolumeHoldRepeatMs = 0;
+#endif
 uint32_t cameraButtonEventSeq = 0;
 unsigned long lastCameraButtonEventMs = 0;
 bool cameraButtonPending = false;
@@ -128,6 +141,12 @@ bool backTouchReady = false;
 unsigned long backTouchReleasedSinceMs = 0;
 unsigned long backTouchCandidateSinceMs = 0;
 unsigned long backTouchClearSinceMs = 0;
+bool screenPettingCandidate = false;
+bool screenPettingTouchActive = false;
+unsigned long screenPettingCandidateSinceMs = 0;
+unsigned long screenPettingReleaseSinceMs = 0;
+int32_t screenPettingTravelPx = 0;
+unsigned long hapticOffMs = 0;
 unsigned long lastInitializeDrawMs = 0;
 unsigned long lastFaceUpdateMs = 0;
 uint8_t initializeSpinnerFrame = 0;
@@ -152,6 +171,10 @@ unsigned long usbSerialSpeakingReceivedMs = 0;
 unsigned long usbSerialFirstPcmMs = 0;
 unsigned long usbSerialLastPcmMs = 0;
 uint32_t usbSerialRxDiagEventCount = 0;
+#if STACKCHAN_DEVICE_STOPWATCH
+bool usbSerialDeferredIdlePending = false;
+unsigned long usbSerialDeferredIdleRequestedMs = 0;
+#endif
 bool streetPassBleReady = false;
 bool streetPassScanActive = false;
 bool streetPassExchangeInProgress = false;
@@ -220,6 +243,7 @@ size_t currentWifiIndex = 0;
 uint8_t wifiConnectAttempts = 0;
 uint8_t qrCodeBuffer[qrcodegen_BUFFER_LEN_MAX];
 uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
+unsigned long lastClockOverlayUpdateMs = 0;
 
 struct StreetPassBleCandidate {
   bool active = false;
@@ -251,6 +275,7 @@ void updateStreetPassBle(unsigned long now);
 void updateStreetPassInboundEvents(unsigned long now, bool processWrites);
 void restoreStreetPassTimeFromRtc(unsigned long now);
 void writeStreetPassRtcTime(uint32_t unixTime);
+void updateClockOverlay(unsigned long now);
 void clearStreetPassBleCandidates();
 void resetStreetPassBleAttemptCooldowns();
 bool updateDisplayOffStreetPassMode(unsigned long now);
@@ -279,6 +304,7 @@ void handleUsbSerialLine(const uint8_t* payload, size_t length);
 void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length);
 void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length);
 void handleUsbSerialCaptureRequest(JsonDocument& doc);
+void updateUsbSerialDeferredIdle(unsigned long now);
 void updateCameraButtonPending(unsigned long now);
 void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
@@ -290,11 +316,23 @@ AuthFaceMode displayAuthFaceMode(AuthFaceMode mode);
 bool audioBusyForUiEffects();
 void updatePendingAffectionDelta();
 void drawInfoScreen();
+void drawNetworkQrScreen();
 bool streetPassPageVisible();
 void applyDisplayBrightness();
 void applyLowPowerMode(bool enabled, bool persist);
+void connectWiFi();
 bool audioBusyForServoCalibration();
 void drawStreetPassNotificationOverlay();
+void beginDevice();
+void updateDevice();
+void logDeviceAudioConfig();
+void pulseHaptic(uint8_t level, unsigned long durationMs, unsigned long now);
+void updateHaptic(unsigned long now);
+void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch);
+void redrawNetworkSettingsIfVisible();
+#if STACKCHAN_SMALL_DISPLAY
+void adjustSmallDisplayVolume(int delta);
+#endif
 
 constexpr uint8_t kUsbSerialMagic[4] = {'S', 'C', 'U', '1'};
 constexpr uint8_t kUsbSerialVersion = 0x01;
@@ -318,6 +356,79 @@ const char* chanStateName(ChanState state) {
       return "Speaking";
   }
   return "Unknown";
+}
+
+void beginDevice() {
+#if STACKCHAN_HAS_STACKCHAN_BSP
+  M5StackChan.begin();
+#else
+  auto cfg = M5.config();
+  cfg.internal_imu = true;
+  cfg.internal_mic = true;
+  cfg.internal_spk = true;
+  cfg.internal_rtc = true;
+  cfg.clear_display = true;
+#if STACKCHAN_HAS_ATOMIC_ECHO_BASE
+  cfg.external_speaker.atomic_echo = true;
+#endif
+  M5.begin(cfg);
+  logDeviceAudioConfig();
+#endif
+}
+
+void updateDevice() {
+#if STACKCHAN_HAS_STACKCHAN_BSP
+  M5StackChan.update();
+#else
+  M5.update();
+#endif
+}
+
+void pulseHaptic(uint8_t level, unsigned long durationMs, unsigned long now) {
+#if STACKCHAN_HAS_HAPTIC
+  M5.Power.setVibration(level);
+  hapticOffMs = now + durationMs;
+#else
+  (void)level;
+  (void)durationMs;
+  (void)now;
+#endif
+}
+
+void updateHaptic(unsigned long now) {
+#if STACKCHAN_HAS_HAPTIC
+  if (hapticOffMs != 0 && static_cast<long>(now - hapticOffMs) >= 0) {
+    M5.Power.setVibration(0);
+    hapticOffMs = 0;
+  }
+#else
+  (void)now;
+#endif
+}
+
+void logDeviceAudioConfig() {
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  const auto speakerCfg = M5.Speaker.config();
+  const auto micCfg = M5.Mic.config();
+  Serial.printf("[device] board=%d display=%dx%d speaker_enabled=%d spk dout=%d bck=%d ws=%d mck=%d port=%d stereo=%d mag=%u sample=%lu mic din=%d bck=%d ws=%d mck=%d port=%d\n",
+                static_cast<int>(M5.getBoard()),
+                M5.Display.width(),
+                M5.Display.height(),
+                M5.Speaker.isEnabled() ? 1 : 0,
+                speakerCfg.pin_data_out,
+                speakerCfg.pin_bck,
+                speakerCfg.pin_ws,
+                speakerCfg.pin_mck,
+                static_cast<int>(speakerCfg.i2s_port),
+                speakerCfg.stereo ? 1 : 0,
+                speakerCfg.magnification,
+                static_cast<unsigned long>(speakerCfg.sample_rate),
+                micCfg.pin_data_in,
+                micCfg.pin_bck,
+                micCfg.pin_ws,
+                micCfg.pin_mck,
+                static_cast<int>(micCfg.i2s_port));
+#endif
 }
 
 class StreetPassScanCallbacks : public NimBLEScanCallbacks {
@@ -509,7 +620,7 @@ String makeStreetPassInfoJson() {
   JsonDocument doc;
   doc["v"] = STREETPASS_PROTOCOL_VERSION;
   doc["role"] = "stackchan";
-  doc["name"] = "Stack-chan";
+  doc["name"] = profile.name;
   doc["cardSeq"] = profile.cardSeq;
   doc["caps"] = "public_card,encounter_write";
   String body;
@@ -795,12 +906,38 @@ void updateStreetPassNetworkTime(unsigned long now) {
   nextStreetPassNtpSyncMs = now + STREETPASS_NTP_RETRY_MS;
 }
 
+void updateClockOverlay(unsigned long now) {
+#if CLOCK_DISPLAY_ENABLED
+  if (lastClockOverlayUpdateMs != 0 && now - lastClockOverlayUpdateMs < CLOCK_DISPLAY_UPDATE_MS) {
+    return;
+  }
+  lastClockOverlayUpdateMs = now;
+
+  const uint32_t unixTime = streetPassController.estimatedUnix(now);
+  if (!validStreetPassUnix(unixTime)) {
+    faceController.setClockText("--:--", false);
+    return;
+  }
+
+  const int64_t localUnix = static_cast<int64_t>(unixTime) +
+                            static_cast<int64_t>(CLOCK_DISPLAY_UTC_OFFSET_MINUTES) * 60LL;
+  time_t raw = static_cast<time_t>(localUnix);
+  tm local = {};
+  gmtime_r(&raw, &local);
+  char text[6] = {};
+  snprintf(text, sizeof(text), "%02d:%02d", local.tm_hour, local.tm_min);
+  faceController.setClockText(text, true);
+#else
+  (void)now;
+#endif
+}
+
 void beginStreetPassBle() {
   if (streetPassBleReady) {
     return;
   }
 
-  NimBLEDevice::init("StackChan StreetPass");
+  NimBLEDevice::init(STREETPASS_BLE_DEVICE_NAME);
   NimBLEDevice::setPower(ESP_PWR_LVL_P3);
 
   streetPassGattServer = NimBLEDevice::createServer();
@@ -896,8 +1033,10 @@ bool updateDisplayOffStreetPassMode(unsigned long now) {
   }
 
   updateUsbSerial(now);
+  updateUsbSerialDeferredIdle(now);
   updateWiFi(now);
   updateStreetPassNetworkTime(now);
+  updateClockOverlay(now);
   streetPassController.update(now);
   updateStreetPassBle(now);
 
@@ -1526,9 +1665,11 @@ ThermalFaceMode thermalFaceModeForLevel(ThermalLevel level) {
   if (level == ThermalLevel::Hot) {
     return ThermalFaceMode::Hot;
   }
+#if THERMAL_WARM_FACE_ENABLED
   if (level == ThermalLevel::Warm && !appClientConnected()) {
     return ThermalFaceMode::Warm;
   }
+#endif
   return ThermalFaceMode::Normal;
 }
 
@@ -1612,6 +1753,21 @@ void switchNetworkModeAndRestart() {
   ESP.restart();
 }
 
+#if STACKCHAN_SMALL_DISPLAY
+void switchNetworkModeWithoutRestart() {
+  const NetworkMode nextMode = networkMode == NetworkMode::SoftAp ? NetworkMode::Sta : NetworkMode::SoftAp;
+  Serial.printf("[network] switching mode to %s without restart\n",
+                nextMode == NetworkMode::SoftAp ? "SoftAP" : "STA");
+  saveNetworkMode(nextMode);
+  networkMode = nextMode;
+  wifiConnectAttempts = 0;
+  connectWiFi();
+  if (infoScreenVisible && displayOn) {
+    drawInfoScreen();
+  }
+}
+#endif
+
 void scheduleNextListeningNod(unsigned long now) {
   if (!LISTENING_NOD_ENABLED) {
     nextListeningNodMs = 0;
@@ -1653,13 +1809,13 @@ Pose makePettingPoseFromBase(const Pose& base, bool bigMove) {
   };
 }
 
-void setPettingActive(bool active, unsigned long now) {
+void setPettingActive(bool active, unsigned long now, unsigned long releaseGraceMs = PET_TOUCH_RELEASE_GRACE_MS) {
   if (active && !displayOn) {
     return;
   }
 
   if (active) {
-    pettingEndMs = now + PET_TOUCH_RELEASE_GRACE_MS;
+    pettingEndMs = now + releaseGraceMs;
     if (!pettingActive) {
       pettingActive = true;
       nextPetMoveMs = 0;
@@ -1670,6 +1826,7 @@ void setPettingActive(bool active, unsigned long now) {
       motionController.setTargetPose(pose.pan, pose.tilt);
       applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
       sendInteractionEvent("petting", "start", now);
+      pulseHaptic(HAPTIC_PETTING_START_LEVEL, HAPTIC_PETTING_START_MS, now);
       lastPettingRepeatEventMs = now;
       Serial.println("[pet] start");
     } else if (now - lastPettingRepeatEventMs >= 800) {
@@ -1682,6 +1839,13 @@ void setPettingActive(bool active, unsigned long now) {
   if (!pettingActive) {
     return;
   }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (audioBusyForUiEffects() && displayOn) {
+    pettingEndMs = now + SCREEN_PETTING_RELEASE_MS;
+    return;
+  }
+#endif
 
   pettingActive = false;
   pettingEndMs = 0;
@@ -1697,6 +1861,12 @@ void setPettingActive(bool active, unsigned long now) {
   }
   sendInteractionEvent("petting", "end", now);
   Serial.println("[pet] end");
+}
+
+void extendPettingReleaseLinger(unsigned long now, unsigned long lingerMs) {
+  if (pettingActive) {
+    pettingEndMs = now + lingerMs;
+  }
 }
 
 void updatePetting(unsigned long now) {
@@ -1728,6 +1898,36 @@ void updatePetting(unsigned long now) {
   motionController.setTargetPose(pose.pan, pose.tilt);
 }
 
+bool isGestureMotionStrong(const m5::imu_data_t& data, float* shakeAccOut, float* gyroMagOut) {
+  const float ax = data.accel.x;
+  const float ay = data.accel.y;
+  const float az = data.accel.z;
+  const float gx = data.gyro.x;
+  const float gy = data.gyro.y;
+  const float gz = data.gyro.z;
+  const float accMag = sqrtf(ax * ax + ay * ay + az * az);
+  const float shakeAcc = fabsf(accMag - 1.0f);
+  const float gyroMag = sqrtf(gx * gx + gy * gy + gz * gz);
+  if (shakeAccOut != nullptr) {
+    *shakeAccOut = shakeAcc;
+  }
+  if (gyroMagOut != nullptr) {
+    *gyroMagOut = gyroMag;
+  }
+
+  const float accThreshold = STACKCHAN_IMU_PETTING ? IMU_PETTING_ACC_THRESHOLD_G : SHAKE_ACC_THRESHOLD_G;
+  const float gyroThreshold = STACKCHAN_IMU_PETTING ? IMU_PETTING_GYRO_THRESHOLD_DPS : SHAKE_GYRO_THRESHOLD_DPS;
+#if STACKCHAN_IMU_PETTING
+  return shakeAcc > accThreshold && gyroMag > gyroThreshold;
+#elif STACKCHAN_DEVICE_STOPWATCH
+  const bool gyroLedShake = gyroMag > gyroThreshold && shakeAcc > SHAKE_GYRO_ACCEL_GATE_G;
+  const bool accelLedShake = shakeAcc > accThreshold && gyroMag > SHAKE_ACCEL_GYRO_GATE_DPS;
+  return gyroLedShake || accelLedShake;
+#else
+  return shakeAcc > accThreshold || gyroMag > gyroThreshold;
+#endif
+}
+
 void setShakeActive(bool active, unsigned long now) {
   if (active && !displayOn) {
     return;
@@ -1745,6 +1945,7 @@ void setShakeActive(bool active, unsigned long now) {
       motionController.setTargetPose(SERVO_PAN_CENTER + random(-10, 11), SERVO_TILT_CENTER - random(4, 11));
       applyAffectionResult(affectionController.applyEvent("shake", 1.0f, 1.0f, nullptr, now), now, true);
       sendInteractionEvent("shake", "start", now);
+      pulseHaptic(HAPTIC_SHAKE_LEVEL, HAPTIC_SHAKE_MS, now);
       lastShakeRepeatEventMs = now;
       Serial.println("[shake] start");
     } else if (now - lastShakeRepeatEventMs >= 800) {
@@ -1814,6 +2015,9 @@ void updateShake(unsigned long now) {
   if (shakeActive) {
     if (imuUpdated) {
       updateShakeMotion(data, now);
+      if (isGestureMotionStrong(data, nullptr, nullptr)) {
+        shakeEndMs = now + SHAKE_FACE_HOLD_MS;
+      }
     }
     if (now - lastShakeRepeatEventMs >= 800) {
       sendInteractionEvent("shake", "repeat", now);
@@ -1829,7 +2033,8 @@ void updateShake(unsigned long now) {
     return;
   }
 
-  if (infoScreenVisible || now - lastShakeTriggerMs < SHAKE_COOLDOWN_MS) {
+  const unsigned long shakeCooldownMs = STACKCHAN_IMU_PETTING ? IMU_PETTING_COOLDOWN_MS : SHAKE_COOLDOWN_MS;
+  if (infoScreenVisible || now - lastShakeTriggerMs < shakeCooldownMs) {
     return;
   }
 
@@ -1842,22 +2047,23 @@ void updateShake(unsigned long now) {
     return;
   }
 
-  const float ax = data.accel.x;
-  const float ay = data.accel.y;
-  const float az = data.accel.z;
-  const float gx = data.gyro.x;
-  const float gy = data.gyro.y;
-  const float gz = data.gyro.z;
-  const float accMag = sqrtf(ax * ax + ay * ay + az * az);
-  const float shakeAcc = fabsf(accMag - 1.0f);
-  const float gyroMag = sqrtf(gx * gx + gy * gy + gz * gz);
-  const bool strongShake = shakeAcc > SHAKE_ACC_THRESHOLD_G || gyroMag > SHAKE_GYRO_THRESHOLD_DPS;
+  const uint8_t requiredSamples = STACKCHAN_IMU_PETTING ? IMU_PETTING_REQUIRED_SAMPLES : SHAKE_REQUIRED_SAMPLES;
+  float shakeAcc = 0.0f;
+  float gyroMag = 0.0f;
+  const bool strongShake = isGestureMotionStrong(data, &shakeAcc, &gyroMag);
 
   if (strongShake) {
     ++shakeStrongSamples;
-    if (shakeStrongSamples >= SHAKE_REQUIRED_SAMPLES) {
+    if (shakeStrongSamples >= requiredSamples) {
+#if STACKCHAN_IMU_PETTING
+      Serial.printf("[pet] imu detected acc=%.2f gyro=%.2f\n", shakeAcc, gyroMag);
+      lastShakeTriggerMs = now;
+      shakeStrongSamples = 0;
+      setPettingActive(true, now);
+#else
       Serial.printf("[shake] detected acc=%.2f gyro=%.2f\n", shakeAcc, gyroMag);
       setShakeActive(true, now);
+#endif
     }
     return;
   }
@@ -1896,11 +2102,23 @@ AuthFaceMode displayAuthFaceMode(AuthFaceMode mode) {
 void drawBootScreen(const char* message) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(3);
+  M5.Display.drawString("Stack-chan", cx, cy - 34);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString(message, cx, cy + 18);
+  M5.Display.setTextDatum(top_left);
+#else
   M5.Display.setTextSize(2);
   M5.Display.setCursor(16, 32);
   M5.Display.println("Stack-chan");
   M5.Display.setCursor(16, 72);
   M5.Display.println(message);
+#endif
 }
 
 void drawInitializeScreen(unsigned long now) {
@@ -1914,6 +2132,21 @@ void drawInitializeScreen(unsigned long now) {
 
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(3);
+  M5.Display.drawString("Stack-chan", cx, cy - 48);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString(String(spinner[initializeSpinnerFrame % 4]) + " Initialize", cx, cy + 6);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString(String("Ready in ") + String(remainingMs / 1000) + "." + String((remainingMs % 1000) / 100) + "s",
+                        cx,
+                        cy + 42);
+  M5.Display.setTextDatum(top_left);
+#else
   M5.Display.setTextSize(2);
   M5.Display.setCursor(16, 32);
   M5.Display.println("Stack-chan");
@@ -1923,6 +2156,7 @@ void drawInitializeScreen(unsigned long now) {
   M5.Display.setTextSize(1);
   M5.Display.setCursor(16, 116);
   M5.Display.printf("Ready in %lu.%lus", remainingMs / 1000, (remainingMs % 1000) / 100);
+#endif
   initializeSpinnerFrame = (initializeSpinnerFrame + 1) % 4;
 }
 
@@ -2306,6 +2540,54 @@ void handleStatusRequest() {
   doc["volume"] = deviceSettings.volume;
   doc["micMuted"] = audioController.micMuted();
   doc["micStreaming"] = audioController.isMicStreaming();
+  const MicRuntimeStats micStats = audioController.micRuntimeStats();
+  JsonObject mic = doc["mic"].to<JsonObject>();
+  mic["enabled"] = micStats.enabled;
+  mic["captureActive"] = micStats.captureActive;
+  mic["captureRecording"] = micStats.captureRecording;
+  mic["hasClient"] = micStats.hasClient;
+  mic["muted"] = micStats.muted;
+  mic["queuedPackets"] = micStats.queuedPackets;
+  mic["queueCapacity"] = micStats.queueCapacity;
+  mic["capturedChunks"] = micStats.capturedChunks;
+  mic["enqueuedChunks"] = micStats.enqueuedChunks;
+  mic["sentChunks"] = micStats.sentChunks;
+  mic["sentBytes"] = micStats.sentBytes;
+  mic["wsSentChunks"] = micStats.wsSentChunks;
+  mic["usbSentChunks"] = micStats.usbSentChunks;
+  mic["droppedChunks"] = micStats.droppedChunks;
+  mic["captureUnderruns"] = micStats.captureUnderruns;
+  mic["captureOverruns"] = micStats.captureOverruns;
+  mic["queueOverflows"] = micStats.queueOverflows;
+  mic["sendFails"] = micStats.sendFails;
+  mic["txSeq"] = micStats.txSeq;
+  mic["lastPeak"] = micStats.lastPeak;
+  mic["lastCaptureMs"] = micStats.lastCaptureMs;
+  mic["lastProcessMs"] = micStats.lastProcessMs;
+  mic["lastEnqueueMs"] = micStats.lastEnqueueMs;
+  mic["lastSendMs"] = micStats.lastSendMs;
+  mic["lastWsSendMs"] = micStats.lastWsSendMs;
+  mic["lastUsbSendMs"] = micStats.lastUsbSendMs;
+  mic["magnification"] = AUDIO_MIC_MAGNIFICATION;
+  mic["softwareGainQ8"] = AUDIO_MIC_SOFTWARE_GAIN_Q8;
+  mic["noiseFilterLevel"] = AUDIO_MIC_NOISE_FILTER_LEVEL;
+  mic["overSampling"] = AUDIO_MIC_OVERSAMPLING;
+  mic["gateEnabled"] = AUDIO_MIC_GATE_ENABLED;
+#if STACKCHAN_DEVICE_STOPWATCH
+  doc["board"] = static_cast<int>(M5.getBoard());
+  JsonObject speaker = doc["speaker"].to<JsonObject>();
+  const auto speakerCfg = M5.Speaker.config();
+  speaker["enabled"] = M5.Speaker.isEnabled();
+  speaker["running"] = M5.Speaker.isRunning();
+  speaker["pinDataOut"] = speakerCfg.pin_data_out;
+  speaker["pinBck"] = speakerCfg.pin_bck;
+  speaker["pinWs"] = speakerCfg.pin_ws;
+  speaker["pinMck"] = speakerCfg.pin_mck;
+  speaker["i2sPort"] = static_cast<int>(speakerCfg.i2s_port);
+  speaker["stereo"] = speakerCfg.stereo;
+  speaker["magnification"] = speakerCfg.magnification;
+  speaker["sampleRate"] = speakerCfg.sample_rate;
+#endif
   doc["lowPowerMode"] = deviceSettings.lowPowerMode;
   doc["thermalLevel"] = thermalLevelName(thermalStatus.level);
   doc["chipTempC"] = thermalStatus.chipTempC;
@@ -2337,6 +2619,177 @@ void handleStatusRequest() {
   sendJson(200, body.c_str());
 }
 
+void handleSpeakerTestRequest() {
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  const bool ok = audioController.playDiagnosticTone(450);
+  JsonDocument doc;
+  doc["ok"] = ok;
+  doc["board"] = static_cast<int>(M5.getBoard());
+  doc["volume"] = deviceSettings.volume;
+  doc["audioState"] = chanStateName(audioController.state());
+  const auto speakerCfg = M5.Speaker.config();
+  JsonObject speaker = doc["speaker"].to<JsonObject>();
+  speaker["enabled"] = M5.Speaker.isEnabled();
+  speaker["running"] = M5.Speaker.isRunning();
+  speaker["pinDataOut"] = speakerCfg.pin_data_out;
+  speaker["pinBck"] = speakerCfg.pin_bck;
+  speaker["pinWs"] = speakerCfg.pin_ws;
+  speaker["pinMck"] = speakerCfg.pin_mck;
+  speaker["i2sPort"] = static_cast<int>(speakerCfg.i2s_port);
+  speaker["stereo"] = speakerCfg.stereo;
+  speaker["sampleRate"] = speakerCfg.sample_rate;
+
+  String body;
+  serializeJson(doc, body);
+  sendJson(ok ? 200 : 409, body.c_str());
+#else
+  sendJson(404, "{\"error\":\"not_supported\"}");
+#endif
+}
+
+void writeMicTestResponse(JsonDocument& doc, const MicDiagnosticResult& result, bool ok) {
+  doc["ok"] = ok;
+  doc["beginOk"] = result.beginOk;
+  doc["durationMs"] = result.durationMs;
+  doc["chunks"] = result.chunks;
+  doc["underruns"] = result.underruns;
+  doc["samples"] = result.sampleCount;
+  doc["peak"] = result.peak;
+  doc["rms"] = result.rms;
+  doc["dc"] = result.dc;
+  doc["clipCount"] = result.clipCount;
+  doc["board"] = static_cast<int>(M5.getBoard());
+  doc["audioState"] = chanStateName(audioController.state());
+  doc["micMuted"] = audioController.micMuted();
+
+  const auto micCfg = M5.Mic.config();
+  JsonObject mic = doc["mic"].to<JsonObject>();
+  mic["enabled"] = M5.Mic.isEnabled();
+  mic["running"] = M5.Mic.isRunning();
+  mic["pinDataIn"] = micCfg.pin_data_in;
+  mic["pinBck"] = micCfg.pin_bck;
+  mic["pinWs"] = micCfg.pin_ws;
+  mic["pinMck"] = micCfg.pin_mck;
+  mic["i2sPort"] = static_cast<int>(micCfg.i2s_port);
+  mic["sampleRate"] = micCfg.sample_rate;
+  mic["magnification"] = micCfg.magnification;
+  mic["noiseFilterLevel"] = micCfg.noise_filter_level;
+  mic["overSampling"] = micCfg.over_sampling;
+  mic["stereo"] = micCfg.stereo;
+  mic["leftChannel"] = micCfg.left_channel;
+}
+
+void writePlaybackDiagnosticResponse(JsonDocument& doc, const AudioPlaybackDiagnostic& diag) {
+  doc["type"] = "audio.playback_diag";
+  doc["state"] = chanStateName(diag.state);
+  doc["draining"] = diag.draining;
+  doc["playbackStarted"] = diag.playbackStarted;
+  doc["speakerEnabled"] = diag.speakerEnabled;
+  doc["speakerStartPending"] = diag.speakerStartPending;
+  doc["rxAvailable"] = static_cast<uint32_t>(diag.rxAvailable);
+  doc["rxCapacity"] = static_cast<uint32_t>(diag.rxCapacity);
+  doc["pcmFramesReceived"] = diag.pcmFramesReceived;
+  doc["pcmBytesReceived"] = diag.pcmBytesReceived;
+  doc["pcmBytesAccepted"] = diag.pcmBytesAccepted;
+  doc["pcmBytesDropped"] = diag.pcmBytesDropped;
+  doc["rxOverflowEvents"] = diag.rxOverflowEvents;
+  doc["dropNotSpeakingEvents"] = diag.dropNotSpeakingEvents;
+  doc["dropOddSizeEvents"] = diag.dropOddSizeEvents;
+  doc["idleRequests"] = diag.idleRequests;
+  doc["playbackStarts"] = diag.playbackStarts;
+  doc["playbackFinishes"] = diag.playbackFinishes;
+  doc["underflowResets"] = diag.underflowResets;
+  doc["speakerQueueFullEvents"] = diag.speakerQueueFullEvents;
+  doc["playRawFailEvents"] = diag.playRawFailEvents;
+  doc["speakerChunksQueued"] = diag.speakerChunksQueued;
+  doc["speakerBytesQueued"] = diag.speakerBytesQueued;
+  doc["maxBufferedBytes"] = static_cast<uint32_t>(diag.maxBufferedBytes);
+  doc["lastIdleRequestBufferedBytes"] = static_cast<uint32_t>(diag.lastIdleRequestBufferedBytes);
+  doc["lastUnderflowBufferedBytes"] = static_cast<uint32_t>(diag.lastUnderflowBufferedBytes);
+  doc["finishBufferedBytes"] = static_cast<uint32_t>(diag.finishBufferedBytes);
+  doc["finishQueuedChunks"] = diag.finishQueuedChunks;
+  doc["lastPcmMs"] = static_cast<uint32_t>(diag.lastPcmMs);
+  doc["lastFinishMs"] = static_cast<uint32_t>(diag.lastFinishMs);
+}
+
+MicDiagnosticChannelMode parseMicDiagnosticChannelMode(const String& value) {
+  if (value.equalsIgnoreCase("right")) {
+    return MicDiagnosticChannelMode::Right;
+  }
+  if (value.equalsIgnoreCase("left")) {
+    return MicDiagnosticChannelMode::Left;
+  }
+  if (value.equalsIgnoreCase("stereo")) {
+    return MicDiagnosticChannelMode::Stereo;
+  }
+  return MicDiagnosticChannelMode::Default;
+}
+
+int parseMicDiagnosticIntArg(const char* name, int fallback) {
+  if (!httpServer.hasArg(name)) {
+    return fallback;
+  }
+  const String raw = httpServer.arg(name);
+  const char* text = raw.c_str();
+  char* end = nullptr;
+  const long value = strtol(text, &end, 0);
+  if (end == text) {
+    return fallback;
+  }
+  return static_cast<int>(value);
+}
+
+void handleMicTestRequest() {
+  MicDiagnosticConfig config;
+  if (httpServer.hasArg("rate")) {
+    const int rate = httpServer.arg("rate").toInt();
+    if (rate >= 8000 && rate <= 48000) {
+      config.sampleRate = static_cast<uint32_t>(rate);
+    }
+  }
+  if (httpServer.hasArg("din")) {
+    config.pinDataIn = httpServer.arg("din").toInt();
+  }
+  if (httpServer.hasArg("bck")) {
+    config.pinBck = httpServer.arg("bck").toInt();
+  }
+  if (httpServer.hasArg("ws")) {
+    config.pinWs = httpServer.arg("ws").toInt();
+  }
+  if (httpServer.hasArg("mck")) {
+    config.pinMck = httpServer.arg("mck").toInt();
+  }
+  if (httpServer.hasArg("port")) {
+    config.i2sPort = httpServer.arg("port").toInt();
+  }
+  config.codecReg14 = parseMicDiagnosticIntArg("reg14", config.codecReg14);
+  config.codecReg16 = parseMicDiagnosticIntArg("reg16", config.codecReg16);
+  config.codecReg17 = parseMicDiagnosticIntArg("reg17", config.codecReg17);
+  config.magnification = parseMicDiagnosticIntArg("mag", config.magnification);
+  config.noiseFilterLevel = parseMicDiagnosticIntArg("nf", config.noiseFilterLevel);
+  config.overSampling = parseMicDiagnosticIntArg("os", config.overSampling);
+  if (httpServer.hasArg("channel")) {
+    config.channelMode = parseMicDiagnosticChannelMode(httpServer.arg("channel"));
+  }
+  uint32_t durationMs = 600;
+  if (httpServer.hasArg("duration")) {
+    const int requestedDurationMs = httpServer.arg("duration").toInt();
+    if (requestedDurationMs >= 100 && requestedDurationMs <= 3000) {
+      durationMs = static_cast<uint32_t>(requestedDurationMs);
+    }
+  }
+
+  MicDiagnosticResult result;
+  const bool ok = audioController.measureMicDiagnostic(durationMs, result, config);
+
+  JsonDocument doc;
+  writeMicTestResponse(doc, result, ok);
+
+  String body;
+  serializeJson(doc, body);
+  sendJson(ok ? 200 : 409, body.c_str());
+}
+
 void startHttpServer() {
   if (httpStarted) {
     return;
@@ -2352,6 +2805,18 @@ void startHttpServer() {
     httpServer.send(204);
   });
   httpServer.on("/status", HTTP_GET, handleStatusRequest);
+  httpServer.on("/speaker-test", HTTP_OPTIONS, []() {
+    addCorsHeaders();
+    httpServer.send(204);
+  });
+  httpServer.on("/speaker-test", HTTP_GET, handleSpeakerTestRequest);
+  httpServer.on("/speaker-test", HTTP_POST, handleSpeakerTestRequest);
+  httpServer.on("/mic-test", HTTP_OPTIONS, []() {
+    addCorsHeaders();
+    httpServer.send(204);
+  });
+  httpServer.on("/mic-test", HTTP_GET, handleMicTestRequest);
+  httpServer.on("/mic-test", HTTP_POST, handleMicTestRequest);
   httpServer.on("/wifi", HTTP_GET, []() {
     sendWifiPage();
   });
@@ -2395,6 +2860,102 @@ const char* settingsPageName(SettingsPage page) {
     default:
       return "Network";
   }
+}
+
+bool settingsPageAvailable(SettingsPage page) {
+#if STACKCHAN_SMALL_DISPLAY
+  if (page == SettingsPage::Display || page == SettingsPage::Servo) {
+    return false;
+  }
+#endif
+#if !STACKCHAN_HAS_SERVO
+  if (page == SettingsPage::Servo) {
+    return false;
+  }
+#endif
+  return true;
+}
+
+uint8_t settingsPageCount() {
+#if STACKCHAN_SMALL_DISPLAY
+  return 4;
+#else
+  return STACKCHAN_HAS_SERVO ? 6 : 5;
+#endif
+}
+
+SettingsPage settingsPageAt(uint8_t index) {
+#if STACKCHAN_SMALL_DISPLAY
+  static const SettingsPage kPages[] = {
+    SettingsPage::Network,
+    SettingsPage::StreetPass,
+    SettingsPage::Audio,
+    SettingsPage::Power,
+  };
+#elif STACKCHAN_HAS_SERVO
+  static const SettingsPage kPages[] = {
+    SettingsPage::Network,
+    SettingsPage::Display,
+    SettingsPage::Audio,
+    SettingsPage::Servo,
+    SettingsPage::Power,
+    SettingsPage::StreetPass,
+  };
+#else
+  static const SettingsPage kPages[] = {
+    SettingsPage::Network,
+    SettingsPage::Display,
+    SettingsPage::Audio,
+    SettingsPage::Power,
+    SettingsPage::StreetPass,
+  };
+#endif
+  const uint8_t count = sizeof(kPages) / sizeof(kPages[0]);
+  return kPages[index < count ? index : 0];
+}
+
+int settingsPageIndex(SettingsPage page) {
+  const uint8_t count = settingsPageCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    if (settingsPageAt(i) == page) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+void selectSettingsPage(SettingsPage page) {
+  activeNetworkQr = NetworkQrType::None;
+  const bool wasStreetPass = settingsPage == SettingsPage::StreetPass;
+  settingsPage = settingsPageAvailable(page) ? page : SettingsPage::Network;
+#if STACKCHAN_SMALL_DISPLAY
+  if (settingsPage != SettingsPage::Audio) {
+    smallVolumeAdjustMode = false;
+    smallVolumeHoldRepeatMs = 0;
+  }
+#endif
+  if (settingsPage != SettingsPage::StreetPass) {
+    streetPassProfileVisible = false;
+#if STACKCHAN_SMALL_DISPLAY
+    smallStreetPassView = 0;
+#endif
+  }
+  if (settingsPage == SettingsPage::StreetPass) {
+#if STACKCHAN_SMALL_DISPLAY
+    if (!wasStreetPass) {
+      smallStreetPassView = 0;
+    }
+#endif
+    streetPassController.markAllRead();
+  }
+  drawInfoScreen();
+}
+
+void selectAdjacentSettingsPage(int direction) {
+  const uint8_t count = settingsPageCount();
+  int index = settingsPageIndex(settingsPage);
+  index = (index + direction + count) % count;
+  selectSettingsPage(settingsPageAt(static_cast<uint8_t>(index)));
 }
 
 void drawButton(int32_t x, int32_t y, int32_t w, int32_t h, const char* label, bool active = false) {
@@ -2587,6 +3148,248 @@ void drawSlider(int32_t x, int32_t y, int32_t w, const char* label, int value, i
   }
 }
 
+struct RoundBounds {
+  int32_t x;
+  int32_t y;
+  int32_t w;
+  int32_t h;
+};
+
+int32_t roundCenterX() {
+  return M5.Display.width() / 2;
+}
+
+int32_t roundCenterY() {
+  return M5.Display.height() / 2;
+}
+
+int32_t roundSafeRadius(int32_t inset = 24) {
+  return max<int32_t>(24, min(M5.Display.width(), M5.Display.height()) / 2 - inset);
+}
+
+RoundBounds roundBoundsAt(int32_t y, int32_t h, int32_t inset = 28, int32_t maxWidth = 0) {
+  const int32_t cx = roundCenterX();
+  const int32_t cy = roundCenterY();
+  const int32_t safeRadius = roundSafeRadius(inset);
+  const int32_t midY = y + h / 2;
+  const int32_t dy = abs(midY - cy);
+  int32_t halfWidth = 0;
+  if (dy < safeRadius) {
+    const float chord = sqrtf(static_cast<float>(safeRadius * safeRadius - dy * dy));
+    halfWidth = static_cast<int32_t>(chord);
+  }
+  int32_t w = halfWidth * 2;
+  if (maxWidth > 0) {
+    w = min(w, maxWidth);
+  }
+  return {cx - w / 2, y, w, h};
+}
+
+bool touchInRoundBounds(const m5::touch_detail_t& touch, const RoundBounds& bounds) {
+  return touch.x >= bounds.x && touch.x < bounds.x + bounds.w &&
+         touch.y >= bounds.y && touch.y < bounds.y + bounds.h;
+}
+
+bool touchInCircle(const m5::touch_detail_t& touch, int32_t cx, int32_t cy, int32_t radius) {
+  const int32_t dx = touch.x - cx;
+  const int32_t dy = touch.y - cy;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+int32_t roundMicButtonCenterX() {
+  return roundCenterX() + min(M5.Display.width(), M5.Display.height()) * 36 / 100;
+}
+
+int32_t roundMicButtonCenterY() {
+  return roundCenterY() + min(M5.Display.width(), M5.Display.height()) * 17 / 100;
+}
+
+int32_t roundMicButtonRadius() {
+  return 34;
+}
+
+void drawRoundSmallButton(int32_t cx, int32_t cy, int32_t radius, const char* label, bool active = false) {
+  const uint16_t border = active ? M5.Display.color565(90, 210, 150) : M5.Display.color565(96, 108, 116);
+  const uint16_t fill = active ? M5.Display.color565(20, 52, 38) : M5.Display.color565(10, 12, 14);
+  M5.Display.fillCircle(cx, cy, radius, fill);
+  M5.Display.drawCircle(cx, cy, radius, border);
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE, fill);
+  M5.Display.drawString(label, cx, cy);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(top_left);
+}
+
+void drawRoundButtonRow(int32_t y, int32_t h, const char* label, bool active = false, int32_t maxWidth = 260) {
+  const RoundBounds row = roundBoundsAt(y, h, 34, maxWidth);
+  drawButton(row.x, row.y, row.w, row.h, label, active);
+}
+
+void drawRoundSplitButtons(int32_t y, const char* leftLabel, const char* rightLabel) {
+  const RoundBounds row = roundBoundsAt(y, 36, 36, 250);
+  const int32_t gap = 12;
+  const int32_t buttonW = (row.w - gap) / 2;
+  drawButton(row.x, row.y, buttonW, row.h, leftLabel);
+  drawButton(row.x + buttonW + gap, row.y, buttonW, row.h, rightLabel);
+}
+
+void drawRoundTextLine(int32_t y, const String& text, uint16_t color = TFT_WHITE) {
+  const RoundBounds row = roundBoundsAt(y, 17, 42, 330);
+  drawUtf8Clipped(row.x, row.y, row.w, row.h, text, color);
+}
+
+void drawRoundSlider(int32_t y, const char* label, int value, int minValue, int maxValue) {
+  const RoundBounds row = roundBoundsAt(y, 48, 42, 292);
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setCursor(row.x, y);
+  M5.Display.printf("%s: %d", label, value);
+  const int32_t trackY = y + 24;
+  M5.Display.drawRoundRect(row.x, trackY, row.w, 12, 4, M5.Display.color565(88, 96, 104));
+  const int32_t fillW = map(constrain(value, minValue, maxValue), minValue, maxValue, 0, row.w - 4);
+  if (fillW > 0) {
+    M5.Display.fillRoundRect(row.x + 2, trackY + 2, fillW, 8, 3, M5.Display.color565(90, 190, 245));
+  }
+}
+
+void drawRoundSettingsHeader() {
+  const int32_t cx = roundCenterX();
+  const int32_t w = M5.Display.width();
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString(settingsPageName(settingsPage), cx, 42);
+  M5.Display.setTextSize(1);
+  drawRoundSmallButton(54, 42, 24, "<");
+  drawRoundSmallButton(w - 54, 42, 24, ">");
+
+  const uint8_t count = settingsPageCount();
+  const int32_t startX = cx - static_cast<int32_t>(count - 1) * 8;
+  const int selectedIndex = settingsPageIndex(settingsPage);
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint16_t color = static_cast<int>(i) == selectedIndex
+                             ? M5.Display.color565(90, 210, 150)
+                             : M5.Display.color565(78, 86, 92);
+    M5.Display.fillCircle(startX + i * 16, 72, 4, color);
+  }
+  M5.Display.setTextDatum(top_left);
+}
+
+void drawRoundNetworkSettingsPage() {
+  drawRoundTextLine(102, String("Mode: ") + networkModeName());
+  if (networkMode == NetworkMode::SoftAp) {
+    const String ip = WiFi.softAPIP().toString();
+    drawRoundTextLine(126, String("SSID: ") + AP_SSID);
+    drawRoundTextLine(150, String("IP: ") + ip);
+    drawRoundTextLine(174, String("Setup: http://") + ip + "/wifi");
+    drawRoundTextLine(198, String("Client: ") + (appClientConnected() ? "connected" : "waiting"));
+    drawRoundButtonRow(260, 36, "Wi-Fi QR");
+    drawRoundButtonRow(312, 36, "Setup QR");
+  } else if (WiFi.status() == WL_CONNECTED) {
+    const String ip = WiFi.localIP().toString();
+    drawRoundTextLine(126, String("SSID: ") + wifiCredentials[currentWifiIndex].ssid);
+    drawRoundTextLine(150, String("IP: ") + ip);
+    drawRoundTextLine(174, String("WS: ws://") + ip + ":" + String(WS_PORT));
+    drawRoundTextLine(198, String("USB: ") + (usbSerialClientConnected ? "connected" : "waiting"));
+    drawRoundButtonRow(288, 36, "Setup QR");
+  } else {
+    drawRoundTextLine(126, String("SSID: ") + wifiCredentials[currentWifiIndex].ssid);
+    drawRoundTextLine(150, "IP: not connected", M5.Display.color565(220, 170, 90));
+    drawRoundTextLine(174, String("USB: ") + (usbSerialClientConnected ? "connected" : "waiting"));
+  }
+  drawRoundTextLine(370, String("Hold: ") + (networkMode == NetworkMode::SoftAp ? "STA" : "SoftAP"),
+                    M5.Display.color565(178, 188, 196));
+}
+
+void drawRoundDisplaySettingsPage() {
+  drawRoundSlider(132, "Brightness", deviceSettings.brightness, DISPLAY_BRIGHTNESS_MIN, DISPLAY_BRIGHTNESS_MAX);
+  drawRoundSplitButtons(210, "-", "+");
+  drawRoundButtonRow(286, 38, displayOn ? "Screen Off" : "Screen On", !displayOn);
+}
+
+void drawRoundAudioSettingsPage() {
+  drawRoundSlider(148, "Volume", deviceSettings.volume, AUDIO_SPEAKER_VOLUME_MIN, AUDIO_SPEAKER_VOLUME_MAX);
+  drawRoundSplitButtons(226, "-", "+");
+}
+
+void drawRoundPowerSettingsPage() {
+  drawRoundTextLine(112, String("Thermal: ") + thermalLevelName(thermalStatus.level));
+  drawRoundTextLine(138, String("Chip: ") + String(thermalStatus.chipTempC, 1) + " C");
+  if (!isnan(thermalStatus.pmicTempC)) {
+    drawRoundTextLine(164, String("PMIC: ") + String(thermalStatus.pmicTempC, 1) + " C");
+  } else {
+    drawRoundTextLine(164, "PMIC: n/a");
+  }
+  drawRoundTextLine(190, String("Battery: ") + String(M5.Power.getBatteryLevel()) + " %");
+  drawRoundTextLine(216, String("Charging: ") + (externalPowerPresent() ? "yes" : "no"));
+  drawRoundButtonRow(282, 38, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off",
+                     deviceSettings.lowPowerMode, 290);
+}
+
+void drawRoundStreetPassSettingsPage() {
+  drawRoundTextLine(108, String("StreetPass: ") + (streetPassController.enabled() ? "On" : "Off"));
+  drawRoundTextLine(132, String("Stored: ") + String(streetPassController.storedCount()) +
+                         "/" + String(StreetPassController::kMaxRecords));
+  drawRoundTextLine(156, String("Unsynced: ") + String(streetPassController.unsyncedCount()));
+  drawRoundButtonRow(204, 36, streetPassController.enabled() ? "Turn Off" : "Turn On",
+                     streetPassController.enabled());
+  drawRoundButtonRow(252, 36, streetPassProfileVisible ? "History" : "Profile",
+                     streetPassProfileVisible);
+
+  if (streetPassProfileVisible) {
+    const StreetPassProfile& profile = streetPassController.profile();
+    drawRoundTextLine(310, String("Name: ") + profile.name, M5.Display.color565(255, 220, 90));
+    drawRoundTextLine(334, String("Msg : ") + profile.message, M5.Display.color565(190, 198, 205));
+    return;
+  }
+
+  const uint8_t storedCount = streetPassController.storedCount();
+  if (storedCount == 0) {
+    drawRoundTextLine(322, "No encounters yet", M5.Display.color565(190, 198, 205));
+    return;
+  }
+  const StreetPassRecord* record = streetPassController.recordAt(storedCount - 1);
+  if (record != nullptr) {
+    drawRoundTextLine(316, String(record->synced ? "OK " : "WAIT ") + record->peerName,
+                      record->synced ? M5.Display.color565(100, 220, 150) : M5.Display.color565(255, 205, 90));
+    drawRoundTextLine(340, record->peerMessage, M5.Display.color565(190, 198, 205));
+  }
+}
+
+void drawRoundInfoScreen() {
+  lastInfoDrawMs = millis();
+  M5.Display.fillScreen(TFT_BLACK);
+  if (activeNetworkQr != NetworkQrType::None) {
+    drawNetworkQrScreen();
+    return;
+  }
+
+  drawRoundSettingsHeader();
+  switch (settingsPage) {
+    case SettingsPage::Display:
+      drawRoundDisplaySettingsPage();
+      break;
+    case SettingsPage::Audio:
+      drawRoundAudioSettingsPage();
+      break;
+    case SettingsPage::Power:
+      drawRoundPowerSettingsPage();
+      break;
+    case SettingsPage::StreetPass:
+      drawRoundStreetPassSettingsPage();
+      break;
+    case SettingsPage::Servo:
+    case SettingsPage::Network:
+    default:
+      drawRoundNetworkSettingsPage();
+      break;
+  }
+}
+
 void drawSettingsTabs() {
   drawButton(4, 206, 50, 26, "Net", settingsPage == SettingsPage::Network);
   drawButton(57, 206, 50, 26, "Disp", settingsPage == SettingsPage::Display);
@@ -2642,27 +3445,49 @@ void drawNetworkQrScreen() {
                                             qrcodegen_Mask_AUTO, true);
 
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+#if STACKCHAN_SMALL_DISPLAY
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(6, 6);
+#else
   M5.Display.setTextSize(2);
   M5.Display.setCursor(12, 12);
+#endif
   M5.Display.println(isWifiQr ? "Wi-Fi QR" : "Setup QR");
 
   if (!encoded) {
     M5.Display.setTextSize(1);
+#if STACKCHAN_SMALL_DISPLAY
+    M5.Display.setCursor(6, 42);
+    M5.Display.println("QR unavailable");
+    M5.Display.setCursor(6, 58);
+    M5.Display.println(networkMode == NetworkMode::SoftAp ? "SoftAP starting?" : "No IP address");
+    M5.Display.setCursor(6, 100);
+    M5.Display.println("Click: return");
+#else
     M5.Display.setCursor(12, 72);
     M5.Display.println("QR unavailable");
     M5.Display.setCursor(12, 96);
     M5.Display.println("Tap to return");
+#endif
     return;
   }
 
   const int size = qrcodegen_getSize(qrCodeBuffer);
   const int quietModules = 4;
   const int totalModules = size + quietModules * 2;
+#if STACKCHAN_SMALL_DISPLAY
+  const int maxQrPixels = min(M5.Display.width() - 12, M5.Display.height() - 34);
+#else
   const int maxQrPixels = min(M5.Display.width() - 28, M5.Display.height() - 78);
+#endif
   const int scale = max(1, maxQrPixels / totalModules);
   const int qrPixels = totalModules * scale;
   const int originX = (M5.Display.width() - qrPixels) / 2;
+#if STACKCHAN_SMALL_DISPLAY
+  const int originY = 20;
+#else
   const int originY = 40;
+#endif
 
   M5.Display.fillRect(originX, originY, qrPixels, qrPixels, TFT_WHITE);
   for (int y = 0; y < size; ++y) {
@@ -2675,9 +3500,23 @@ void drawNetworkQrScreen() {
     }
   }
 
-  const int textY = min(originY + qrPixels + 8, M5.Display.height() - 34);
+  const int textY =
+#if STACKCHAN_SMALL_DISPLAY
+    min(originY + qrPixels + 4, M5.Display.height() - 18);
+#else
+    min(originY + qrPixels + 8, M5.Display.height() - 34);
+#endif
   M5.Display.setTextSize(1);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+#if STACKCHAN_SMALL_DISPLAY
+  if (isWifiQr) {
+    drawUtf8Clipped(6, textY, M5.Display.width() - 12, 12, String("SSID: ") + AP_SSID,
+                    M5.Display.color565(190, 198, 205));
+  } else {
+    drawUtf8Clipped(6, textY, M5.Display.width() - 12, 12, payload,
+                    M5.Display.color565(190, 198, 205));
+  }
+#else
   M5.Display.setCursor(12, textY);
   if (isWifiQr) {
     M5.Display.printf("SSID: %s\n", AP_SSID);
@@ -2690,6 +3529,7 @@ void drawNetworkQrScreen() {
   }
   M5.Display.setCursor(220, M5.Display.height() - 14);
   M5.Display.print("Tap: back");
+#endif
 }
 
 void drawDisplaySettingsPage() {
@@ -2808,7 +3648,216 @@ void drawStreetPassSettingsPage() {
   }
 }
 
+#if STACKCHAN_SMALL_DISPLAY
+void drawSmallPageHeader(const char* title, uint16_t color = TFT_WHITE) {
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextDatum(top_left);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(color, TFT_BLACK);
+  M5.Display.setCursor(4, 4);
+  M5.Display.print(title);
+  M5.Display.drawFastHLine(4, 24, M5.Display.width() - 8, M5.Display.color565(70, 78, 86));
+  M5.Display.setTextSize(1);
+}
+
+void drawSmallPageIndicator() {
+  const uint8_t count = settingsPageCount();
+  const int selected = settingsPageIndex(settingsPage);
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t y = M5.Display.height() - 6;
+  const int32_t startX = cx - static_cast<int32_t>(count - 1) * 6;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint16_t color = static_cast<int>(i) == selected
+                             ? M5.Display.color565(90, 210, 150)
+                             : M5.Display.color565(78, 86, 92);
+    M5.Display.fillCircle(startX + i * 12, y, 3, color);
+  }
+}
+
+void drawSmallTextLine(int32_t y, const String& text, uint16_t color = TFT_WHITE) {
+  drawUtf8Clipped(6, y, M5.Display.width() - 12, 13, text, color);
+}
+
+#if STACKCHAN_SMALL_DISPLAY
+constexpr uint8_t kSmallStreetPassViewCount = 3;
+
+String shortIdTail(const String& value, size_t tailLen = 8) {
+  if (value.length() <= tailLen) {
+    return value;
+  }
+  return value.substring(value.length() - tailLen);
+}
+
+void drawSmallStreetPassSubIndicator() {
+  const int32_t y = 18;
+  const int32_t startX = M5.Display.width() - 34;
+  for (uint8_t i = 0; i < kSmallStreetPassViewCount; ++i) {
+    const uint16_t color = i == smallStreetPassView
+                             ? M5.Display.color565(255, 220, 90)
+                             : M5.Display.color565(78, 86, 92);
+    M5.Display.fillCircle(startX + i * 10, y, 2, color);
+  }
+}
+#endif
+
+void drawSmallNetworkSettingsPage() {
+  drawSmallPageHeader("Network", M5.Display.color565(120, 205, 255));
+  drawSmallTextLine(31, String("Mode: ") + networkModeName());
+  if (networkMode == NetworkMode::SoftAp) {
+    const String ip = WiFi.softAPIP().toString();
+    drawSmallTextLine(47, String("SSID: ") + AP_SSID);
+    drawSmallTextLine(63, String("IP: ") + ip);
+    drawSmallTextLine(79, String("Setup: ") + ip + "/wifi");
+    drawSmallTextLine(95, String("Pass: ") + AP_PASSWORD);
+  } else if (WiFi.status() == WL_CONNECTED) {
+    const String ip = WiFi.localIP().toString();
+    drawSmallTextLine(47, String("SSID: ") + wifiCredentials[currentWifiIndex].ssid);
+    drawSmallTextLine(63, String("IP: ") + ip);
+    drawSmallTextLine(79, String("WS: ") + (wsClientConnected ? "on" : "waiting"));
+    drawSmallTextLine(95, String("USB: ") + (usbSerialClientConnected ? "on" : "waiting"));
+  } else {
+    drawSmallTextLine(47, String("SSID: ") + wifiCredentials[currentWifiIndex].ssid);
+    drawSmallTextLine(63, "IP: not connected", M5.Display.color565(255, 205, 90));
+    drawSmallTextLine(79, String("USB: ") + (usbSerialClientConnected ? "on" : "waiting"));
+    drawSmallTextLine(95, "Hold: SoftAP", M5.Display.color565(178, 188, 196));
+  }
+  drawSmallPageIndicator();
+}
+
+void drawSmallStreetPassSettingsPage() {
+  drawSmallPageHeader("Pass", M5.Display.color565(255, 220, 90));
+#if STACKCHAN_SMALL_DISPLAY
+  drawSmallStreetPassSubIndicator();
+  const StreetPassProfile& profile = streetPassController.profile();
+  if (smallStreetPassView == 0) {
+    drawSmallTextLine(31, String("StreetPass: ") + (streetPassController.enabled() ? "On" : "Off"));
+    drawSmallTextLine(47, String("Share: ") + (profile.shareProfile ? "On" : "Off"));
+    drawSmallTextLine(63, String("BLE: ") + (streetPassBleReady ? "ready" : "init") +
+                           " Adv:" + (streetPassAdvertising ? "on" : "off"));
+    drawSmallTextLine(79, String("Scan: ") + (streetPassScanActive ? "on" : "idle") +
+                           " Pause:" + (streetPassBusyForExchange() ? streetPassBusyReason() : "none"));
+    drawSmallTextLine(95, String("Stored: ") + String(streetPassController.storedCount()) +
+                           "/" + String(StreetPassController::kMaxRecords) +
+                           " U:" + String(streetPassController.unreadCount()));
+  } else if (smallStreetPassView == 1) {
+    drawSmallTextLine(31, String("Name: ") + profile.name);
+    drawSmallTextLine(47, String("Msg: ") + profile.message);
+    drawSmallTextLine(63, String("CardSeq: ") + String(profile.cardSeq));
+    drawSmallTextLine(79, String("Profile: ...") + shortIdTail(profile.profileId));
+    drawSmallTextLine(95, String("Token: ") + String(streetPassPeerToken(), HEX),
+                      M5.Display.color565(190, 198, 205));
+  } else {
+    const StreetPassRecord* latest = streetPassController.storedCount() > 0
+                                       ? streetPassController.recordAt(streetPassController.storedCount() - 1)
+                                       : nullptr;
+    if (latest == nullptr) {
+      drawSmallTextLine(31, "Latest: none");
+      drawSmallTextLine(47, "No encounters yet", M5.Display.color565(190, 198, 205));
+      drawSmallTextLine(63, String("Unsynced: ") + String(streetPassController.unsyncedCount()));
+      drawSmallTextLine(79, String("Dropped: ") + String(streetPassController.droppedCount()));
+      drawSmallTextLine(95, "Hold: toggle pass", M5.Display.color565(178, 188, 196));
+    } else {
+      drawSmallTextLine(31, String("Latest: ") + latest->peerName);
+      drawSmallTextLine(47, String("Msg: ") + latest->peerMessage);
+      drawSmallTextLine(63, String("Seen: ") + String(latest->seenCount) +
+                             " RSSI:" + String(latest->rssiMax));
+      drawSmallTextLine(79, String("Unread: ") + (latest->unread ? "yes" : "no") +
+                             " Sync:" + (latest->synced ? "yes" : "no"));
+      drawSmallTextLine(95, String("Unsynced: ") + String(streetPassController.unsyncedCount()),
+                        M5.Display.color565(190, 198, 205));
+    }
+  }
+#endif
+  drawSmallPageIndicator();
+}
+
+void drawSmallPowerSettingsPage() {
+  drawSmallPageHeader("Power", M5.Display.color565(180, 230, 150));
+  drawSmallTextLine(31, String("Thermal: ") + thermalLevelName(thermalStatus.level));
+  drawSmallTextLine(47, String("Chip: ") + String(thermalStatus.chipTempC, 1) + " C");
+  if (!isnan(thermalStatus.pmicTempC)) {
+    drawSmallTextLine(63, String("PMIC: ") + String(thermalStatus.pmicTempC, 1) + " C");
+  } else {
+    drawSmallTextLine(63, "PMIC: n/a");
+  }
+  drawSmallTextLine(79, String("LowPower: ") + (deviceSettings.lowPowerMode ? "On" : "Off"));
+  drawSmallTextLine(95, String("Suggest: ") + (thermalStatus.suggestLowPower ? "On" : "None"));
+  drawSmallPageIndicator();
+}
+
+void drawSmallAudioSettingsPage() {
+  const uint16_t accent = smallVolumeAdjustMode
+                            ? M5.Display.color565(255, 205, 90)
+                            : M5.Display.color565(185, 170, 255);
+  drawSmallPageHeader("Volume", accent);
+  drawSmallTextLine(31, String("Mode: ") + (smallVolumeAdjustMode ? "Adjust" : "View"));
+  drawSmallTextLine(47, String("Volume: ") + String(deviceSettings.volume) +
+                         "/" + String(AUDIO_SPEAKER_VOLUME_MAX));
+
+  const int32_t x = 8;
+  const int32_t y = 66;
+  const int32_t w = M5.Display.width() - 16;
+  const int32_t h = 10;
+  const int32_t fillW = map(constrain(deviceSettings.volume,
+                                      AUDIO_SPEAKER_VOLUME_MIN,
+                                      AUDIO_SPEAKER_VOLUME_MAX),
+                            AUDIO_SPEAKER_VOLUME_MIN,
+                            AUDIO_SPEAKER_VOLUME_MAX,
+                            0,
+                            w - 4);
+  M5.Display.drawRoundRect(x, y, w, h, 3, M5.Display.color565(86, 94, 104));
+  if (fillW > 0) {
+    M5.Display.fillRoundRect(x + 2, y + 2, fillW, h - 4, 2, accent);
+  }
+
+  if (smallVolumeAdjustMode) {
+    drawSmallTextLine(83, String("Click:+") + SETTINGS_STEP_VALUE +
+                            " Hold:-" + SETTINGS_STEP_VALUE,
+                      M5.Display.color565(220, 226, 232));
+    drawSmallTextLine(99, "Double: done", M5.Display.color565(178, 188, 196));
+  } else {
+    drawSmallTextLine(83, "Double: adjust", M5.Display.color565(178, 188, 196));
+    drawSmallTextLine(99, "Click: next page", M5.Display.color565(178, 188, 196));
+  }
+  drawSmallPageIndicator();
+}
+
+void drawSmallInfoScreen() {
+  lastInfoDrawMs = millis();
+  M5.Display.fillScreen(TFT_BLACK);
+  if (activeNetworkQr != NetworkQrType::None) {
+    drawNetworkQrScreen();
+    return;
+  }
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextDatum(top_left);
+  switch (settingsPage) {
+    case SettingsPage::StreetPass:
+      drawSmallStreetPassSettingsPage();
+      break;
+    case SettingsPage::Power:
+      drawSmallPowerSettingsPage();
+      break;
+    case SettingsPage::Audio:
+      drawSmallAudioSettingsPage();
+      break;
+    case SettingsPage::Network:
+    default:
+      drawSmallNetworkSettingsPage();
+      break;
+  }
+}
+#endif
+
 void drawInfoScreen() {
+#if STACKCHAN_SMALL_DISPLAY
+  drawSmallInfoScreen();
+  return;
+#endif
+#if STACKCHAN_ROUND_DISPLAY
+  drawRoundInfoScreen();
+  return;
+#endif
   lastInfoDrawMs = millis();
   M5.Display.fillScreen(TFT_BLACK);
   if (activeNetworkQr != NetworkQrType::None) {
@@ -2847,7 +3896,13 @@ void drawInfoScreen() {
 }
 
 bool settingsPageNeedsPeriodicRefresh() {
+#if STACKCHAN_SMALL_DISPLAY
+  return settingsPage == SettingsPage::Network ||
+         settingsPage == SettingsPage::StreetPass ||
+         settingsPage == SettingsPage::Power;
+#else
   return settingsPage == SettingsPage::Network || settingsPage == SettingsPage::Power;
+#endif
 }
 
 void setInfoScreenVisible(bool visible) {
@@ -2858,6 +3913,11 @@ void setInfoScreenVisible(bool visible) {
     activeNetworkQr = NetworkQrType::None;
   }
   infoScreenVisible = visible;
+#if STACKCHAN_SMALL_DISPLAY
+  if (visible && !settingsPageAvailable(settingsPage)) {
+    settingsPage = SettingsPage::Network;
+  }
+#endif
   faceController.setEnabled(displayOn && !visible);
   applyDisplayBrightness();
   if (visible) {
@@ -2867,6 +3927,88 @@ void setInfoScreenVisible(bool visible) {
     drawInfoScreen();
   }
 }
+
+#if STACKCHAN_SMALL_DISPLAY
+void toggleStreetPassEnabledFromDevice() {
+  JsonDocument request;
+  JsonDocument response;
+  request["type"] = "streetpass.profile.set";
+  request["enabled"] = !streetPassController.enabled();
+  streetPassController.handleJsonCommand(request, response, millis());
+  if (!streetPassController.enabled()) {
+    clearStreetPassBleCandidates();
+  }
+  if (infoScreenVisible && displayOn) {
+    drawInfoScreen();
+  }
+}
+
+bool advanceSmallDisplayPage() {
+  if (!displayOn) {
+    setDisplayOn(true);
+    return true;
+  }
+  if (infoScreenVisible && activeNetworkQr != NetworkQrType::None) {
+    activeNetworkQr = NetworkQrType::None;
+    drawInfoScreen();
+    return true;
+  }
+  if (!infoScreenVisible) {
+    settingsPage = SettingsPage::Network;
+    setInfoScreenVisible(true);
+    return true;
+  }
+  if (settingsPage == SettingsPage::Network) {
+    selectSettingsPage(SettingsPage::StreetPass);
+    return true;
+  }
+  if (settingsPage == SettingsPage::StreetPass) {
+    smallStreetPassView = 0;
+    selectSettingsPage(SettingsPage::Audio);
+    return true;
+  }
+  if (settingsPage == SettingsPage::Audio) {
+    selectSettingsPage(SettingsPage::Power);
+    return true;
+  }
+  setInfoScreenVisible(false);
+  return true;
+}
+
+bool handleSmallDisplayPageHold() {
+  if (!displayOn) {
+    smallDisplayFacePettingHold = false;
+    setDisplayOn(true);
+    return true;
+  }
+  if (!infoScreenVisible) {
+    smallDisplayFacePettingHold = true;
+    setPettingActive(true, millis(), PET_BUTTON_RELEASE_LINGER_MS);
+    return true;
+  }
+  smallDisplayFacePettingHold = false;
+  if (settingsPage == SettingsPage::Audio) {
+    if (smallVolumeAdjustMode) {
+      smallVolumeHoldRepeatMs = millis();
+      adjustSmallDisplayVolume(-SETTINGS_STEP_VALUE);
+    }
+    return true;
+  }
+  if (settingsPage == SettingsPage::Network) {
+    switchNetworkModeWithoutRestart();
+    return true;
+  }
+  if (settingsPage == SettingsPage::StreetPass) {
+    toggleStreetPassEnabledFromDevice();
+    return true;
+  }
+  if (settingsPage == SettingsPage::Power) {
+    applyLowPowerMode(!deviceSettings.lowPowerMode, true);
+    return true;
+  }
+  return true;
+}
+#endif
 
 bool touchIn(const m5::touch_detail_t& touch, int32_t x, int32_t y, int32_t w, int32_t h) {
   return touch.x >= x && touch.x < x + w && touch.y >= y && touch.y < y + h;
@@ -2903,11 +4045,134 @@ void adjustVolume(int delta) {
   drawInfoScreen();
 }
 
+#if STACKCHAN_SMALL_DISPLAY
+void adjustSmallDisplayVolume(int delta) {
+  const int next = constrain(static_cast<int>(deviceSettings.volume) + delta,
+                             static_cast<int>(AUDIO_SPEAKER_VOLUME_MIN),
+                             static_cast<int>(AUDIO_SPEAKER_VOLUME_MAX));
+  if (next == deviceSettings.volume) {
+    return;
+  }
+  deviceSettings.volume = static_cast<uint8_t>(next);
+  audioController.setVolume(deviceSettings.volume);
+  saveDeviceSettings();
+  drawInfoScreen();
+}
+#endif
+
 bool audioBusyForServoCalibration() {
   return audioController.state() != ChanState::Idle || audioController.isPlaybackDraining();
 }
 
+int roundSplitButtonHit(const m5::touch_detail_t& touch, int32_t y) {
+  const RoundBounds row = roundBoundsAt(y, 36, 36, 250);
+  const int32_t gap = 12;
+  const int32_t buttonW = (row.w - gap) / 2;
+  const RoundBounds left = {row.x, row.y, buttonW, row.h};
+  const RoundBounds right = {row.x + buttonW + gap, row.y, buttonW, row.h};
+  if (touchInRoundBounds(touch, left)) {
+    return -1;
+  }
+  if (touchInRoundBounds(touch, right)) {
+    return 1;
+  }
+  return 0;
+}
+
+bool handleRoundSettingsTouch(const m5::touch_detail_t& touch) {
+  if (activeNetworkQr != NetworkQrType::None) {
+    activeNetworkQr = NetworkQrType::None;
+    drawInfoScreen();
+    return true;
+  }
+
+  if (touch.wasFlicked()) {
+    if (abs(touch.distanceX()) > abs(touch.distanceY()) && abs(touch.distanceX()) > 24) {
+      selectAdjacentSettingsPage(touch.distanceX() < 0 ? 1 : -1);
+      return true;
+    }
+    return false;
+  }
+
+  if (!touch.wasClicked()) {
+    return false;
+  }
+
+  if (touchInCircle(touch, 54, 42, 30)) {
+    selectAdjacentSettingsPage(-1);
+    return true;
+  }
+  if (touchInCircle(touch, M5.Display.width() - 54, 42, 30)) {
+    selectAdjacentSettingsPage(1);
+    return true;
+  }
+
+  if (settingsPage == SettingsPage::Network) {
+    if (networkMode == NetworkMode::SoftAp && touchInRoundBounds(touch, roundBoundsAt(260, 36, 34, 260))) {
+      activeNetworkQr = NetworkQrType::WifiConnect;
+      drawInfoScreen();
+      return true;
+    }
+    const int32_t setupButtonY = networkMode == NetworkMode::SoftAp ? 312 : 288;
+    if (setupQrAvailable() && touchInRoundBounds(touch, roundBoundsAt(setupButtonY, 36, 34, 260))) {
+      activeNetworkQr = NetworkQrType::Setup;
+      drawInfoScreen();
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Display) {
+    const int hit = roundSplitButtonHit(touch, 210);
+    if (hit < 0) {
+      adjustBrightness(-20);
+      return true;
+    }
+    if (hit > 0) {
+      adjustBrightness(20);
+      return true;
+    }
+    if (touchInRoundBounds(touch, roundBoundsAt(286, 38, 34, 260))) {
+      setDisplayOn(!displayOn);
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Audio) {
+    const int hit = roundSplitButtonHit(touch, 226);
+    if (hit < 0) {
+      adjustVolume(-20);
+      return true;
+    }
+    if (hit > 0) {
+      adjustVolume(20);
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::Power) {
+    if (touchInRoundBounds(touch, roundBoundsAt(282, 38, 34, 290))) {
+      applyLowPowerMode(!deviceSettings.lowPowerMode, true);
+      return true;
+    }
+  } else if (settingsPage == SettingsPage::StreetPass) {
+    if (touchInRoundBounds(touch, roundBoundsAt(204, 36, 34, 260))) {
+      JsonDocument request;
+      JsonDocument response;
+      request["type"] = "streetpass.profile.set";
+      request["enabled"] = !streetPassController.enabled();
+      streetPassController.handleJsonCommand(request, response, millis());
+      drawInfoScreen();
+      return true;
+    }
+    if (touchInRoundBounds(touch, roundBoundsAt(252, 36, 34, 260))) {
+      streetPassProfileVisible = !streetPassProfileVisible;
+      drawInfoScreen();
+      return true;
+    }
+  }
+
+  return false;
+}
+
 bool handleSettingsTouch(const m5::touch_detail_t& touch) {
+#if STACKCHAN_ROUND_DISPLAY
+  return handleRoundSettingsTouch(touch);
+#endif
+
   if (activeNetworkQr != NetworkQrType::None) {
     activeNetworkQr = NetworkQrType::None;
     drawInfoScreen();
@@ -2932,12 +4197,14 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
     drawInfoScreen();
     return true;
   }
+#if STACKCHAN_HAS_SERVO
   if (touchIn(touch, 163, 206, 50, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Servo;
     drawInfoScreen();
     return true;
   }
+#endif
   if (touchIn(touch, 216, 206, 48, 26)) {
     activeNetworkQr = NetworkQrType::None;
     settingsPage = SettingsPage::Power;
@@ -2987,7 +4254,9 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
       adjustVolume(20);
       return true;
     }
-  } else if (settingsPage == SettingsPage::Servo) {
+  }
+#if STACKCHAN_HAS_SERVO
+  else if (settingsPage == SettingsPage::Servo) {
     if (touchIn(touch, 24, 150, 132, 32)) {
       motionController.moveToSavedHome();
       return true;
@@ -3001,7 +4270,9 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
       drawInfoScreen();
       return true;
     }
-  } else if (settingsPage == SettingsPage::Power) {
+  }
+#endif
+  else if (settingsPage == SettingsPage::Power) {
     if (touchIn(touch, 150, 144, 150, 28)) {
       applyLowPowerMode(!deviceSettings.lowPowerMode, true);
       return true;
@@ -3071,6 +4342,9 @@ bool handleSettingsTouch(const m5::touch_detail_t& touch) {
 }
 
 void drawLowPowerPrompt() {
+#if STACKCHAN_SMALL_DISPLAY
+  return;
+#endif
   if (!displayOn || infoScreenVisible || deviceSettings.lowPowerMode || !thermalStatus.suggestLowPower) {
     return;
   }
@@ -3078,6 +4352,9 @@ void drawLowPowerPrompt() {
 }
 
 void drawStreetPassNotificationOverlay() {
+#if STACKCHAN_SMALL_DISPLAY
+  return;
+#endif
   const uint8_t unread = streetPassController.unreadCount();
   if (!displayOn || infoScreenVisible || unread == 0) {
     return;
@@ -3105,6 +4382,9 @@ void setState(ChanState state) {
       deferredStateReadyMs = 0;
       pendingSpeakingFaceState = true;
       wsAudioSettleUntilMs = 0;
+#if STACKCHAN_ROUND_DISPLAY
+      faceController.prepareSpeakingCache(displayAuthFaceMode(currentAuthFaceMode));
+#endif
       audioController.setState(ChanState::Speaking);
       applyDisplayBrightness();
       Serial.println("[state] speaking resynced");
@@ -3136,6 +4416,9 @@ void setState(ChanState state) {
   }
   if (state == ChanState::Speaking) {
     pendingSpeakingFaceState = true;
+#if STACKCHAN_ROUND_DISPLAY
+    faceController.prepareSpeakingCache(displayAuthFaceMode(currentAuthFaceMode));
+#endif
   } else {
     pendingSpeakingFaceState = false;
     faceController.setState(state);
@@ -3184,8 +4467,7 @@ void updateSpeakingFaceStateAfterPlayback() {
   }
 
   pendingSpeakingFaceState = false;
-  faceController.setState(ChanState::Speaking);
-  faceController.setAuthFaceMode(displayAuthFaceMode(currentAuthFaceMode));
+  faceController.startSpeaking(displayAuthFaceMode(currentAuthFaceMode));
 }
 
 void updateDeferredFaceState() {
@@ -3554,6 +4836,11 @@ void sendInteractionEvent(const char* event, const char* phase, unsigned long no
   if (wsServer.hasClient()) {
     wsServer.sendText(body.c_str());
   }
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (audioBusyForUiEffects()) {
+    return;
+  }
+#endif
   sendUsbSerialJson(body.c_str());
 }
 
@@ -3725,6 +5012,80 @@ bool handleStreetPassCommand(JsonDocument& doc) {
   return true;
 }
 
+void handleSpeakerTestCommand(JsonDocument& doc) {
+  const uint32_t requestedDurationMs = doc["durationMs"] | 450;
+  uint32_t durationMs = requestedDurationMs;
+  if (durationMs < 80) {
+    durationMs = 80;
+  } else if (durationMs > 2000) {
+    durationMs = 2000;
+  }
+  const bool ok = audioController.playDiagnosticTone(durationMs);
+
+  JsonDocument response;
+  response["type"] = "audio.speaker_test";
+  response["ok"] = ok;
+  response["durationMs"] = durationMs;
+  response["board"] = static_cast<int>(M5.getBoard());
+  response["volume"] = deviceSettings.volume;
+  response["audioState"] = chanStateName(audioController.state());
+  const char* requestId = doc["requestId"] | doc["id"] | "";
+  if (requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+
+  String body;
+  serializeJson(response, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+}
+
+void handleMicTestCommand(JsonDocument& doc) {
+  const uint32_t requestedDurationMs = doc["durationMs"] | 600;
+  uint32_t durationMs = requestedDurationMs;
+  if (durationMs < 80) {
+    durationMs = 80;
+  } else if (durationMs > 3000) {
+    durationMs = 3000;
+  }
+
+  MicDiagnosticResult result;
+  const bool ok = audioController.measureMicDiagnostic(durationMs, result);
+
+  JsonDocument response;
+  response["type"] = "audio.mic_test";
+  writeMicTestResponse(response, result, ok);
+  const char* requestId = doc["requestId"] | doc["id"] | "";
+  if (requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+
+  String body;
+  serializeJson(response, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+}
+
+void handlePlaybackDiagCommand(JsonDocument& doc) {
+  JsonDocument response;
+  writePlaybackDiagnosticResponse(response, audioController.playbackDiagnostic());
+  const char* requestId = doc["requestId"] | doc["id"] | "";
+  if (requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+
+  String body;
+  serializeJson(response, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+}
+
 void handleJsonCommand(const uint8_t* payload, size_t length) {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload, length);
@@ -3751,6 +5112,12 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
 #endif
   if (strcmp(type, "ping") == 0) {
     sendPongResponse(doc);
+  } else if (strcmp(type, "audio.speaker_test") == 0) {
+    handleSpeakerTestCommand(doc);
+  } else if (strcmp(type, "audio.mic_test") == 0) {
+    handleMicTestCommand(doc);
+  } else if (strcmp(type, "audio.playback_diag") == 0) {
+    handlePlaybackDiagCommand(doc);
   } else if (strcmp(type, "state") == 0) {
     const char* value = doc["value"] | "";
     handleStateCommand(value);
@@ -3810,11 +5177,54 @@ void handleUsbSerialLine(const uint8_t* payload, size_t length) {
   if (payload == nullptr || length == 0) {
     return;
   }
+  if (usbSerialFramedMode) {
+    size_t first = 0;
+    while (first < length && isspace(payload[first])) {
+      ++first;
+    }
+    if (first >= length || payload[first] != '{') {
+      return;
+    }
+  }
   usbSerialFramedMode = false;
   handleUsbSerialJsonPayload(payload, length);
 #else
   (void)payload;
   (void)length;
+#endif
+}
+
+void updateUsbSerialDeferredIdle(unsigned long now) {
+#if USB_SERIAL_PROTOCOL_ENABLED && STACKCHAN_DEVICE_STOPWATCH
+  now = millis();
+  if (!usbSerialDeferredIdlePending) {
+    return;
+  }
+  if (currentState != ChanState::Speaking &&
+      audioController.state() != ChanState::Speaking &&
+      !audioController.isPlaybackDraining()) {
+    usbSerialDeferredIdlePending = false;
+    usbSerialDeferredIdleRequestedMs = 0;
+    return;
+  }
+  if (Serial.available() > 0) {
+    return;
+  }
+
+  const unsigned long referenceMs = usbSerialLastPcmMs != 0
+                                      ? usbSerialLastPcmMs
+                                      : usbSerialDeferredIdleRequestedMs;
+  if (referenceMs != 0 && now - referenceMs < USB_SERIAL_IDLE_DEFER_AFTER_PCM_MS) {
+    return;
+  }
+
+  usbSerialDeferredIdlePending = false;
+  usbSerialDeferredIdleRequestedMs = 0;
+  Serial.printf("[audio] usb deferred idle applied last_pcm_age=%lu ms\n",
+                referenceMs == 0 ? 0UL : static_cast<unsigned long>(now - referenceMs));
+  setState(ChanState::Idle);
+#else
+  (void)now;
 #endif
 }
 
@@ -3871,6 +5281,29 @@ void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length) {
     handleUsbSerialCaptureRequest(doc);
     return;
   }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (strcmp(type, "state") == 0) {
+    const char* value = doc["value"] | "";
+    if (strcmp(value, "speaking") == 0) {
+      usbSerialDeferredIdlePending = false;
+      usbSerialDeferredIdleRequestedMs = 0;
+    } else if (strcmp(value, "idle") == 0 &&
+               (currentState == ChanState::Speaking ||
+                audioController.state() == ChanState::Speaking ||
+                audioController.isPlaybackDraining())) {
+      usbSerialDeferredIdlePending = true;
+      usbSerialDeferredIdleRequestedMs = millis();
+      Serial.printf("[audio] usb idle deferred current=%s audio=%s last_pcm_age=%lu ms\n",
+                    chanStateName(currentState),
+                    chanStateName(audioController.state()),
+                    usbSerialLastPcmMs == 0
+                      ? 0UL
+                      : static_cast<unsigned long>(usbSerialDeferredIdleRequestedMs - usbSerialLastPcmMs));
+      return;
+    }
+  }
+#endif
 
   clearCameraButtonPending("usb_serial");
   handleJsonCommand(payload, length);
@@ -3986,6 +5419,9 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
       break;
     case kUsbSerialTypeTtsPcm: {
       clearCameraButtonPending("usb_audio");
+#if STACKCHAN_DEVICE_STOPWATCH
+      usbSerialLastPcmMs = millis();
+#endif
 #if USB_SERIAL_TTS_DIAG_LOG_ENABLED
       const unsigned long now = millis();
       if (usbSerialFirstPcmMs == 0) {
@@ -4093,6 +5529,10 @@ void updateUsbSerial(unsigned long now) {
   if (usbSerialClientConnected && now - usbSerialLastRxMs > USB_SERIAL_CLIENT_TIMEOUT_MS) {
     usbSerialClientConnected = false;
     usbSerialFramedMode = false;
+#if STACKCHAN_DEVICE_STOPWATCH
+    usbSerialDeferredIdlePending = false;
+    usbSerialDeferredIdleRequestedMs = 0;
+#endif
     audioController.setUsbSerialClientConnected(false);
     updateMicStatusOverlay();
     clearCameraButtonPending("usb_timeout");
@@ -4302,13 +5742,36 @@ void onWsConnection(uint8_t clientId, bool connected) {
   }
 }
 
+void redrawNetworkSettingsIfVisible() {
+  if (displayOn && infoScreenVisible && settingsPage == SettingsPage::Network &&
+      activeNetworkQr == NetworkQrType::None) {
+    drawInfoScreen();
+  }
+}
+
+void beginStaWifiConnection(const char* reason) {
+  wifiConnectStartedMs = millis();
+  lastWifiStatus = WiFi.status();
+  WiFi.persistent(false);
+  WiFi.disconnect(false, false);
+  WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
+  Serial.printf("[wifi] connecting to %s reason=%s\n",
+                wifiCredentials[currentWifiIndex].ssid.c_str(),
+                reason != nullptr ? reason : "start");
+  redrawNetworkSettingsIfVisible();
+}
+
 void connectWiFi() {
+  WiFi.persistent(false);
+  wifiConnectStartedMs = 0;
+  lastWifiStatus = WiFi.status();
+
   if (networkMode == NetworkMode::SoftAp) {
     IPAddress localIP(AP_IP_0, AP_IP_1, AP_IP_2, AP_IP_3);
     IPAddress gateway(AP_IP_0, AP_IP_1, AP_IP_2, AP_IP_3);
     IPAddress subnet(255, 255, 255, 0);
 
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(false, false);
     WiFi.mode(WIFI_AP);
     WiFi.setSleep(true);
     const bool configOk = WiFi.softAPConfig(localIP, gateway, subnet);
@@ -4320,8 +5783,10 @@ void connectWiFi() {
       return;
     }
 
+    lastWifiStatus = WiFi.status();
     Serial.printf("[wifi] SoftAP started ssid=%s ip=%s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
     startServers();
+    redrawNetworkSettingsIfVisible();
     return;
   }
 
@@ -4335,12 +5800,11 @@ void connectWiFi() {
     return;
   }
 
-  WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
-  Serial.printf("[wifi] connecting to %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
+  beginStaWifiConnection("initial");
 }
 
 void updateWiFi(unsigned long now) {
-  if (now - lastWifiCheckMs < 1000) {
+  if (now - lastWifiCheckMs < WIFI_STATUS_CHECK_INTERVAL_MS) {
     return;
   }
   lastWifiCheckMs = now;
@@ -4349,31 +5813,118 @@ void updateWiFi(unsigned long now) {
     return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
+  const wl_status_t status = WiFi.status();
+  if (status != lastWifiStatus) {
+    Serial.printf("[wifi] status=%d\n", static_cast<int>(status));
+    lastWifiStatus = status;
+    redrawNetworkSettingsIfVisible();
+  }
+
+  if (status == WL_CONNECTED) {
     wifiConnectAttempts = 0;
+    wifiConnectStartedMs = 0;
     if (!wsStarted) {
       Serial.printf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       startServers();
+      redrawNetworkSettingsIfVisible();
     }
     return;
   }
 
+  if (wifiConnectStartedMs == 0) {
+    beginStaWifiConnection("resume");
+    return;
+  }
+
+  if (now - wifiConnectStartedMs < WIFI_CONNECT_RETRY_MS) {
+    return;
+  }
+
   ++wifiConnectAttempts;
-  if (wifiConnectAttempts >= 8) {
+  if (wifiConnectAttempts >= WIFI_CONNECT_ATTEMPTS_PER_CREDENTIAL) {
     wifiConnectAttempts = 0;
     if (!selectNextConfiguredWifi()) {
       Serial.println("[wifi] no STA credentials configured");
       return;
     }
     Serial.printf("[wifi] switching candidate to %s\n", wifiCredentials[currentWifiIndex].ssid.c_str());
+    redrawNetworkSettingsIfVisible();
   }
 
-  Serial.println("[wifi] disconnected, reconnecting");
-  WiFi.disconnect();
-  WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
+  Serial.printf("[wifi] reconnecting after timeout status=%d\n", static_cast<int>(status));
+  beginStaWifiConnection("timeout");
+}
+
+void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
+#if STACKCHAN_HAS_SCREEN_TOUCH_PETTING
+  if (!displayOn || infoScreenVisible) {
+    screenPettingCandidate = false;
+    screenPettingTouchActive = false;
+    screenPettingCandidateSinceMs = 0;
+    screenPettingReleaseSinceMs = 0;
+    screenPettingTravelPx = 0;
+    setPettingActive(false, now);
+    return;
+  }
+
+  if (!touch.isPressed()) {
+    screenPettingCandidate = false;
+    screenPettingTravelPx = 0;
+    screenPettingCandidateSinceMs = 0;
+    if (screenPettingTouchActive && screenPettingReleaseSinceMs == 0) {
+      screenPettingReleaseSinceMs = now;
+    }
+    if (screenPettingReleaseSinceMs != 0 && now - screenPettingReleaseSinceMs >= SCREEN_PETTING_RELEASE_MS) {
+      screenPettingReleaseSinceMs = 0;
+      screenPettingTouchActive = false;
+      setPettingActive(false, now);
+    }
+    return;
+  }
+
+  screenPettingReleaseSinceMs = 0;
+  const int32_t cx = roundCenterX();
+  const int32_t cy = roundCenterY();
+  const int32_t baseDx = touch.base_x - cx;
+  const int32_t baseDy = touch.base_y - cy;
+  const int32_t baseRadius = SCREEN_PETTING_RADIUS_PX;
+  const bool startedInPettingZone = baseDx * baseDx + baseDy * baseDy <= baseRadius * baseRadius;
+  if (!startedInPettingZone) {
+    if (screenPettingTouchActive) {
+      screenPettingTouchActive = false;
+      setPettingActive(false, now);
+    }
+    screenPettingCandidate = false;
+    screenPettingCandidateSinceMs = 0;
+    screenPettingTravelPx = 0;
+    return;
+  }
+
+  if (!screenPettingCandidate && !screenPettingTouchActive) {
+    screenPettingCandidate = true;
+    screenPettingCandidateSinceMs = now;
+    screenPettingTravelPx = 0;
+  }
+
+  screenPettingTravelPx += abs(touch.deltaX()) + abs(touch.deltaY());
+  const bool heldLongEnough = screenPettingCandidateSinceMs != 0 &&
+                              now - screenPettingCandidateSinceMs >= SCREEN_PETTING_REQUIRED_MS;
+  const bool draggedEnough = screenPettingTravelPx >= SCREEN_PETTING_DRAG_DISTANCE_PX;
+  if (heldLongEnough || draggedEnough || screenPettingTouchActive) {
+    screenPettingTouchActive = true;
+    setPettingActive(true, now);
+  }
+#else
+  (void)now;
+  (void)touch;
+#endif
 }
 
 void updateTouch(unsigned long now) {
+#if STACKCHAN_SMALL_DISPLAY
+  (void)now;
+  return;
+#endif
   if (!interactionsReady(now)) {
     return;
   }
@@ -4383,6 +5934,8 @@ void updateTouch(unsigned long now) {
     return;
   }
 
+  updateScreenPetting(now, touch);
+
   if (infoScreenVisible && settingsPage == SettingsPage::Network &&
       activeNetworkQr == NetworkQrType::None && touch.wasHold()) {
     switchNetworkModeAndRestart();
@@ -4390,17 +5943,21 @@ void updateTouch(unsigned long now) {
   }
 
   if (touch.wasClicked()) {
+#if STACKCHAN_HAS_CAMERA
     if (!infoScreenVisible && appClientConnected() &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 144, 40, 72)) {
       sendCameraButtonEvent(now);
       return;
     }
+#endif
+#if !STACKCHAN_ROUND_DISPLAY
     if (!infoScreenVisible && appClientConnected() &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 80, 40, 80)) {
       audioController.setMicMuted(!audioController.micMuted());
       updateMicStatusOverlay();
       return;
     }
+#endif
     if (!infoScreenVisible && thermalStatus.suggestLowPower && !deviceSettings.lowPowerMode &&
         touchIn(touch, M5.Display.width() - 132, M5.Display.height() - 44, 66, 30)) {
       applyLowPowerMode(true, true);
@@ -4412,6 +5969,12 @@ void updateTouch(unsigned long now) {
     }
   }
 
+#if STACKCHAN_ROUND_DISPLAY
+  if (infoScreenVisible && touch.wasFlicked() && handleSettingsTouch(touch)) {
+    return;
+  }
+#endif
+
   if (isSettingsSwipe(touch)) {
     setInfoScreenVisible(!infoScreenVisible);
     return;
@@ -4420,12 +5983,99 @@ void updateTouch(unsigned long now) {
 
 void updateButtons(unsigned long now) {
   (void)now;
+#if STACKCHAN_SMALL_DISPLAY
+  if (!interactionsReady(now)) {
+    return;
+  }
+  if (infoScreenVisible && settingsPage == SettingsPage::Audio && smallVolumeAdjustMode) {
+    if (M5.BtnA.isHolding()) {
+      if (smallVolumeHoldRepeatMs == 0 || now - smallVolumeHoldRepeatMs >= 1000) {
+        smallVolumeHoldRepeatMs = now;
+        adjustSmallDisplayVolume(-SETTINGS_STEP_VALUE);
+      }
+      return;
+    }
+    if (M5.BtnA.isReleased()) {
+      smallVolumeHoldRepeatMs = 0;
+    }
+  }
+  if (M5.BtnA.wasHold()) {
+    Serial.println("[button] hold");
+    handleSmallDisplayPageHold();
+    return;
+  }
+  if (smallDisplayFacePettingHold) {
+    if (M5.BtnA.isHolding()) {
+      setPettingActive(true, now, PET_BUTTON_RELEASE_LINGER_MS);
+      return;
+    }
+    if (M5.BtnA.wasReleasedAfterHold() || M5.BtnA.isReleased()) {
+      extendPettingReleaseLinger(now, PET_BUTTON_RELEASE_LINGER_MS);
+      smallDisplayFacePettingHold = false;
+      return;
+    }
+  }
+  if (M5.BtnA.wasDoubleClicked()) {
+    Serial.println("[button] double");
+    if (infoScreenVisible && settingsPage == SettingsPage::Network) {
+      if (activeNetworkQr != NetworkQrType::None) {
+        activeNetworkQr = NetworkQrType::None;
+      } else {
+        activeNetworkQr = NetworkQrType::Setup;
+      }
+      if (displayOn) {
+        drawInfoScreen();
+      }
+      return;
+    }
+    if (infoScreenVisible && settingsPage == SettingsPage::Audio) {
+      smallVolumeAdjustMode = !smallVolumeAdjustMode;
+      smallVolumeHoldRepeatMs = 0;
+      if (displayOn) {
+        drawInfoScreen();
+      }
+      return;
+    }
+    if (infoScreenVisible && settingsPage == SettingsPage::StreetPass) {
+      smallStreetPassView = (smallStreetPassView + 1) % kSmallStreetPassViewCount;
+      if (displayOn) {
+        drawInfoScreen();
+      }
+      return;
+    }
+    if (infoScreenVisible) {
+      return;
+    }
+    audioController.setMicMuted(!audioController.micMuted());
+    updateMicStatusOverlay();
+    return;
+  }
+  if (M5.BtnA.wasSingleClicked()) {
+    Serial.println("[button] single");
+    if (infoScreenVisible && settingsPage == SettingsPage::Audio && smallVolumeAdjustMode) {
+      adjustSmallDisplayVolume(SETTINGS_STEP_VALUE);
+      return;
+    }
+    advanceSmallDisplayPage();
+    return;
+  }
+#else
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (M5.BtnA.wasClicked()) {
+    setInfoScreenVisible(!infoScreenVisible);
+  }
+  if (M5.BtnB.wasClicked()) {
+    setDisplayOn(!displayOn);
+  }
+#endif
   if (M5.BtnPWR.wasClicked()) {
     setDisplayOn(!displayOn);
   }
+#endif
 }
 
 void updateBackTouch(unsigned long now) {
+#if STACKCHAN_HAS_BACK_TOUCH
   if (!displayOn) {
     setPettingActive(false, now);
     backTouchReady = false;
@@ -4483,6 +6133,9 @@ void updateBackTouch(unsigned long now) {
   if (now - backTouchClearSinceMs >= BACK_TOUCH_RELEASE_MS) {
     backTouchClearSinceMs = 0;
   }
+#else
+  (void)now;
+#endif
 }
 
 void updateListeningNod(unsigned long now) {
@@ -4525,7 +6178,7 @@ void updateListeningNod(unsigned long now) {
 }
 
 void setup() {
-  M5StackChan.begin();
+  beginDevice();
   Serial.setRxBufferSize(USB_SERIAL_RX_BUFFER_BYTES);
   Serial.begin(USB_SERIAL_BAUD);
   Serial.printf("[boot] reset_reason=%d usb_baud=%lu rx_buffer=%u at_ms=%lu\n",
@@ -4556,7 +6209,6 @@ void setup() {
   affectionController.begin(&preferences);
   streetPassController.begin(&preferences);
   restoreStreetPassTimeFromRtc(millis());
-  beginStreetPassBle();
   faceController.setAffectionState(affectionController.state());
   motionController.begin();
   audioController.begin(&wsServer);
@@ -4568,13 +6220,14 @@ void setup() {
   wsServer.onConnection(onWsConnection);
 
   connectWiFi();
+  beginStreetPassBle();
   interactionReadyAtMs = millis() + INTERACTION_STARTUP_IGNORE_MS;
   lastInitializeDrawMs = 0;
   drawInitializeScreen(millis());
 }
 
 void loop() {
-  M5StackChan.update();
+  updateDevice();
 
   unsigned long now = millis();
   const bool diagSpeakingAtLoopStart =
@@ -4600,9 +6253,17 @@ void loop() {
   updateTouch(now);
   updateBackTouch(now);
   updateShake(now);
+  updateHaptic(now);
   updateUsbSerial(now);
+  updateUsbSerialDeferredIdle(now);
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    audioController.update(millis());
+  }
+#endif
   updateWiFi(now);
   updateStreetPassNetworkTime(now);
+  updateClockOverlay(now);
   streetPassController.update(now);
 
   if (wsStarted) {
@@ -4689,6 +6350,11 @@ void loop() {
       faceController.update(now);
       drawLowPowerPrompt();
       drawStreetPassNotificationOverlay();
+#if STACKCHAN_DEVICE_STOPWATCH
+      if (speaking) {
+        audioController.update(millis());
+      }
+#endif
     }
 #if FACE_DIAG_LOG_ENABLED
   } else if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {

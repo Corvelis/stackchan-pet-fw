@@ -1,41 +1,56 @@
-# Stack-chan CoreS3 Controller
+# Stack-chan Multi-Device Controller
 
 [日本語](README.md) | [English](README.en.md)
 
-Firmware for an M5Stack CoreS3 based Stack-chan. It provides face rendering,
-servo motion, microphone/speaker streaming, camera capture, touch/shake
-reactions, and network interfaces for external control.
+Firmware for an M5Stack CoreS3 based Stack-chan, M5Stack StopWatch, and M5Stack
+AtomS3R Chatbot. It provides face rendering, microphone/speaker streaming,
+petting/shake reactions, StreetPass, and HTTP / WebSocket / USB Serial control
+interfaces. On CoreS3, it also provides servo motion and camera capture.
 
-This repository contains only the Stack-chan firmware side. It documents the
+This repository contains only the device firmware side. It documents the
 HTTP, WebSocket, and USB Serial interfaces exposed by the device; external client
 implementations are out of scope.
 
 ## Features
 
-- M5Stack CoreS3 firmware built with PlatformIO and Arduino.
-- LittleFS-based face image rendering.
+- CoreS3 / StopWatch / AtomS3R Chatbot firmware built with PlatformIO and Arduino.
+- LittleFS-based face image rendering sized per target device.
 - WebSocket JSON control channel.
 - WebSocket binary PCM playback and microphone streaming.
 - USB CDC / USB Serial control channel for Android direct USB connections.
-- HTTP camera capture and status endpoints.
-- On-face camera button event for requesting client-side capture handling.
+- HTTP status endpoints and CoreS3 camera capture.
+- CoreS3 on-face camera button event for requesting client-side capture handling.
 - BLE StreetPass-style exchange between Stack-chan devices.
 - StreetPass profile, latest 30 encounter records, unread notification, and sync API for companion apps.
 - STA Wi-Fi mode, SoftAP direct-connection mode, and USB Serial mode.
 - Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
-- Local petting and shake reactions.
+- Local petting and shake reactions. The physical interaction differs by device.
 - Persistent affection state controlled through WebSocket events.
 - Device-side interaction events for petting, shake, camera button, session start, and level changes.
-- On-device settings screen for network, display, audio, and power controls.
+- On-device settings screen for network, display, audio, power, and StreetPass controls.
 - Battery, microphone, affection, thermal, and low-power visual overlays.
 
 ## Hardware
 
-- M5Stack CoreS3
-- Stack-chan compatible servo hardware
 - PlatformIO development environment
+- Target device:
 
-The PlatformIO environment is defined as `m5stack-cores3` in `platformio.ini`.
+| Device | Additional hardware |
+| --- | --- |
+| M5Stack CoreS3 + Stack-chan | Stack-chan-compatible servo hardware |
+| M5Stack StopWatch | none |
+| M5Stack AtomS3R Chatbot | Atomic Echo Base |
+
+PlatformIO environments:
+
+| Device | env | LittleFS image directory |
+| --- | --- | --- |
+| CoreS3 + Stack-chan | `m5stack-cores3` | `data/` |
+| StopWatch | `m5stack-stopwatch` | `data_stopwatch/` |
+| AtomS3R Chatbot | `m5stack-atoms3r-chatbot` | `data_atoms3r/` |
+
+See the [Device Guide](docs/devices.md) for target-specific build commands,
+controls, and unsupported features.
 
 ## Install PlatformIO
 
@@ -59,8 +74,12 @@ at:
 Required:
 
 - `platformio.ini`: PlatformIO build configuration.
+- `boards/`: board definitions not bundled with PlatformIO.
 - `src/`: firmware source code.
-- `data/`: LittleFS face image directory. Default PNG files are included.
+- `data/`: CoreS3 LittleFS face images. Default PNG files are included.
+- `data_stopwatch/`: StopWatch LittleFS face images.
+- `data_atoms3r/`: AtomS3R Chatbot LittleFS face images.
+- `docs/devices.md`: device-specific build and operation guide.
 - `docs/device_affection_api.md`: detailed device-side affection API notes.
 - `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
 - `docs/streetpass_protocol.md`: StreetPass BLE and JSON API details.
@@ -97,47 +116,74 @@ cp src/config_private.example.h src/config_private.h
 #define WIFI_PASSWORD_2 ""
 ```
 
-4. Prepare the face PNG files listed below under `data/`.
-5. Connect the CoreS3 by USB.
-6. Build and upload the firmware:
+4. Prepare the face PNG files listed below in the target device's image
+   directory. CoreS3 uses `data/`, StopWatch uses `data_stopwatch/`, and
+   AtomS3R Chatbot uses `data_atoms3r/`.
+5. Connect the target device by USB.
+6. Optionally compile without flashing. Replace `<env>` with the target
+   environment:
 
 ```sh
-pio run --target upload
+pio run -e <env>
 ```
 
-7. Upload the LittleFS image data:
+7. Upload the firmware:
 
 ```sh
-pio run --target uploadfs
+pio run -e <env> -t upload
 ```
 
-8. Open the serial monitor:
+8. Upload the LittleFS image data:
 
 ```sh
-pio device monitor
+pio run -e <env> -t uploadfs
+```
+
+9. Open the serial monitor:
+
+```sh
+pio device monitor -e <env>
 ```
 
 The device prints the Wi-Fi mode and IP address on boot.
+For a first-time flash, run `upload` and then `uploadfs`. If only code changed,
+`upload` is enough. If only face images changed, `uploadfs` is enough.
 
 For ready-to-flash `.bin` installation, see the [Binary Installation Guide](docs/install_binary.md).
 Release builds should define `STACKCHAN_RELEASE_BUILD` so `src/config_private.h` local Wi-Fi credentials are not included.
+Generate device-specific GitHub Releases assets into `dist/` with:
+
+```sh
+bash scripts/build_release_bins.sh all
+```
+
+The generated filenames match the release asset table in the
+[Binary Installation Guide](docs/install_binary.md).
 
 ## Face Images
 
 The firmware loads face images from LittleFS using the paths in `src/config.h`.
-Default 240 x 240 PNG face images are included under `data/`.
-To replace them with your own images, place PNG files with these exact names under `data/`.
+The file names are shared by all devices, but the upload source directory and
+recommended image size differ by target.
+
+| Device | Upload source | Recommended size |
+| --- | --- | --- |
+| CoreS3 + Stack-chan | `data/` | 240 x 240 |
+| StopWatch | `data_stopwatch/` | 386 x 386 |
+| AtomS3R Chatbot | `data_atoms3r/` | 128 x 128 |
+
+To replace them with your own images, place PNG files with these exact names in
+the target device's image directory.
 
 To generate the face images from a 6x6 sprite sheet created with image generation AI,
 use [`tools/face_image_builder/`](tools/face_image_builder/). It includes the prompt,
-grid template, sprite sheet splitting CLI, and `data/` installation workflow.
+grid template, sprite sheet splitting CLI, and target image-directory installation workflow.
 
 Folders under `assets/` are only source/reference work areas and are not read
 directly by the firmware. Rename/export the runtime images to the filenames
-below, place them directly under `data/`, then run `pio run --target uploadfs`
-to write them to LittleFS.
-Use `python3 scripts/audit_face_assets.py` to audit the local image set.
-See `docs/face_image_inventory.ja.md` for the current cleanup notes.
+below, place them directly under the target device's image directory, then run
+`pio run -e <env> -t uploadfs` to write them to LittleFS.
+See `docs/face_image_inventory.ja.md` for the current image cleanup notes.
 
 | File | Expected image | Example source from Tsukuyomi-chan standing material |
 | --- | --- | --- |
@@ -189,8 +235,8 @@ This repository includes default PNG files generated from sample 01 in
 material" column is only a reference for manually preparing replacement images.
 The original Tsukuyomi-chan material itself is not included in this repository.
 If you use it, download the original material from the official distribution
-page, follow its terms, export the required 240 x 240 PNGs, and place them in
-`data/`.
+page, follow its terms, export PNGs at the target device's recommended size, and
+place them in the target device's image directory.
 
 Credit for the local image set:
 
@@ -210,21 +256,22 @@ The firmware supports two network modes:
 
 Default SoftAP settings:
 
-```text
-SSID: StackChan-Direct
-Password: stackchan123
-IP: 192.168.4.1
-```
+| Device | SSID | Password | IP |
+| --- | --- | --- | --- |
+| CoreS3 | `StackChan-Direct` | `stackchan123` | `192.168.4.1` |
+| StopWatch | `StopWatch` | `stackchan123` | `192.168.4.1` |
+| AtomS3R | `AtomS3R` | `stackchan123` | `192.168.4.1` |
 
-Hold the touch screen while the info screen is visible to switch between STA and
-SoftAP. The selected mode is saved in device preferences and applied after
-restart.
+On the Network screen, hold the CoreS3 / StopWatch touch screen or hold AtomS3R
+Chatbot BtnA to switch between STA and SoftAP. CoreS3 / StopWatch restart after
+the switch; AtomS3R Chatbot switches the connection in place. The selected mode
+is saved in device preferences.
 
 ## Wi-Fi Setup Page
 
 If STA mode starts with no configured Wi-Fi credentials, the device
-automatically falls back to SoftAP mode. Connect a phone or PC to
-`StackChan-Direct`, then open this URL in a browser:
+automatically falls back to SoftAP mode. Connect a phone or PC to the target
+device's SoftAP SSID, then open this URL in a browser:
 
 ```text
 http://192.168.4.1/wifi
@@ -237,7 +284,7 @@ on the IP address shown on the Network screen to use the same setup page.
 
 The on-device Network screen can show QR codes for Wi-Fi setup.
 
-- SoftAP mode: use `Wi-Fi QR` to connect to `StackChan-Direct`, then use
+- SoftAP mode: use `Wi-Fi QR` to connect to the target device's SoftAP, then use
   `Setup QR` to open `http://192.168.4.1/wifi`.
 - STA connected: use `Setup QR` to open `http://<device-ip>/wifi`. The phone or
   PC must be on the same Wi-Fi network as the device.
@@ -245,26 +292,30 @@ The on-device Network screen can show QR codes for Wi-Fi setup.
 
 ## On-Device Controls
 
-- Flick from an edge of the touch screen to show or hide the settings screen.
+- On-device controls differ by target. See the [Device Guide](docs/devices.md) for details.
+- On CoreS3, flick from an edge of the touch screen to show or hide the settings screen.
 - Use the settings tabs for Network, Display, Audio, Servo, and Pwr.
-- If Wi-Fi is not configured, the device starts a setup Wi-Fi network named
-  `StackChan-Direct`. Connect a phone or PC to it, then open
+- The `Servo` tab is for servo-equipped CoreS3 builds. It is not shown on StopWatch or AtomS3R Chatbot.
+- If Wi-Fi is not configured, the device starts the target-specific setup Wi-Fi network.
+  Connect a phone or PC to it, then open
   `http://192.168.4.1/wifi` to configure Wi-Fi.
-- Hold the Network settings page to switch between STA and SoftAP.
-- Use Display settings to adjust brightness or turn the screen off.
-- Use Audio settings to adjust speaker volume.
-- Use Servo settings to save the face reference position or return to the saved position.
+- On the Network settings page, hold the CoreS3 / StopWatch touch screen or hold AtomS3R Chatbot BtnA to switch between STA and SoftAP.
+- Use Display settings to adjust brightness or turn the screen off. AtomS3R Chatbot does not have a Display page.
+- Use Audio settings to adjust speaker volume. On AtomS3R Chatbot, double-click BtnA on the Audio screen to enter volume adjust mode, then short-press to increase volume or hold to decrease volume.
+- Use Servo settings to save the CoreS3 face reference position or return to the saved position.
 - Use Power settings to check thermal state, battery state, and low-power mode.
 - Low-power mode caps display brightness and reduces idle face updates and nodding motion.
   Audio playback and lip-sync during speech continue.
-- Press the power button to toggle the display.
+- On CoreS3 / StopWatch, press the power button to toggle the display.
 - While the screen is off, petting and shake interactions are disabled.
-- When a WebSocket or USB Serial client is connected, tap the microphone overlay
+- On CoreS3, when a WebSocket or USB Serial client is connected, tap the microphone overlay
   on the right side of the face screen to mute or unmute mic streaming.
-- When a WebSocket or USB Serial client is connected, tap the camera overlay above the
+- On AtomS3R Chatbot, double-click BtnA on the normal face screen to mute or unmute mic streaming.
+- On CoreS3, when a WebSocket or USB Serial client is connected, tap the camera overlay above the
   microphone overlay to send a `camera_button` event. The device does not send
   image data over WebSocket; network clients should call HTTP `POST /capture`,
   and USB Serial clients should send a `capture.request` message.
+  StopWatch and AtomS3R Chatbot do not have cameras, so this operation and image capture are unavailable.
 
 ## Connection Points
 
@@ -281,8 +332,10 @@ Endpoints:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/status` | Returns device status as JSON. `charging` is `true` while charging or externally powered over USB/VBUS. |
-| `POST` | `/capture` | Captures a JPEG image from the camera. |
-| `OPTIONS` | `/status`, `/capture` | CORS preflight support. |
+| `POST` | `/capture` | Captures a JPEG image from the CoreS3 camera. Fails on devices without cameras. |
+| `GET`, `POST` | `/speaker-test` | Plays a short diagnostic tone for StopWatch / AtomS3R Chatbot speaker checks. |
+| `GET`, `POST` | `/mic-test` | Returns microphone diagnostic metrics as JSON. |
+| `OPTIONS` | `/status`, `/capture`, `/speaker-test`, `/mic-test` | CORS preflight support. |
 
 Example `/status` response:
 
@@ -350,7 +403,7 @@ Microphone flags: bit 0 = stream segment start
 ### USB Serial
 
 The firmware also accepts the same command/event model over USB CDC / USB
-Serial. This path is intended for Android devices that open the CoreS3 USB port
+Serial. This path is intended for Android devices that open the device USB port
 with Android USB Host APIs such as `usb-serial-for-android`.
 
 The device supports two USB Serial input forms:
@@ -486,6 +539,9 @@ Allowed names: `center`, `look_left`, `look_right`, `look_away`, `not_master`,
 `nod`, `small_nod`, `small_bounce`, `lean_forward`, `wobble`, `shy_nod`,
 `thinking`.
 
+StopWatch and AtomS3R Chatbot accept these commands, but they do not have servos,
+so no physical motion occurs.
+
 Set servo pose directly:
 
 ```json
@@ -568,9 +624,9 @@ Device response:
 
 The device also broadcasts `interaction.event` messages for physical and
 device-side events such as `petting`, `shake`, `camera_button`, `session_start`,
-`level_up`, and `level_down`. `camera_button` is sent only while a WebSocket or
-USB Serial client is connected, uses phase `pressed`, and is locked until the
-next client text/binary response or a 30-second timeout.
+`level_up`, and `level_down`. `camera_button` is sent by CoreS3 only while a
+WebSocket or USB Serial client is connected, uses phase `pressed`, and is locked
+until the next client text/binary response or a 30-second timeout.
 
 Short-term state behavior:
 
@@ -609,16 +665,17 @@ See `docs/device_affection_api.md` for the detailed device-side affection API.
 
 ## Troubleshooting
 
-- If Wi-Fi is not configured, connect to `StackChan-Direct` and open
+- If Wi-Fi is not configured, connect to the target device's SoftAP SSID and open
   `http://192.168.4.1/wifi` to register an SSID/password. When building from
   source, you can also set `WIFI_SSID` / `WIFI_PASSWORD` in `src/config_private.h`.
-- If faces are missing, make sure all required PNG files are in `data/` and run
-  `pio run --target uploadfs`.
+- If faces are missing, make sure all required PNG files are in the target device's image directory and run
+  `pio run -e <env> -t uploadfs`.
 - If HTTP works but WebSocket does not, check that the client connects to port
   `8080`, not port `80`.
 - If SoftAP mode is active, connect the phone, PC, or other client device to
-  `StackChan-Direct` and use `192.168.4.1` as the device IP. The Wi-Fi setup
+  the target device's SoftAP SSID and use `192.168.4.1` as the device IP. The Wi-Fi setup
   page is `/wifi`.
+- `/capture` failures on StopWatch and AtomS3R Chatbot are expected because those devices do not have cameras.
 - If USB Serial ping/pong times out, check that the client can resynchronize on
   the `SCU1` magic and ignores diagnostic text printed before or between frames.
 

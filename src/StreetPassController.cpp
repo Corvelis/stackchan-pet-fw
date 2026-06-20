@@ -6,7 +6,7 @@
 namespace {
 constexpr const char* kSettingsNamespace = "streetpass";
 constexpr const char* kRecordsPath = "/streetpass_records.json";
-constexpr size_t kNameMaxLen = 32;
+constexpr size_t kNameMaxLen = 48;
 constexpr size_t kMessageMaxLen = 80;
 constexpr size_t kPeerKeyMaxLen = 48;
 constexpr uint32_t kEncounterMergeWindowSeconds = 24UL * 60UL * 60UL;
@@ -221,8 +221,8 @@ void StreetPassController::loadSettings() {
   profile_.enabled = preferences_->getBool("enabled", true);
   profile_.shareProfile = preferences_->getBool("share", true);
   profile_.profileId = preferences_->getString("profile_id", "");
-  profile_.name = preferences_->getString("name", "Stack-chan");
-  profile_.message = preferences_->getString("message", "Konnichiwa");
+  profile_.name = preferences_->getString("name", STREETPASS_DEFAULT_NAME);
+  profile_.message = preferences_->getString("message", STREETPASS_DEFAULT_MESSAGE);
   profile_.cardSeq = preferences_->getUInt("card_seq", 1);
   nextRecordId_ = preferences_->getUInt("next_id", 1);
   bootId_ = preferences_->getUInt("boot_id", 0);
@@ -232,10 +232,21 @@ void StreetPassController::loadSettings() {
   timeAnchorMillis_ = preferences_->getUInt("time_ms", 0);
   timezone_ = preferences_->getString("timezone", "UTC");
   preferences_->end();
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  const bool migratedDefaultName = profile_.name == STREETPASS_LEGACY_DEFAULT_NAME;
+  if (migratedDefaultName) {
+    profile_.name = STREETPASS_DEFAULT_NAME;
+  }
+#endif
   timeSynced_ = false;
   timeAnchorMillis_ = 0;
   copyLimited(profile_.name, profile_.name.c_str(), kNameMaxLen);
   copyLimited(profile_.message, profile_.message.c_str(), kMessageMaxLen);
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  if (migratedDefaultName) {
+    saveSettings();
+  }
+#endif
 }
 
 void StreetPassController::saveSettings() {
@@ -406,7 +417,7 @@ bool StreetPassController::applyProfileSet(JsonDocument& request) {
   }
   if (!request["name"].isNull()) {
     String next;
-    copyLimited(next, request["name"] | "Stack-chan", kNameMaxLen);
+    copyLimited(next, request["name"] | STREETPASS_DEFAULT_NAME, kNameMaxLen);
     changed |= next != profile_.name;
     profile_.name = next;
   }
@@ -497,7 +508,7 @@ bool StreetPassController::injectRecord(JsonDocument& request, unsigned long now
     peerKey = String("debug-") + String(nextRecordId_);
   }
   return upsertRecord(peerKey.c_str(),
-                      request["name"] | "Stack-chan",
+                      request["name"] | STREETPASS_DEFAULT_NAME,
                       request["message"] | "",
                       request["cardSeq"] | 0,
                       request["rssi"] | -55,

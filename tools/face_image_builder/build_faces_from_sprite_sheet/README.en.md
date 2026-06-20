@@ -2,7 +2,9 @@
 
 [Japanese](README.md)
 
-`build_faces.py` is a CLI tool that builds 240x240 PNG face images for the Stack-chan pet firmware `data/` directory from a square 6x6 face sprite sheet.
+`build_faces.py` is a CLI tool that builds PNG face images for the Stack-chan pet
+firmware image directories from a square 6x6 face sprite sheet. The default
+output is 240x240 for CoreS3.
 
 It crops 36 cells from the sprite sheet, then applies copy completion rules for the additional files referenced by the firmware. The final output is 48 PNG files.
 
@@ -20,7 +22,7 @@ For the first run, install dependencies.
 python -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
 ```
 
-Use the following command to install an AI-generated sprite sheet into `data/` for firmware use.
+Use the following command to install an AI-generated sprite sheet into CoreS3 `data/` for firmware use.
 
 ```bash
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data --backup-existing --detect-grid --clean
@@ -30,29 +32,56 @@ This command crops the 36 cells, aligns face positions, normalizes face sizes, a
 
 With the `--backup-existing` option, existing `data/*.png` files are copied to `backups/data_faces_YYYYMMDD_HHMMSS/` before writing new files.
 
+For StopWatch or AtomS3R Chatbot, change the output directory and `--output-size`.
+
+```bash
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_stopwatch --backup-existing --detect-grid --clean --output-size 386
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_atoms3r --backup-existing --detect-grid --clean --output-size 128
+```
+
+StopWatch and AtomS3R Chatbot image directories can also be generated from the
+existing CoreS3 `data/` directory.
+
+```bash
+python3 scripts/generate_device_assets.py all
+```
+
+Generate one target at a time:
+
+```bash
+python3 scripts/generate_device_assets.py stopwatch
+python3 scripts/generate_device_assets.py atoms3r
+```
+
+Use `--source` when generating from another CoreS3 image directory.
+
+```bash
+python3 scripts/generate_device_assets.py all --source path/to/core-data
+```
+
 Note: this tool uses an AI model for face alignment. The model file is downloaded automatically on the first run of `build_faces.py`.
 
 Upload the result to LittleFS.
 
 ```bash
-pio run -e m5stack-cores3 -t uploadfs
+pio run -e <env> -t uploadfs
 ```
 
 Upload the firmware itself when needed.
 
 ```bash
-pio run -e m5stack-cores3 -t upload
+pio run -e <env> -t upload
 ```
 
 ## Check Output Before Installing
 
-Use `--out` if you want to inspect the generated files before writing to `data/`.
+Use `--out` if you want to inspect the generated files before writing to a device image directory.
 
 ```bash
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces --detect-grid --clean
 ```
 
-If the output looks good, run the `--install-to data` command above.
+If the output looks good, run the `--install-to <image-directory>` command above.
 
 ## With a Virtual Environment
 

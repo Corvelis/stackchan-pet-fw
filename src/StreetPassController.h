@@ -4,6 +4,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
+#include "config.h"
+
 struct StreetPassRecord {
   uint32_t recordId = 0;
   String peerKey;
@@ -25,8 +27,8 @@ struct StreetPassProfile {
   bool enabled = true;
   bool shareProfile = true;
   String profileId;
-  String name = "Stack-chan";
-  String message = "Konnichiwa";
+  String name = STREETPASS_DEFAULT_NAME;
+  String message = STREETPASS_DEFAULT_MESSAGE;
   uint32_t cardSeq = 1;
 };
 
@@ -47,6 +49,8 @@ public:
 
   void markAllRead();
   bool syncTime(uint32_t unixTime, const char* timezone, unsigned long now);
+  uint32_t estimatedUnix(unsigned long now) const;
+  const char* currentTimeQuality(unsigned long now) const;
   bool recordPublicCard(const char* publicCardJson, int rssi, unsigned long now);
   void writeStatus(JsonObject target) const;
   bool handleJsonCommand(JsonDocument& request, JsonDocument& response, unsigned long now);
@@ -72,8 +76,6 @@ private:
   StreetPassRecord* findRecordForMerge(const String& peerKey, uint32_t nowUnix);
   uint8_t chooseEvictionIndex() const;
   StreetPassRecord& allocateRecordSlot();
-  uint32_t estimatedUnix(unsigned long now) const;
-  const char* currentTimeQuality(unsigned long now) const;
   void writeRecord(JsonObject item, const StreetPassRecord& record) const;
   void copyLimited(String& target, const char* value, size_t maxLen);
 

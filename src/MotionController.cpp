@@ -1,25 +1,31 @@
 #include "MotionController.h"
 
-#include <M5StackChan.h>
 #include "config.h"
-#include <Preferences.h>
 
-#include "config.h"
+#if STACKCHAN_HAS_SERVO
+#include <M5StackChan.h>
+#endif
+
+#include <Preferences.h>
 
 void MotionController::begin() {
   loadCalibration();
   currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
   targetPose_ = currentPose_;
-  servoOutputEnabled_ = SERVO_OUTPUT_ENABLED != 0;
+  servoOutputEnabled_ = STACKCHAN_HAS_SERVO && SERVO_OUTPUT_ENABLED != 0;
   servoOutputStarted_ = false;
   disableAutoAngleSyncAfterFirstMove_ = false;
   logPose("initial", currentPose_);
+#if STACKCHAN_HAS_SERVO
   if (servoOutputEnabled_) {
     M5StackChan.Motion.setAutoAngleSyncEnabled(true);
     Serial.printf("[motion] StackChan serial servo output enabled after %u ms\n", SERVO_STARTUP_OUTPUT_DELAY_MS);
   } else {
     Serial.println("[motion] servo output disabled");
   }
+#else
+  Serial.println("[motion] servo unavailable on this device");
+#endif
 }
 
 void MotionController::setMotion(const char* name) {
@@ -68,6 +74,7 @@ void MotionController::holdCurrentPose() {
 }
 
 void MotionController::saveCurrentPoseAsHome() {
+#if STACKCHAN_HAS_SERVO
   const auto angles = M5StackChan.Motion.getCurrentAngles();
   if (!physicalAnglesLookValid(angles.x, angles.y)) {
     Serial.printf("[motion] servo home save ignored yaw=%d pitch=%d\n", angles.x, angles.y);
@@ -81,6 +88,9 @@ void MotionController::saveCurrentPoseAsHome() {
   disableAutoAngleSyncAfterFirstMove_ = true;
   writeServoPose(currentPose_);
   Serial.printf("[motion] saved servo home offset yaw=%d pitch=%d\n", yawOffset_, pitchOffset_);
+#else
+  Serial.println("[motion] servo home save ignored; servo unavailable");
+#endif
 }
 
 void MotionController::moveToSavedHome() {
@@ -208,10 +218,11 @@ bool MotionController::physicalAnglesLookValid(int yaw, int pitch) const {
 }
 
 bool MotionController::servoOutputReady(unsigned long now) const {
-  return servoOutputEnabled_ && now >= SERVO_STARTUP_OUTPUT_DELAY_MS;
+  return STACKCHAN_HAS_SERVO && servoOutputEnabled_ && now >= SERVO_STARTUP_OUTPUT_DELAY_MS;
 }
 
 void MotionController::syncCurrentPoseFromServos() {
+#if STACKCHAN_HAS_SERVO
   const auto angles = M5StackChan.Motion.getCurrentAngles();
   if (physicalAnglesLookValid(angles.x, angles.y)) {
     currentPose_ = fromStackChanAngles(angles.x, angles.y);
@@ -222,9 +233,11 @@ void MotionController::syncCurrentPoseFromServos() {
     logPose("startup fallback", currentPose_);
   }
   disableAutoAngleSyncAfterFirstMove_ = true;
+#endif
 }
 
 void MotionController::writeServoPose(const Pose& pose) {
+#if STACKCHAN_HAS_SERVO
   if (!servoOutputReady(millis())) {
     return;
   }
@@ -236,6 +249,9 @@ void MotionController::writeServoPose(const Pose& pose) {
     M5StackChan.Motion.setAutoAngleSyncEnabled(false);
     disableAutoAngleSyncAfterFirstMove_ = false;
   }
+#else
+  (void)pose;
+#endif
 }
 
 void MotionController::logPose(const char* label, const Pose& pose) const {

@@ -254,18 +254,20 @@ Phase values:
 | `repeat` | Continued or repeated detection. Clients usually throttle TTS here. |
 | `end` | End of a continuous interaction. |
 | `instant` | One-shot events such as `session_start`, `level_up`, and `level_down`. |
-| `pressed` | A device-side button press such as `camera_button`. |
+| `pressed` | A device-side action such as `camera_button`. |
 
 `interaction.event.source` is always `device`. For `level_up` / `level_down`,
 the firmware broadcasts `affection.state` first, then sends the interaction
 event.
 
-`camera_button` is sent only while a WebSocket or USB Serial client is
-connected. It carries a monotonically increasing `seq` for button events and no
-image binary. Network clients should call HTTP `POST /capture` to fetch the
-JPEG; USB Serial clients should send a `capture.request` JSON message. After
-sending `camera_button`, the device ignores further camera button presses until
-the next client text/binary response or a 30-second timeout.
+`camera_button` is sent when the CoreS3 camera overlay is pressed and only while
+a WebSocket or USB Serial client is connected. It carries a monotonically
+increasing `seq` for button events and no image binary. Network clients should
+call HTTP `POST /capture` to fetch the JPEG; USB Serial clients should send a
+`capture.request` JSON message. After sending `camera_button`, the device
+ignores further camera button presses until the next client text/binary response
+or a 30-second timeout. StopWatch and AtomS3R Chatbot do not have cameras, so
+this camera-overlay event and image capture are unavailable.
 
 ## TTS and Connection Modes
 
