@@ -55,3 +55,15 @@ python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sh
 `--target` は `cores3`、`stopwatch`、`atoms3r` に変更できます。
 `--out-dir` は通常配布用なら `data/`, `data_stopwatch/`, `data_atoms3r/`、ローカル差し替え用なら
 `data_local/`, `data_stopwatch_local/`, `data_atoms3r_local/` を指定します。
+
+## 出力名
+
+| フォルダ | 入力例 | 出力prefix | 出力 |
+| --- | --- | --- | --- |
+| `guruguru/` | `sheet.png` | `dir` | `dir0.jpg` ... `dir16.jpg` |
+| `guruguru/` | `blink.png` | `blink` | `blink0.jpg` ... `blink16.jpg` |
+| `petting/` | `petting.png` | `pet_anim_` | `pet_anim_0.jpg` ... `pet_anim_8.jpg` |
+| `dizzy/` | `dizzy_contact.png` | `dizzy_` | `dizzy_01.jpg` ... `dizzy_15.jpg` |
+
+分割結果は `--preview-dir previews` で必ず確認してください。
+隣のコマの上端や横端が入る場合は、分割コマンドに `--layout even --cell-inset 4` を追加します。

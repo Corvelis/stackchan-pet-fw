@@ -59,6 +59,35 @@ python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sh
 python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet tools/face_image_builder/sprite_sheets/dizzy/dizzy_contact.png:dizzy_ --grid 4x4 --directions 15 --layout even --start-index 1 --pad 2 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews
 ```
 
+## 追加アニメーション分割の考え方
+
+`split_firmware_sheet.py` は、1枚のスプライトシートをファームウェアが読む連番JPGへ分割します。
+`--sheet` は `入力画像:出力prefix` の形で指定します。複数指定すると、同じ設定で複数シートをまとめて分割できます。
+
+| 用途 | 入力シート | 主な指定 | 出力ファイル |
+| --- | --- | --- | --- |
+| ぐるぐる方向 | 5x5 | `--sheet sheet.png:dir --directions 17` | `dir0.jpg` ... `dir16.jpg` |
+| ぐるぐるblink | 5x5 | `--sheet blink.png:blink --directions 17` | `blink0.jpg` ... `blink16.jpg` |
+| なでなで | 3x3 | `--sheet petting.png:pet_anim_ --grid 3x3 --directions 9 --layout even` | `pet_anim_0.jpg` ... `pet_anim_8.jpg` |
+| 混乱 | 4x4 | `--sheet dizzy_contact.png:dizzy_ --grid 4x4 --directions 15 --layout even --start-index 1 --pad 2` | `dizzy_01.jpg` ... `dizzy_15.jpg` |
+
+5x5 のぐるぐる方向シートは25セルありますが、ファームウェアでは現在17方向を使います。
+StopWatchは実装上8方向相当で再生しますが、画像ファイルは他デバイスと揃えるため `dir0..dir16` と `blink0..blink16` を用意します。
+
+周囲のコマの破片が入る場合は、まず `--preview-dir previews` で確認してください。
+対策は次の順で試します。
+
+```bash
+# セルを均等割りにして、セル境界の内側だけを使う
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet blink.png:blink --directions 17 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews --layout even --cell-inset 4
+
+# まだ隣のコマが入る場合は inset を増やす
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet blink.png:blink --directions 17 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews --layout even --cell-inset 8
+```
+
+黒背景の境界検出が安定するシートでは `--layout auto` のままで構いません。
+AI生成画像でグリッドが少し歪む、下段だけ詰まる、隣のコマの端が入る場合は `--layout even --cell-inset 4` を使う方が安定します。
+
 既存の CoreS3 用 `data/` から StopWatch / AtomS3R Chatbot 用の画像ディレクトリをまとめて生成することもできます。
 
 ```bash
