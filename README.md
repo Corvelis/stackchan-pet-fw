@@ -4,7 +4,7 @@
 
 M5Stack CoreS3 ベースのｽﾀｯｸﾁｬﾝ、M5Stack StopWatch、M5Stack AtomS3R Chatbot 向けの
 ファームウェアです。表情表示、マイク/スピーカー音声ストリーミング、なでなで/ふりふり反応、
-StreetPass、外部制御用の HTTP / WebSocket / USB Serial インターフェースを扱います。
+ぐるぐるモード、StreetPass、外部制御用の HTTP / WebSocket / USB Serial インターフェースを扱います。
 CoreS3 ではサーボ動作とカメラ撮影も扱います。
 
 このリポジトリに含めているのはデバイス本体側のファームウェアだけです。
@@ -24,6 +24,7 @@ README では、本体が公開する HTTP / WebSocket / USB Serial の口を記
 - すれ違いプロフィール、直近 30 件の履歴、未読通知、外部アプリ同期 API
 - Wi-Fi STA 接続、SoftAP 直接接続、USB Serial 接続
 - ブラウザからの Wi-Fi 設定、SSID スキャン、複数 Wi-Fi 保存
+- ぐるぐるモード。デバイスごとの IMU / タッチ / ボタン操作で顔向き追従、blink、混乱アニメーションを表示
 - 本体側のなでなで/ふりふり反応。反応方法はデバイスごとに異なります
 - WebSocket イベントによる好感度管理
 - なでなで、ふりふり、カメラボタン、接続開始、好感度レベル変化の本体側 interaction event

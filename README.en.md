@@ -4,8 +4,9 @@
 
 Firmware for an M5Stack CoreS3 based Stack-chan, M5Stack StopWatch, and M5Stack
 AtomS3R Chatbot. It provides face rendering, microphone/speaker streaming,
-petting/shake reactions, StreetPass, and HTTP / WebSocket / USB Serial control
-interfaces. On CoreS3, it also provides servo motion and camera capture.
+petting/shake reactions, guruguru mode, StreetPass, and HTTP / WebSocket / USB
+Serial control interfaces. On CoreS3, it also provides servo motion and camera
+capture.
 
 This repository contains only the device firmware side. It documents the
 HTTP, WebSocket, and USB Serial interfaces exposed by the device; external client
@@ -24,6 +25,7 @@ implementations are out of scope.
 - StreetPass profile, latest 30 encounter records, unread notification, and sync API for companion apps.
 - STA Wi-Fi mode, SoftAP direct-connection mode, and USB Serial mode.
 - Browser-based Wi-Fi setup with SSID scanning and multiple saved networks.
+- Guruguru mode with face direction tracking, blink frames, and dizzy animation through device-specific IMU, touch, or button controls.
 - Local petting and shake reactions. The physical interaction differs by device.
 - Persistent affection state controlled through WebSocket events.
 - Device-side interaction events for petting, shake, camera button, session start, and level changes.
