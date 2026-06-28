@@ -2,15 +2,21 @@
 
 [Japanese](README.md)
 
-`build_faces.py` is a CLI tool that builds PNG face images for the Stack-chan pet
-firmware image directories from a square 6x6 face sprite sheet. The default
-output is 240x240 for CoreS3.
+`build_faces.py` is a CLI tool that crops the 48 base face images for
+Stack-chan pet firmware from a square 6x6 face sprite sheet. The default output
+size is 240x240 for CoreS3.
 
-It crops 36 cells from the sprite sheet, then applies copy completion rules for the additional files referenced by the firmware. The final output is 48 PNG files.
+It crops 36 cells from the sprite sheet, then applies copy completion rules for
+the additional files referenced by the firmware. `build_faces.py` writes PNG
+files. Use `prepare_firmware_assets.py` to install them into firmware image
+directories as JPG files.
 
 Instructions for creating a sprite sheet are in `tools/face_image_builder/generate_sprite_sheet/`.
 
 This directory is for converting an already generated sprite sheet into firmware-ready face images.
+
+Use `build_faces.py` for the 6x6 base face sheet. Use `split_firmware_sheet.py`
+for additional animation sheets such as guruguru, petting, and dizzy frames.
 
 ## First Command To Use
 
@@ -22,21 +28,38 @@ For the first run, install dependencies.
 python -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
 ```
 
-Use the following command to install an AI-generated sprite sheet into CoreS3 `data/` for firmware use.
+Use these commands to split an AI-generated sprite sheet and install the result
+into CoreS3 `data/` as firmware-ready JPG files.
 
 ```bash
-python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data --backup-existing --detect-grid --clean
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces --detect-grid --clean
+python3 tools/face_image_builder/prepare_firmware_assets.py output_faces data --target cores3 --format jpg --clean
 ```
 
-This command crops the 36 cells, aligns face positions, normalizes face sizes, applies copy completion rules, and writes the 48 firmware PNG files into `data/`.
+These commands crop the 36 cells, align face positions, normalize face sizes,
+apply copy completion rules, and write the 48 base faces into `data/` as JPG.
 
-With the `--backup-existing` option, existing `data/*.png` files are copied to `backups/data_faces_YYYYMMDD_HHMMSS/` before writing new files.
+With `--backup-existing` and `--install-to`, existing `*.png` files are copied
+to `backups/data_faces_YYYYMMDD_HHMMSS/` before writing new files. For the final
+JPG workflow, write to a working directory and install with `prepare_firmware_assets.py`.
 
-For StopWatch or AtomS3R Chatbot, change the output directory and `--output-size`.
+For StopWatch or AtomS3R Chatbot, change `--output-size` and the installation
+target.
 
 ```bash
-python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_stopwatch --backup-existing --detect-grid --clean --output-size 386
-python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data_atoms3r --backup-existing --detect-grid --clean --output-size 128
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces_stopwatch --detect-grid --clean --output-size 386
+python3 tools/face_image_builder/prepare_firmware_assets.py output_faces_stopwatch data_stopwatch --target stopwatch --format jpg --clean
+
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces_atoms3r --detect-grid --clean --output-size 128
+python3 tools/face_image_builder/prepare_firmware_assets.py output_faces_atoms3r data_atoms3r --target atoms3r --format jpg --clean
+```
+
+Use `split_firmware_sheet.py` for additional animation sheets.
+
+```bash
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet tools/face_image_builder/sprite_sheets/guruguru/sheet.png:dir --directions 17 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet tools/face_image_builder/sprite_sheets/petting/petting.png:pet_anim_ --grid 3x3 --directions 9 --layout even --crop-size auto --cell-inset 4 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet tools/face_image_builder/sprite_sheets/dizzy/dizzy_contact.png:dizzy_ --grid 4x4 --directions 15 --layout even --start-index 1 --pad 2 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews
 ```
 
 StopWatch and AtomS3R Chatbot image directories can also be generated from the
@@ -81,7 +104,8 @@ Use `--out` if you want to inspect the generated files before writing to a devic
 python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces --detect-grid --clean
 ```
 
-If the output looks good, run the `--install-to <image-directory>` command above.
+If the output looks good, install it into the target device image directory with
+`prepare_firmware_assets.py`.
 
 ## With a Virtual Environment
 
@@ -139,20 +163,39 @@ This writes `debug_face_detections.png` into the output directory.
 
 ## Samples
 
-`samples/` contains example sprite sheets that can be used as CLI inputs. Public samples are 01 to 04.
+`samples/` contains example sprite sheets that can be used as CLI inputs.
+Use the following five-purpose directory layout.
 
 ```text
 samples/
-  sprite_sheet_sample_01.png
-  sprite_sheet_sample_02.png
-  sprite_sheet_sample_03.png
-  sprite_sheet_sample_04.png
+  base_faces_6x6/
+    sprite_sheet_sample_01.png
+    sprite_sheet_sample_02.png
+    sprite_sheet_sample_03.png
+    sprite_sheet_sample_04.png
+  guruguru_dir_5x5/
+  guruguru_blink_5x5/
+  petting_3x3/
+  dizzy_4x4/
 ```
+
+Existing public samples 01 to 04 are base face 6x6 sheets, so they belong under
+`base_faces_6x6/`.
+
+Directory purposes:
+
+| Directory | Purpose |
+| --- | --- |
+| `base_faces_6x6/` | 6x6 sheets split by `build_faces.py` into the 48 base face files |
+| `guruguru_dir_5x5/` | 5x5 sheets split by `split_firmware_sheet.py` into `dir0..dir16` |
+| `guruguru_blink_5x5/` | 5x5 sheets split by `split_firmware_sheet.py` into `blink0..blink16` |
+| `petting_3x3/` | 3x3 sheets split by `split_firmware_sheet.py` into `pet_anim_0..pet_anim_8` |
+| `dizzy_4x4/` | 4x4 sheets split by `split_firmware_sheet.py` into `dizzy_01..dizzy_15` |
 
 Run the CLI with a sample:
 
 ```bash
-python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py tools/face_image_builder/build_faces_from_sprite_sheet/samples/sprite_sheet_sample_01.png --out output_faces --detect-grid --clean
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py tools/face_image_builder/build_faces_from_sprite_sheet/samples/base_faces_6x6/sprite_sheet_sample_01.png --out output_faces --detect-grid --clean
 ```
 
 ## Main Options
@@ -160,13 +203,13 @@ python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py too
 | Option | Default | Description |
 | --- | --- | --- |
 | `--out` | `data` | Working output directory |
-| `--install-to` | none | Install the 48 files directly into a firmware data directory |
+| `--install-to` | none | Install the 48 PNG files directly into a directory |
 | `--backup-existing` | none | Backup existing PNG files before writing |
 | `--backup-dir` | `backups` | Backup directory |
 | `--detect-grid` | none | Detect grid lines and crop cells |
 | `--grid-line-padding` | `12` | Extra pixels to trim inside detected grid lines |
 | `--cell-scale` | `0.92` | Fixed crop size scale |
-| `--output-size` | `240` | Output PNG size |
+| `--output-size` | `240` | Output image size |
 | `--pad-color` | `0,0,0` | Padding color used during face-size normalization |
 | `--clean` | none | Delete existing PNG files in the output directory before generation |
 | `--dry-run` | none | Print the crop plan without writing files |

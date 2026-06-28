@@ -76,7 +76,7 @@ Required:
 - `platformio.ini`: PlatformIO build configuration.
 - `boards/`: board definitions not bundled with PlatformIO.
 - `src/`: firmware source code.
-- `data/`: CoreS3 LittleFS face images. Default PNG files are included.
+- `data/`: CoreS3 LittleFS face images. Default JPG files are included.
 - `data_stopwatch/`: StopWatch LittleFS face images.
 - `data_atoms3r/`: AtomS3R Chatbot LittleFS face images.
 - `docs/devices.md`: device-specific build and operation guide.
@@ -116,7 +116,7 @@ cp src/config_private.example.h src/config_private.h
 #define WIFI_PASSWORD_2 ""
 ```
 
-4. Prepare the face PNG files listed below in the target device's image
+4. Prepare the face image files listed below as `.jpg` in the target device's image
    directory. CoreS3 uses `data/`, StopWatch uses `data_stopwatch/`, and
    AtomS3R Chatbot uses `data_atoms3r/`.
 5. Connect the target device by USB.
@@ -152,6 +152,7 @@ For a first-time flash, run `upload` and then `uploadfs`. If only code changed,
 For ready-to-flash `.bin` installation, see the [Binary Installation Guide](docs/install_binary.md).
 Release builds should define `STACKCHAN_RELEASE_BUILD` so `src/config_private.h` local Wi-Fi credentials are not included.
 Generate device-specific GitHub Releases assets into `dist/` with:
+Do not set `STACKCHAN_FACE_DATA_DIR` for release assets; they use the normal image directories.
 
 ```sh
 bash scripts/build_release_bins.sh all
@@ -172,7 +173,24 @@ recommended image size differ by target.
 | StopWatch | `data_stopwatch/` | 386 x 386 |
 | AtomS3R Chatbot | `data_atoms3r/` | 128 x 128 |
 
-To replace them with your own images, place PNG files with these exact names in
+Plain `pio run -e <env> -t uploadfs` uses the normal directory shown above. To use
+another image directory such as `data_local/`, `data_stopwatch_local/`, or
+`data_atoms3r_local/`, select it explicitly at build time:
+
+```sh
+STACKCHAN_FACE_DATA_DIR=data_local pio run -e m5stack-cores3 -t uploadfs
+STACKCHAN_FACE_DATA_DIR=data_stopwatch_local pio run -e m5stack-stopwatch -t uploadfs
+STACKCHAN_FACE_DATA_DIR=data_atoms3r_local pio run -e m5stack-atoms3r-chatbot -t uploadfs
+```
+
+Runtime image files are standardized to `.jpg`. The paths in `src/config.h` keep
+the older `.png` names for compatibility, and the firmware resolves them to
+matching `.jpg` files.
+Each completed image directory contains 106 JPG files: the 48 base faces plus
+`dir0..dir16`, `blink0..blink16`, `pet_anim_0..pet_anim_8`, and
+`dizzy_01..dizzy_15`.
+
+To replace them with your own images, place JPG files with the matching stems in
 the target device's image directory.
 
 To generate the face images from a 6x6 sprite sheet created with image generation AI,
@@ -230,15 +248,18 @@ closed-mouth speaking frame.
 | Attached shake | `shake_attached_0.png`, `shake_attached_1.png` |
 | Thermal and low power | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
 
-This repository includes default PNG files generated from sample 01 in
+This repository includes default JPG files generated from the local sprite-sheet
+workflow in
 `tools/face_image_builder/`. The "Example source from Tsukuyomi-chan standing
 material" column is only a reference for manually preparing replacement images.
 The original Tsukuyomi-chan material itself is not included in this repository.
 If you use it, download the original material from the official distribution
-page, follow its terms, export PNGs at the target device's recommended size, and
+page, follow its terms, export JPGs at the target device's recommended size, and
 place them in the target device's image directory.
 
-Credit for the local image set:
+`data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/` are local
+replacement sets and are not included in GitHub Release assets. Credit when a
+local image set uses Tsukuyomi-chan material:
 
 ```text
 フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
@@ -259,8 +280,8 @@ Default SoftAP settings:
 | Device | SSID | Password | IP |
 | --- | --- | --- | --- |
 | CoreS3 | `StackChan-Direct` | `stackchan123` | `192.168.4.1` |
-| StopWatch | `StopWatch` | `stackchan123` | `192.168.4.1` |
-| AtomS3R | `AtomS3R` | `stackchan123` | `192.168.4.1` |
+| StopWatch | `StopWatch` | `stopwatch123` | `192.168.4.1` |
+| AtomS3R | `AtomS3R` | `atoms3r123` | `192.168.4.1` |
 
 On the Network screen, hold the CoreS3 / StopWatch touch screen or hold AtomS3R
 Chatbot BtnA to switch between STA and SoftAP. CoreS3 / StopWatch restart after
@@ -622,6 +643,24 @@ Device response:
 }
 ```
 
+Device identity:
+
+```json
+{ "type": "device.info.get", "requestId": "req-device-001" }
+```
+
+The device returns a stable NVS-backed `deviceId` in `device.info`.
+
+Character-scoped sync:
+
+```json
+{ "type": "affection.sync.state", "requestId": "req-sync-001", "characterId": "char_shared_001" }
+{ "type": "affection.sync.apply", "requestId": "req-sync-002", "characterId": "char_shared_001", "affection": 680 }
+```
+
+The device stores `syncedBaseAffection` per `characterId` and returns
+`unsyncedDelta` from `affection.sync.state`.
+
 The device also broadcasts `interaction.event` messages for physical and
 device-side events such as `petting`, `shake`, `camera_button`, `session_start`,
 `level_up`, and `level_down`. `camera_button` is sent by CoreS3 only while a
@@ -668,7 +707,7 @@ See `docs/device_affection_api.md` for the detailed device-side affection API.
 - If Wi-Fi is not configured, connect to the target device's SoftAP SSID and open
   `http://192.168.4.1/wifi` to register an SSID/password. When building from
   source, you can also set `WIFI_SSID` / `WIFI_PASSWORD` in `src/config_private.h`.
-- If faces are missing, make sure all required PNG files are in the target device's image directory and run
+- If faces are missing, make sure all required JPG files are in the target device's image directory and run
   `pio run -e <env> -t uploadfs`.
 - If HTTP works but WebSocket does not, check that the client connects to port
   `8080`, not port `80`.

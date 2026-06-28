@@ -22,6 +22,13 @@ struct AffectionApplyResult {
   AffectionState state;
 };
 
+struct AffectionSyncState {
+  String characterId;
+  int16_t syncedBaseAffection = 500;
+  int16_t unsyncedDelta = 0;
+  AffectionState state;
+};
+
 class AffectionController {
 public:
   struct EventSpec {
@@ -45,6 +52,8 @@ public:
                                 bool hasMood, int mood,
                                 bool hasConfusion, int confusion,
                                 bool persist);
+  AffectionApplyResult applySyncAffection(const char* characterId, int affection);
+  AffectionSyncState syncStateForCharacter(const char* characterId);
 
   const AffectionState& state() const;
   const char* level() const;
@@ -69,6 +78,9 @@ private:
   const char* levelForIndex(uint8_t index) const;
   const char* styleIdForIndex(uint8_t index) const;
   const char* visualTierForIndex(uint8_t index) const;
+  bool loadSyncBaseForCharacter(const char* characterId, int16_t& base);
+  bool saveSyncBaseForCharacter(const char* characterId, int base);
+  int16_t syncBaseForCharacter(const char* characterId);
   void load();
   void save(bool force);
   bool shouldSave(unsigned long now) const;

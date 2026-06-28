@@ -12,6 +12,7 @@ constexpr unsigned long kMoodDecayIntervalMs = 10000;
 constexpr unsigned long kConfusionDecayIntervalMs = 10000;
 constexpr int kMoodDecayStep = 2;
 constexpr int kConfusionDecayStep = 10;
+constexpr const char* kSyncBasesKey = "sync_bases";
 
 const int kLevelUpThresholds[] = {
   0,
@@ -265,6 +266,49 @@ AffectionApplyResult AffectionController::debugSet(bool hasAffection, int affect
   return result;
 }
 
+AffectionApplyResult AffectionController::applySyncAffection(const char* characterId, int affection) {
+  AffectionApplyResult result;
+  result.previousLevelIndex = levelIndex_;
+
+  const int oldAffection = state_.affection;
+  const uint8_t oldLevelIndex = levelIndex_;
+
+  state_.affection = constrain(affection, kAffectionMin, kAffectionMax);
+  levelIndex_ = initialLevelIndexForAffection(state_.affection);
+  state_.levelIndex = levelIndex_;
+
+  result.applied = oldAffection != state_.affection || oldLevelIndex != levelIndex_;
+  result.delta = state_.affection - oldAffection;
+  result.levelIndex = levelIndex_;
+  result.levelChanged = result.previousLevelIndex != result.levelIndex;
+
+  if (result.applied) {
+    ++state_.seq;
+    dirty_ = true;
+  }
+  if (result.applied || dirty_) {
+    save(true);
+  }
+  saveSyncBaseForCharacter(characterId, state_.affection);
+
+  result.state = state_;
+  Serial.printf("[affection] sync_apply character=%s aff=%d base=%d seq=%lu\n",
+                characterId != nullptr ? characterId : "",
+                state_.affection,
+                state_.affection,
+                static_cast<unsigned long>(state_.seq));
+  return result;
+}
+
+AffectionSyncState AffectionController::syncStateForCharacter(const char* characterId) {
+  AffectionSyncState result;
+  result.characterId = characterId != nullptr ? characterId : "";
+  result.state = state_;
+  result.syncedBaseAffection = syncBaseForCharacter(characterId);
+  result.unsyncedDelta = state_.affection - result.syncedBaseAffection;
+  return result;
+}
+
 const AffectionState& AffectionController::state() const {
   return state_;
 }
@@ -454,6 +498,80 @@ const char* AffectionController::visualTierForIndex(uint8_t index) const {
     return "attached";
   }
   return "normal";
+}
+
+bool AffectionController::loadSyncBaseForCharacter(const char* characterId, int16_t& base) {
+  if (preferences_ == nullptr || characterId == nullptr || characterId[0] == '\0') {
+    return false;
+  }
+
+  preferences_->begin("affect", true);
+  const String body = preferences_->getString(kSyncBasesKey, "");
+  preferences_->end();
+
+  if (body.length() == 0) {
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, body);
+  if (error || !doc.is<JsonObject>()) {
+    Serial.printf("[affection] sync base load failed: %s\n", error ? error.c_str() : "not_object");
+    return false;
+  }
+
+  JsonVariant value = doc[characterId];
+  if (value.isNull()) {
+    return false;
+  }
+
+  base = constrain(value.as<int>(), kAffectionMin, kAffectionMax);
+  return true;
+}
+
+bool AffectionController::saveSyncBaseForCharacter(const char* characterId, int base) {
+  if (preferences_ == nullptr || characterId == nullptr || characterId[0] == '\0') {
+    return false;
+  }
+
+  preferences_->begin("affect", true);
+  const String stored = preferences_->getString(kSyncBasesKey, "");
+  preferences_->end();
+
+  JsonDocument doc;
+  if (stored.length() > 0) {
+    DeserializationError error = deserializeJson(doc, stored);
+    if (error || !doc.is<JsonObject>()) {
+      Serial.printf("[affection] sync base reset: %s\n", error ? error.c_str() : "not_object");
+      doc.clear();
+      doc.to<JsonObject>();
+    }
+  } else {
+    doc.to<JsonObject>();
+  }
+
+  doc[characterId] = constrain(base, kAffectionMin, kAffectionMax);
+
+  String body;
+  serializeJson(doc, body);
+  preferences_->begin("affect", false);
+  const size_t written = preferences_->putString(kSyncBasesKey, body);
+  preferences_->end();
+
+  if (written == 0) {
+    Serial.printf("[affection] sync base save failed character=%s\n", characterId);
+    return false;
+  }
+  return true;
+}
+
+int16_t AffectionController::syncBaseForCharacter(const char* characterId) {
+  int16_t base = state_.affection;
+  if (loadSyncBaseForCharacter(characterId, base)) {
+    return base;
+  }
+  saveSyncBaseForCharacter(characterId, state_.affection);
+  return state_.affection;
 }
 
 void AffectionController::load() {

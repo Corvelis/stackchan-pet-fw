@@ -20,6 +20,7 @@ GitHub Releases には、デバイスごとに次の firmware bin と factory im
 | factory image | 新しく入れる人向けです。bootloader、partition table、firmware、LittleFS 画像データを結合しています。 |
 
 リリース作成時は、リポジトリ直下で次を実行すると同じファイル名の asset を `dist/` に生成できます。
+このコマンドは通常の画像フォルダを使って配布物を作るため、`STACKCHAN_FACE_DATA_DIR` は指定しません。
 
 ```sh
 bash scripts/build_release_bins.sh all
@@ -43,19 +44,23 @@ bash scripts/build_release_bins.sh all
 Stack-chan Multi-Device Controller 使用
 ```
 
-## つくよみちゃん関連のクレジット
+## 画像とクレジット
 
-このファームウェアでは、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）の立ち絵素材を使用させていただいております。
+GitHub Releases で配布する factory image には、リポジトリ通常フォルダの画像を含めます。
+通常フォルダは次の3つです。
 
 ```text
-フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
-https://tyc.rei-yumesaki.net/
-
-つくよみちゃん万能立ち絵素材（花兎*様）
-https://tyc.rei-yumesaki.net/material/illust/
+data/
+data_stopwatch/
+data_atoms3r/
 ```
 
-利用時は、つくよみちゃん公式サイトの利用規約とクレジット表記ルールを確認してください。
+`data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/` はローカル差し替え用です。
+これらは Git 管理や GitHub Releases の配布物には含めません。
+
+ローカル差し替えでつくよみちゃん素材を使う場合は、フリー素材キャラクター「つくよみちゃん」
+（© Rei Yumesaki）と、使用する立ち絵素材の利用規約・クレジット表記ルールを確認してください。
+このリポジトリと通常配布バイナリには、つくよみちゃん素材そのものは含めません。
 
 - 利用規約: https://tyc.rei-yumesaki.net/about/terms/
 - クレジット表記: https://tyc.rei-yumesaki.net/about/terms/credit/
@@ -67,8 +72,8 @@ https://tyc.rei-yumesaki.net/material/illust/
 | デバイス | SSID | Password | URL |
 | --- | --- | --- | --- |
 | CoreS3 | `StackChan-Direct` | `stackchan123` | `http://192.168.4.1/wifi` |
-| StopWatch | `StopWatch` | `stackchan123` | `http://192.168.4.1/wifi` |
-| AtomS3R | `AtomS3R` | `stackchan123` | `http://192.168.4.1/wifi` |
+| StopWatch | `StopWatch` | `stopwatch123` | `http://192.168.4.1/wifi` |
+| AtomS3R | `AtomS3R` | `atoms3r123` | `http://192.168.4.1/wifi` |
 
 本体の Network 画面では、`Wi-Fi QR` で設定用 Wi-Fi に接続し、続けて `Setup QR` で
 設定ページを開けます。QR を使わない場合は、スマホまたは PC から対象デバイスの
@@ -222,17 +227,32 @@ http://192.168.4.1/wifi
   発話中の音声再生と口パクは継続します。
 - CoreS3 はマイク表示タップ、AtomS3R Chatbot は通常画面の BtnA ダブルクリックで、マイク送信のミュート/解除を操作できます。StopWatch には本体側のマイクミュート操作はありません。
 
+通常/ボイス画面とぐるぐるモード:
+
+ここでの通常/ボイス画面は、設定画面ではない顔表示画面です。ぐるぐる顔モードは、
+WebSocket / USB Serial の会話クライアント接続中、設定画面表示中、画面オフ中は有効表示になりません。
+ぐるぐるを試す時は、会話クライアントを切断して通常の顔表示画面に戻してください。
+
+| デバイス | 通常/ボイス画面から入る/戻る | ぐるぐる中の顔向き操作 | ぐるぐる中の補助操作 |
+| --- | --- | --- | --- |
+| CoreS3 + ｽﾀｯｸﾁｬﾝ | 電源ボタンダブルクリック | タッチ入力時は画面タッチ/ドラッグで16方向+中央。IMU入力時は本体の傾き | 電源ボタン3クリック以上でタッチ/IMU切替。IMU入力時は画面長押しで基準姿勢リセット |
+| StopWatch | BtnA ダブルクリック | タッチ入力時は画面タッチ/ドラッグで8方向+中央。IMU入力時は本体の傾き | BtnB ダブルクリックでタッチ/IMU切替。BtnB 長押しで基準姿勢リセット |
+| AtomS3R Chatbot | 通常画面で BtnA 3クリック | IMU入力固定。本体の傾きで16方向+中央 | BtnA 長押しで基準姿勢リセット。ぐるぐる中の BtnA ダブルクリックはマイクミュートには使いません |
+
 CoreS3:
 
 - タッチ画面の端からフリックすると、設定画面を開閉できます。
 - 背面タッチでなでなで反応を発生させます。
+- 電源ボタンダブルクリックでぐるぐる顔モードをON/OFFします。ぐるぐる中に電源ボタンを3クリック以上すると、タッチ入力と IMU 入力を切り替えます。
 - カメラ表示をタップすると `camera_button` イベントを送ります。
 - `Servo` では、顔の基準位置を保存したり、保存済み位置へ戻したりできます。
 
 StopWatch:
 
 - BtnA 短押しで設定画面を開閉します。
+- BtnA ダブルクリックでぐるぐる顔モードをON/OFFします。
 - BtnB または電源ボタンで画面オン/オフを切り替えます。
+- ぐるぐる中は BtnB ダブルクリックでタッチ入力/IMU入力を切り替え、BtnB 長押しで IMU 基準姿勢をリセットします。
 - 通常画面中央付近のタッチ/ドラッグでなでなで反応を発生させます。
 - 設定画面は Network、Display、Audio、Power、StreetPass の順です。上部の `<` / `>` または左右フリックでページを切り替えます。
 - Display / Audio では `-` / `+` をタップして明るさや音量を 20 単位で調整します。
@@ -240,11 +260,13 @@ StopWatch:
 AtomS3R Chatbot:
 
 - BtnA 短押しでページを送ります。通常画面では Network を開き、以後 Network -> StreetPass -> Audio -> Power -> 通常画面の順で切り替わります。
+- ぐるぐる顔モード中の BtnA 短押しもページ送りとして扱われ、Network 画面を開くとぐるぐる表示は止まります。
 - Network 画面: 短押しで StreetPass へ移動、ダブルクリックで `Setup QR` 表示/非表示、長押しで STA / SoftAP を切り替えます。
 - StreetPass 画面: 短押しで Audio へ移動、ダブルクリックで Status / Profile / Latest 表示を切り替え、長押しで StreetPass On/Off を切り替えます。
 - Audio 画面: 短押しで Power へ移動します。ダブルクリックで音量調整モードに入り、音量調整モード中は短押しで音量アップ、長押しで音量ダウンします。
 - Power 画面: 短押しで通常画面へ戻り、長押しで低電力モードを切り替えます。
 - 通常画面では、長押しでなでなで反応、ダブルクリックでマイク送信のミュート/解除を切り替えます。
+- 通常画面で BtnA を3クリックすると、IMU入力固定のぐるぐる顔モードをON/OFFします。ぐるぐる中の長押しは、なでなでではなく IMU 基準姿勢リセットです。
 
 ### CoreS3 のサーボ原点を調整する
 
