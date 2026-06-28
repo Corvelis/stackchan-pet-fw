@@ -204,6 +204,7 @@ samples/
 ```
 
 既存の公開用サンプル01〜04は、基本顔 6x6 シートなので `base_faces_6x6/` に置く想定です。
+追加アニメーション用サンプルは `generate_sprite_sheet/animation_prompts/` の各プロンプトで作った入力例です。
 
 各フォルダの用途:
 
@@ -214,6 +215,15 @@ samples/
 | `guruguru_blink_5x5/` | `split_firmware_sheet.py` で `blink0..blink16` へ分割する5x5シート |
 | `petting_3x3/` | `split_firmware_sheet.py` で `pet_anim_0..pet_anim_8` へ分割する3x3シート |
 | `dizzy_4x4/` | `split_firmware_sheet.py` で `dizzy_01..dizzy_15` へ分割する4x4シート |
+
+追加アニメーションサンプルとプロンプトの対応:
+
+| サンプル | 元プロンプト |
+| --- | --- |
+| `guruguru_dir_5x5/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/guruguru_5x5_prompt.txt` |
+| `guruguru_blink_5x5/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/guruguru_blink_5x5_prompt.txt` |
+| `petting_3x3/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/petting_3x3_prompt.txt` |
+| `dizzy_4x4/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/dizzy_4x4_prompt.txt` |
 
 サンプルを使った確認:
 

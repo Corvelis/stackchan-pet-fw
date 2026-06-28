@@ -29,6 +29,18 @@ animation_prompts/
 | `petting_3x3_prompt.txt` | 3x3 のなでなで反応アニメーション。 | なでなで入力時の表情変化。 | `pet_anim_0.jpg` ... `pet_anim_8.jpg` |
 | `dizzy_4x4_prompt.txt` | 4x4 の混乱アニメーション。 | ぐるぐる後に混乱状態へ入った時のループ/復帰表情。 | `dizzy_01.jpg` ... `dizzy_15.jpg` |
 
+## サンプル画像
+
+このプロンプトで作った公開用サンプルは、分割CLIの `samples/` 配下に置いています。
+サンプルは `split_firmware_sheet.py` の入力確認用です。生成した画像が同じ構成になっているか、分割前に見比べてください。
+
+| プロンプト | サンプル画像 | 確認するポイント |
+| --- | --- | --- |
+| `guruguru_5x5_prompt.txt` | `tools/face_image_builder/build_faces_from_sprite_sheet/samples/guruguru_dir_5x5/sprite_sheet_sample_01.png` | 5x5、目が開いた方向差分、中央が正面 |
+| `guruguru_blink_5x5_prompt.txt` | `tools/face_image_builder/build_faces_from_sprite_sheet/samples/guruguru_blink_5x5/sprite_sheet_sample_01.png` | 5x5、`guruguru` と同じ向き順、目を閉じたblink差分 |
+| `petting_3x3_prompt.txt` | `tools/face_image_builder/build_faces_from_sprite_sheet/samples/petting_3x3/sprite_sheet_sample_01.png` | 3x3、なでなで反応が左上から右下へ並ぶ |
+| `dizzy_4x4_prompt.txt` | `tools/face_image_builder/build_faces_from_sprite_sheet/samples/dizzy_4x4/sprite_sheet_sample_01.png` | 4x4、混乱ループと復帰フレームが左上から順に並ぶ |
+
 ## 作り方
 
 画像生成AIには、作りたいキャラクターの正面寄りの顔画像を1枚添付し、目的に合う `.txt` の全文を貼ります。
