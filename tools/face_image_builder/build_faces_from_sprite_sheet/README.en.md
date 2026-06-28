@@ -62,6 +62,35 @@ python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sh
 python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet tools/face_image_builder/sprite_sheets/dizzy/dizzy_contact.png:dizzy_ --grid 4x4 --directions 15 --layout even --start-index 1 --pad 2 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews
 ```
 
+## Additional Animation Splitting
+
+`split_firmware_sheet.py` splits one sprite sheet into the numbered JPG files read by the firmware.
+`--sheet` uses the `INPUT_IMAGE:OUTPUT_PREFIX` form. You can pass it more than once to split multiple sheets with the same settings.
+
+| Use | Input sheet | Main options | Output files |
+| --- | --- | --- | --- |
+| Guruguru direction | 5x5 | `--sheet sheet.png:dir --directions 17` | `dir0.jpg` ... `dir16.jpg` |
+| Guruguru blink | 5x5 | `--sheet blink.png:blink --directions 17` | `blink0.jpg` ... `blink16.jpg` |
+| Petting | 3x3 | `--sheet petting.png:pet_anim_ --grid 3x3 --directions 9 --layout even` | `pet_anim_0.jpg` ... `pet_anim_8.jpg` |
+| Dizzy | 4x4 | `--sheet dizzy_contact.png:dizzy_ --grid 4x4 --directions 15 --layout even --start-index 1 --pad 2` | `dizzy_01.jpg` ... `dizzy_15.jpg` |
+
+The 5x5 guruguru sheets contain 25 cells, but the firmware currently uses 17 directions.
+StopWatch plays an 8-direction-equivalent flow internally, but the image files are still prepared as `dir0..dir16` and `blink0..blink16` to keep the asset set aligned with the other devices.
+
+If fragments from neighboring cells appear, first inspect the output written by `--preview-dir previews`.
+Try these adjustments in order.
+
+```bash
+# Split by an even grid and crop inside each cell boundary.
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet blink.png:blink --directions 17 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews --layout even --cell-inset 4
+
+# Increase the inset if neighboring cell fragments are still visible.
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py --sheet blink.png:blink --directions 17 --target stopwatch --format jpg --out-dir data_stopwatch_local --preview-dir previews --layout even --cell-inset 8
+```
+
+Use the default `--layout auto` when black-background boundary detection is stable.
+For AI-generated sheets with slightly uneven grids, compressed lower rows, or neighboring-cell edges, `--layout even --cell-inset 4` is usually more stable.
+
 StopWatch and AtomS3R Chatbot image directories can also be generated from the
 existing CoreS3 `data/` directory.
 
@@ -181,6 +210,8 @@ samples/
 
 Existing public samples 01 to 04 are base face 6x6 sheets, so they belong under
 `base_faces_6x6/`.
+Additional animation samples are input examples generated with the prompts in
+`generate_sprite_sheet/animation_prompts/`. These additional animation samples were generated with the ChatGPT smartphone app.
 
 Directory purposes:
 
@@ -191,6 +222,15 @@ Directory purposes:
 | `guruguru_blink_5x5/` | 5x5 sheets split by `split_firmware_sheet.py` into `blink0..blink16` |
 | `petting_3x3/` | 3x3 sheets split by `split_firmware_sheet.py` into `pet_anim_0..pet_anim_8` |
 | `dizzy_4x4/` | 4x4 sheets split by `split_firmware_sheet.py` into `dizzy_01..dizzy_15` |
+
+Additional animation sample to prompt mapping:
+
+| Sample | Source prompt |
+| --- | --- |
+| `guruguru_dir_5x5/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/guruguru_5x5_prompt.txt` |
+| `guruguru_blink_5x5/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/guruguru_blink_5x5_prompt.txt` |
+| `petting_3x3/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/petting_3x3_prompt.txt` |
+| `dizzy_4x4/sprite_sheet_sample_01.png` | `generate_sprite_sheet/animation_prompts/dizzy_4x4_prompt.txt` |
 
 Run the CLI with a sample:
 

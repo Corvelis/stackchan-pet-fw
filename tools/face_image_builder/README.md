@@ -128,6 +128,7 @@ tools/face_image_builder/
   prepare_firmware_assets.py
   sprite_sheets/
     README.md
+    README.en.md
     base_faces/
     guruguru/
     petting/
@@ -139,6 +140,7 @@ tools/face_image_builder/
     grid_template_6x6.png
     animation_prompts/
       README.md
+      README.en.md
       guruguru_5x5_prompt.txt
       guruguru_blink_5x5_prompt.txt
       petting_3x3_prompt.txt

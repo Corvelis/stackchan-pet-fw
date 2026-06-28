@@ -1,5 +1,7 @@
 # アニメーション用スプライトシートプロンプト
 
+[English](README.en.md)
+
 このフォルダには、Stack-chan pet firmware の追加アニメーション画像を画像生成AIで作るためのベースプロンプトを置いています。
 
 生成済み画像やキャラクター参照画像はGitHubに入れず、ローカルの `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/`、または外部バックアップに置いてください。このフォルダに置くのはプロンプト本文だけです。
@@ -9,6 +11,7 @@
 ```text
 animation_prompts/
   README.md
+  README.en.md
   guruguru_5x5_prompt.txt
   guruguru_blink_5x5_prompt.txt
   petting_3x3_prompt.txt
