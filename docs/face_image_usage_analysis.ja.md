@@ -1,89 +1,120 @@
 # 顔画像グループの使用重要度
 
-このメモは、実機アップロード用の顔画像 PNG がコード上でどれだけ重要かを、
-単体ファイルではなく表情グループ単位で整理したものです。CoreS3 は `data/`、
-StopWatch は `data_stopwatch/`、AtomS3R Chatbot は `data_atoms3r/` を使います。
+このメモは、実機アップロード用の顔画像 JPG がコード上でどのように使われるかを、
+単体ファイルではなく表情グループ単位で整理したものです。ファイル構成とディレクトリ方針は
+`docs/face_image_inventory.ja.md` に分けてまとめています。
 
 ## 表情選択の優先順位
 
-通常の自動表示では、`FaceController` が状態とモードから画像を選びます。発話中・待機中・聞き取り中で多少違いますが、発話中の優先順位はおおむね次の通りです。
+通常の自動表示では、`FaceController` が状態とモードから画像を選びます。発話中の優先順位は
+おおむね次の通りです。
 
 ```text
-shake > pet > photo_master > photo > auth > thermal > affection visual tier > normal
+guruguru dizzy > guruguru direction > pet animation > shake > pet > photo_master > photo > thermal > affection visual tier > normal
 ```
 
-ただし、`src/main.cpp` の `AUTH_FACE_BASE_SWITCH_ENABLED` が `false` なので、現状では `auth` による `good/bad` への自動切替は実質無効です。
+`src/main.cpp` の `AUTH_FACE_BASE_SWITCH_ENABLED` は `false` なので、現状では認証結果だけで
+`good/bad` 顔へ自動切替する経路は実質無効です。ただし、直接 face 指定や将来の設定変更に備えて
+画像は残しています。
 
-## 最小構成
+## 現在の最小単位
 
-体験を大きく壊さずに最小寄りへ落とすなら、まず残すべきグループはこれです。
+通常フォルダと `*_local` フォルダは、いずれも次の106 JPGを1セットとして扱います。
 
-| グループ | ファイル | 重要度 | 理由 |
+| グループ | ファイル数 | 重要度 | 主な用途 |
+| --- | ---: | --- | --- |
+| 基本顔 | 48 | 高 | 起動後の会話、発話口パク、好感度tier、熱状態、低電力、写真モード |
+| ぐるぐる方向 | 17 | 高 | ぐるぐる顔モードの `dir0..dir16` |
+| ぐるぐるblink | 17 | 中 | ぐるぐる顔モードの中央blinkなど |
+| なでなでアニメーション | 9 | 高 | `pet_anim_0..pet_anim_8` の開始/ループ/終了表示 |
+| ぐるぐる混乱 | 15 | 高 | `dizzy_01..dizzy_15` をソースにした混乱アニメーション |
+
+## デバイス別の使われ方
+
+| 項目 | CoreS3 + ｽﾀｯｸﾁｬﾝ | StopWatch | AtomS3R Chatbot |
 | --- | --- | --- | --- |
-| 通常会話 | `idle.png`, `listen.png`, `talk_0.png`, `talk_1.png`, `blink.png` | 必須 | 起動後の基本顔、聞き取り中、発話口パク、通常まばたきに使う |
-| 通常スマイル | `smile.png` | 低 | normal tier のIdle中だけ、8-20秒間隔で1.5秒出る演出 |
-| 低電力 | `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` | 中 | 低電力モードで常時寄りに使う。状態が分かりやすくなる |
+| 通常画像フォルダ | `data/` | `data_stopwatch/` | `data_atoms3r/` |
+| 画像サイズ | 240 x 240 | 386 x 386 | 128 x 128 |
+| なでなで入力 | 背面タッチ | 画面中央付近のタッチ/ドラッグ | BtnA 長押し |
+| なでなで画像 | `pet_anim_0..8` | `pet_anim_0..8` | `pet_anim_0..8` |
+| ぐるぐる入力 | タッチ/IMU切替 | タッチ/IMU切替 | IMU固定 |
+| ぐるぐる方向 | 16方向+中央 | 8方向+中央 | 16方向+中央 |
+| ぐるぐる画像セット | `dir0..16`, `blink0..16` | `dir0..16`, `blink0..16` を保持し、実行時は8方向+中央を使用 | `dir0..16`, `blink0..16` |
+| 混乱画像 | `dizzy_01..15` | `dizzy_01..15` | `dizzy_01..15` |
 
-`idle.png` と `talk_0.png` が同じ絵でも、役割名として分かれているのは妥当です。発話の口閉じフレームを後から変えられるためです。
+StopWatch は実行時の方向数が少ないですが、生成ツールとファイル構成を統一するため
+17方向分の画像を持たせます。これにより、スプライトシート分割、フォーマット変換、
+デバイス別リサイズの流れを3機種で揃えています。
 
 ## グループ別評価
 
 | グループ | ファイル | 自動使用 | 重要度 | 整理判断 |
 | --- | --- | --- | --- | --- |
-| 通常会話 | `idle.png`, `listen.png`, `talk_0.png`, `talk_1.png`, `blink.png` | あり | 高 | 残す。アプリの基本表情 |
-| 通常スマイル | `smile.png` | あり | 低 | 消しても会話は壊れないが、Idleの表情変化は減る |
-| 好感度: guarded | `idle_guarded_0.png`, `blink_guarded_0.png`, `talk_guarded_0.png`, `talk_guarded_1.png` | あり | 中 | 好感度が低い時の個性。`talk_guarded_0.png` は `idle_guarded_0.png` にフォールバックできるので省略可 |
-| 好感度: attached | `idle_attached_0.png`, `blink_attached_0.png`, `talk_attached_0.png`, `talk_attached_1.png` | あり | 中 | 好感度が高い時の個性。`talk_attached_0.png` は `idle_attached_0.png` と同じなら省略可 |
-| なでなで: normal | `nadenade_0.png`, `nadenade_1.png` | あり | 中 | CoreS3 の背面タッチ、StopWatch の画面タッチ、AtomS3R の BtnA 長押し、または WS コマンドで使う。触る体験を残すなら重要 |
-| なでなで: guarded | `pet_guarded_0.png`, `pet_guarded_1.png`, `pet_blink_guarded_0.png` | あり | 低-中 | 低好感度時だけの差分。無くても `nadenade_*` にフォールバックする |
-| なでなで: attached | `pet_attached_0.png`, `pet_attached_1.png`, `pet_blink_attached_0.png` | あり | 低-中 | 高好感度時だけの差分。無くても `nadenade_*` にフォールバックする |
-| ふりふり: normal | `furifuri_0.png`, `furifuri_1.png` | あり | 中 | IMU shake またはWSコマンドで1.5秒程度使う。リアクションを残すなら重要 |
-| ふりふり: guarded/attached | `shake_guarded_0.png`, `shake_guarded_1.png`, `shake_attached_0.png`, `shake_attached_1.png` | ありだが未配置 | 低 | 無ければ `furifuri_*` にフォールバック。現状未配置でも問題は小さい |
-| 写真撮影 | `photo_0.png`, `photo_1.png`, `photo_blink.png` | CoreS3 であり | 中 | CoreS3 の `/capture` や `face_mode=photo` で使う。StopWatch / AtomS3R ではカメラ非搭載だが、直接 face 指定や将来拡張用として残せる |
-| 写真撮影の目閉じ発話 | `photo_blink_talk.png` | 直接指定のみ | 低 | 自動の口パク・まばたき経路では使われていない。削減候補 |
-| マスター撮影 | `photo_master_0.png`, `photo_master_1.png` | あり | 低-中 | `face_mode=photo_master` 専用。使っていなければ削減候補 |
-| 認証: master | `good_0.png`, `good_1.png`, `good_blink.png` | 現状ほぼなし | 低 | `AUTH_FACE_BASE_SWITCH_ENABLED=false` のため通常のauthでは出ない。直接 `face` 指定では出せる |
-| 認証: not_master | `bad_0.png`, `bad_1.png` | 現状ほぼなし | 低 | 同上。非マスター時のモーションには効くが、顔画像切替は無効 |
-| 熱状態: warm/hot | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png` | あり | 中 | 温度状態の可視化。通常会話には不要だが、デバイス状態表示として意味がある |
-| 低電力 | `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` | あり | 中 | 低電力モード中の顔。設定で明示的に使われる |
+| 通常会話 | `idle`, `listen`, `talk_0`, `talk_1`, `blink` | あり | 高 | 起動後の基本顔、聞き取り中、発話口パク、通常まばたきに使う |
+| 通常スマイル | `smile` | あり | 低 | Idle中の短い表情変化。なくても会話は壊れないが、表情変化は減る |
+| 好感度: guarded | `idle_guarded_0`, `blink_guarded_0`, `talk_guarded_0`, `talk_guarded_1` | あり | 中 | 低好感度時の見た目差分 |
+| 好感度: attached | `idle_attached_0`, `blink_attached_0`, `talk_attached_0`, `talk_attached_1` | あり | 中 | 高好感度時の見た目差分 |
+| なでなで基本 | `nadenade_0`, `nadenade_1` | あり | 中 | `pet_anim_*` がない場合や通常pet顔のfallbackとして意味がある |
+| なでなでtier | `pet_guarded_*`, `pet_attached_*` | あり | 低-中 | 好感度tier別のpet顔。なければ `nadenade_*` へ寄せられる |
+| なでなでアニメ | `pet_anim_0..8` | あり | 高 | 3機種共通のなでなでアニメーション。今回の主機能なので残す |
+| ふりふり | `furifuri_0`, `furifuri_1`, `shake_guarded_*`, `shake_attached_*` | あり | 中 | IMU shake や直接 face 指定で使う。混乱ソースにも使える |
+| ぐるぐる方向 | `dir0..16` | あり | 高 | ぐるぐる顔モードの顔向き。StopWatch も統一セットとして保持 |
+| ぐるぐるblink | `blink0..16` | あり | 中 | ぐるぐる顔モードのblink。中央blinkの印象に効く |
+| ぐるぐる混乱 | `dizzy_01..15` | あり | 高 | 混乱アニメーションのソース。再生時に回転方向へ合わせて並びを変える |
+| 写真撮影 | `photo_*`, `photo_master_*` | CoreS3中心 | 中 | CoreS3 の撮影UIや直接指定で使う。StopWatch/AtomS3R ではカメラ非搭載 |
+| 認証 | `good_*`, `bad_*` | 現状ほぼなし | 低 | 自動auth顔切替は無効だが、直接指定や将来用として残す |
+| 熱状態/低電力 | `tired_*`, `exhausted_*`, `low_power_*` | あり | 中 | デバイス状態表示として意味がある |
 
-## 省略しやすい候補
+ファームウェアは論理名として `.png` パスを持ちますが、実ファイルは同じstemの `.jpg` を読めます。
+上表では拡張子を省略しています。
 
-コード上の安全度だけで見ると、次の順に削りやすいです。
+画像ファイルそのものは LittleFS 上にJPGで置きます。実行時の表示高速化は画像ファイルの分類ではなく、
+`FaceController` 側の `M5Canvas` キャッシュで扱います。ぐるぐる方向、ぐるぐるblink、混乱フレームの
+キャンバスは `setPsram(true)` を使い、PSRAMを優先して確保します。
 
-1. `photo_blink_talk.png`: 自動経路では使われず、`face` コマンドで直接指定した時だけ表示されます。
-2. `shake_guarded_*.png`, `shake_attached_*.png`: 現状未配置でも `furifuri_*` にフォールバックします。
-3. `talk_guarded_0.png`, `talk_attached_0.png`: 口閉じ発話をidle顔と同じにするなら省略できます。
-4. `good_*`, `bad_*`: 現状の設定ではauthによる自動顔切替がオフなので、直接表示テストや将来ONにする予定がなければ優先度は低いです。
-5. `smile.png`: なくすならコード側のスマイル演出も無効化した方がログ上のmissingを避けられます。
+## なでなでアニメーション
 
-## 残した方がよい単位
+`pet_anim_0..8` は3x3スプライトシートから作る9フレームです。CoreS3、StopWatch、AtomS3R で
+同じファイル名を使い、入力イベントだけを変えています。
 
-削る場合も、口パク用のペアはなるべくペア単位で扱うのが安全です。
+- CoreS3: 背面タッチが一定時間検出されると開始。
+- StopWatch: 通常画面中央付近を短く押す、または中央付近からドラッグすると開始。
+- AtomS3R: 通常画面で BtnA を長押しすると開始。離したあと少しだけ反応を継続。
 
-- `_0` / `_1` のペアは発話中に300ms間隔で交互に使われます。
-- `_blink` 系は非発話時の120ms程度の短い演出です。印象には効きますが、ペア画像ほど重要ではありません。
-- `*_guarded_*` と `*_attached_*` は好感度tierの見た目差分です。好感度機能を見せたいなら残す価値があります。
+## ぐるぐる顔と混乱
+
+ぐるぐる顔モードは、会話クライアント未接続、通常表示、画面ON、設定画面非表示、必要画像ありの時に有効です。
+
+| デバイス | モード切替 | 入力切替 | 基準リセット |
+| --- | --- | --- | --- |
+| CoreS3 | 電源ボタンダブルクリック | ぐるぐる中に電源ボタン3クリック以上 | IMU入力時に画面長押し |
+| StopWatch | BtnA ダブルクリック | ぐるぐる中に BtnB ダブルクリック | ぐるぐる中に BtnB 長押し |
+| AtomS3R | 通常画面で BtnA 3クリック | IMU固定 | ぐるぐる中に BtnA 長押し |
+
+混乱判定は、短時間に顔向きが回転し続けた時に発火します。
+
+| デバイス | 回転判定 | 追加のIMU shake判定 |
+| --- | --- | --- |
+| CoreS3 | 2秒窓で合計32ステップ、偏り24ステップ | 0.20G以上が4000ms続く条件 |
+| StopWatch | 2秒窓で合計16ステップ、偏り12ステップ | 0.20G以上が4000ms続く条件 |
+| AtomS3R | 2秒窓で合計22ステップ、偏り4ステップ | 0.40G以上が900ms続く条件 |
+
+`dizzy_01..15` は15枚のソースフレームです。再生側は先頭8枚を回転方向に応じて順方向/逆方向に使い、
+残りを混乱後半の揺れとして使います。過去互換の `dizzy_cw_*` / `dizzy_ccw_*` とメタファイルも
+読めますが、現在の完成ディレクトリでは `dizzy_01..15.jpg` を標準とします。
+
+## 省略しない方がよい単位
+
+今回の3機種統一フローでは、完成ディレクトリを106 JPGで揃える方針です。個別に削るより、
+使わない機能をコード側で明示的に無効化する方が安全です。
+
+- `dir*` と `blink*` はセットで扱います。片方だけ欠けるとぐるぐる顔の印象やキャッシュが不安定になります。
+- `pet_anim_*` は9枚セットで扱います。途中だけ欠けるとループ中にfallbackが混ざります。
+- `dizzy_01..15` は15枚セットで扱います。欠けると混乱アニメーションが途中で止まるか、旧形式fallbackに依存します。
+- 基本顔48枚は、直接使われにくいものもフォールバック元や将来設定のために残します。
 
 ## まとめ
 
-今の48枠は、実質的には次の10前後の表情グループです。
-
-```text
-normal conversation
-normal smile
-affection guarded
-affection attached
-pet normal
-pet guarded
-pet attached
-shake normal
-shake tier variants
-photo
-photo master
-auth good/bad
-thermal
-low power
-```
-
-この中で、アプリ体験の中心は `normal conversation`、次点が `affection guarded/attached`、`pet normal`、`shake normal`、`thermal/low power` です。CoreS3 では `photo` も重要です。`auth good/bad` と `photo_blink_talk` は、現状コードでは優先度がかなり低いです。
+現在の画像セットは、単なる48枚の会話顔ではなく、3機種共通のアニメーション体験を含む106 JPG構成です。
+解像度、入力方法、方向数、混乱判定の閾値は機種ごとに違いますが、ファイル名、グループ構成、
+生成ツール、JPGフォーマットは揃えています。

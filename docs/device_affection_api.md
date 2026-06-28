@@ -36,6 +36,36 @@ and `confusion` to `0` before sending state. If startup/reunion reactions are
 enabled, the firmware sends `interaction.event` `session_start` after that state
 message.
 
+## Message: Device Info
+
+Inbound JSON:
+
+```json
+{
+  "type": "device.info.get",
+  "requestId": "client-req-device-001"
+}
+```
+
+Outbound JSON:
+
+```json
+{
+  "type": "device.info",
+  "requestId": "client-req-device-001",
+  "deviceId": "stackchan_8f3a21",
+  "displayName": "Stack-chan",
+  "firmwareName": "stackchan-pet-fw",
+  "firmwareVersion": "dev",
+  "protocolVersion": 2,
+  "capabilities": ["device.info", "affection.get", "affection.sync"]
+}
+```
+
+`deviceId` is a stable ID generated on first boot and stored in NVS. It is not an
+IP address or a per-USB-connection temporary ID. If NVS storage fails, the
+firmware falls back to a stable ID derived from the eFuse MAC.
+
 ## Device-Owned State
 
 The firmware owns and persists the canonical affection state.
@@ -208,6 +238,58 @@ Level values:
 | `400..599` | `normal` |
 | `600..799` | `nakayoshi` |
 | `800..1000` | `daisuki` |
+
+## Message: Affection Sync State
+
+Inbound JSON:
+
+```json
+{
+  "type": "affection.sync.state",
+  "requestId": "client-req-sync-001",
+  "characterId": "char_shared_001"
+}
+```
+
+Outbound JSON:
+
+```json
+{
+  "type": "affection.sync.state",
+  "requestId": "client-req-sync-001",
+  "deviceId": "stackchan_8f3a21",
+  "characterId": "char_shared_001",
+  "affection": 530,
+  "mood": 0,
+  "confusion": 0,
+  "syncedBaseAffection": 500,
+  "unsyncedDelta": 30
+}
+```
+
+The firmware stores `syncedBaseAffection` per `characterId`. For an unknown
+`characterId`, the current `affection` is saved as the initial sync base.
+`unsyncedDelta` is `affection - syncedBaseAffection`.
+
+## Message: Affection Sync Apply
+
+Inbound JSON:
+
+```json
+{
+  "type": "affection.sync.apply",
+  "requestId": "client-req-sync-002",
+  "characterId": "char_shared_001",
+  "affection": 680
+}
+```
+
+Firmware behavior:
+
+- Clamps `affection` to `0..1000` and applies it as the current device value.
+- Updates `syncBaseByCharacterId[characterId]` to the applied `affection`.
+- Broadcasts `affection.state` as usual if the visible affection state changed.
+- Returns `affection.sync.state` after applying.
 
 ## Message: Interaction Event
 

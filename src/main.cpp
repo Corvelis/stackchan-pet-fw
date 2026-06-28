@@ -13,6 +13,7 @@
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <cstring>
 #include <math.h>
 #include <qrcodegen.h>
 #include <time.h>
@@ -36,6 +37,7 @@ AffectionController affectionController;
 StreetPassController streetPassController;
 WebServer httpServer(HTTP_PORT);
 Preferences preferences;
+String deviceId;
 
 enum class NetworkMode : uint8_t {
   Sta = 0,
@@ -118,6 +120,8 @@ unsigned long listeningNodPhaseEndMs = 0;
 uint8_t listeningNodPhase = 0;
 bool pettingActive = false;
 unsigned long pettingEndMs = 0;
+unsigned long pettingStartedMs = 0;
+bool pettingFaceAnimated = false;
 unsigned long nextPetMoveMs = 0;
 unsigned long lastPettingRepeatEventMs = 0;
 Pose pettingBasePose = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
@@ -141,11 +145,62 @@ bool backTouchReady = false;
 unsigned long backTouchReleasedSinceMs = 0;
 unsigned long backTouchCandidateSinceMs = 0;
 unsigned long backTouchClearSinceMs = 0;
+#if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+bool backTouchGuruguruPressed = false;
+bool backTouchGuruguruHoldFired = false;
+unsigned long backTouchGuruguruPressSinceMs = 0;
+unsigned long backTouchGuruguruFirstTapMs = 0;
+#endif
 bool screenPettingCandidate = false;
 bool screenPettingTouchActive = false;
 unsigned long screenPettingCandidateSinceMs = 0;
 unsigned long screenPettingReleaseSinceMs = 0;
 int32_t screenPettingTravelPx = 0;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+bool guruguruFaceMode = false;
+bool guruguruFaceEffective = false;
+bool guruguruFaceAssetsChecked = false;
+bool guruguruFaceAssetsReady = false;
+#endif
+#if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+bool guruguruFaceImuInput = true;
+#else
+bool guruguruFaceImuInput = false;
+#endif
+#endif
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT && STACKCHAN_GURUGURU_FACE_ENABLED
+bool guruguruRestoreListeningOnExit = false;
+#endif
+#if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
+bool guruguruImuBaseReady = false;
+bool guruguruImuFilterReady = false;
+float guruguruImuBaseX = 0.0f;
+float guruguruImuBaseY = 0.0f;
+float guruguruImuBaseZ = 1.0f;
+float guruguruImuFilterX = 0.0f;
+float guruguruImuFilterY = 0.0f;
+float guruguruImuFilterZ = 1.0f;
+uint8_t guruguruImuCandidateDirection = STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+uint8_t guruguruImuCandidateSamples = 0;
+unsigned long nextGuruguruImuUpdateMs = 0;
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_CORES3
+unsigned long lastGuruguruImuDebugMs = 0;
+#endif
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+int8_t guruguruDizzyLastDirection = -1;
+unsigned long guruguruDizzyWindowStartMs = 0;
+unsigned long guruguruDizzyCooldownUntilMs = 0;
+uint16_t guruguruDizzyTotalSteps = 0;
+int16_t guruguruDizzySignedSteps = 0;
+uint16_t guruguruAffectionStepAccum = 0;
+unsigned long guruguruAffectionStepStartMs = 0;
+uint8_t guruguruAffectionDangerCombo = 0;
+uint8_t guruguruAffectionRedDangerStreak = 0;
+unsigned long guruguruImuDizzyShakeStartMs = 0;
+unsigned long guruguruImuDizzyShakeLastActiveMs = 0;
+#endif
+#endif
 unsigned long hapticOffMs = 0;
 unsigned long lastInitializeDrawMs = 0;
 unsigned long lastFaceUpdateMs = 0;
@@ -298,12 +353,17 @@ bool exchangeStreetPassCandidate(StreetPassBleCandidate& candidate, unsigned lon
 bool sendUsbSerialJson(const char* payload);
 bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags = 0);
 bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context);
+void setState(ChanState state);
 void writePongResponse(JsonDocument& response, JsonDocument& request);
 void sendPongResponse(JsonDocument& request);
+void sendJsonDocument(JsonDocument& doc);
+void handleDeviceInfoGetCommand(JsonDocument& doc);
 void handleUsbSerialLine(const uint8_t* payload, size_t length);
 void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length);
 void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length);
 void handleUsbSerialCaptureRequest(JsonDocument& doc);
+void handleAffectionSyncStateCommand(JsonDocument& doc);
+void handleAffectionSyncApplyCommand(JsonDocument& doc);
 void updateUsbSerialDeferredIdle(unsigned long now);
 void updateCameraButtonPending(unsigned long now);
 void clearCameraButtonPending(const char* reason);
@@ -329,6 +389,29 @@ void logDeviceAudioConfig();
 void pulseHaptic(uint8_t level, unsigned long durationMs, unsigned long now);
 void updateHaptic(unsigned long now);
 void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+void setGuruguruFaceMode(bool enabled, unsigned long now);
+bool guruguruFaceAssetsAvailable();
+bool guruguruFaceCanRun();
+bool updateGuruguruFaceTouch(unsigned long now, const m5::touch_detail_t& touch);
+void updateGuruguruFaceAvailability(unsigned long now);
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+bool guruguruFaceUsesImu();
+void setGuruguruFaceImuInput(bool enabled);
+void toggleGuruguruFaceInput();
+void resetGuruguruImuBase();
+bool resetGuruguruImuBase(const m5::imu_data_t& data);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+void resetGuruguruAffectionTracking();
+void resetGuruguruImuDizzyShakeDetection();
+void resetGuruguruDizzySpinDetection(bool resetLastDirection = true);
+bool updateGuruguruDizzySpinDetection(unsigned long now, uint8_t direction, bool useGameRules = true);
+void updateGuruguruImuStepTracking(unsigned long now, uint8_t direction);
+bool updateGuruguruImuDizzyShakeDetection(unsigned long now, float sampleDelta);
+#endif
+bool updateGuruguruFaceImu(unsigned long now, const m5::imu_data_t& data, bool imuUpdated);
+#endif
+#endif
 void redrawNetworkSettingsIfVisible();
 #if STACKCHAN_SMALL_DISPLAY
 void adjustSmallDisplayVolume(int delta);
@@ -513,6 +596,45 @@ void printHexBytes(const uint8_t* data, size_t length) {
       Serial.print(' ');
     }
   }
+}
+
+String efuseDeviceId() {
+  const uint64_t mac = ESP.getEfuseMac();
+  const uint32_t high = static_cast<uint32_t>((mac >> 32) & 0xffff);
+  const uint32_t low = static_cast<uint32_t>(mac & 0xffffffffUL);
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "stackchan_%04lx%08lx",
+           static_cast<unsigned long>(high),
+           static_cast<unsigned long>(low));
+  return String(buffer);
+}
+
+String randomDeviceId() {
+  const uint64_t mac = ESP.getEfuseMac();
+  const uint32_t first = esp_random() ^ static_cast<uint32_t>(mac & 0xffffffffUL);
+  const uint32_t second = esp_random() ^ static_cast<uint32_t>((mac >> 16) & 0xffffffffUL);
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "stackchan_%08lx%08lx",
+           static_cast<unsigned long>(first),
+           static_cast<unsigned long>(second));
+  return String(buffer);
+}
+
+void ensureDeviceId() {
+  if (deviceId.length() > 0) {
+    return;
+  }
+
+  preferences.begin("device", false);
+  deviceId = preferences.getString("id", "");
+  if (deviceId.length() == 0) {
+    const String generated = randomDeviceId();
+    const size_t written = preferences.putString("id", generated);
+    deviceId = written > 0 ? generated : efuseDeviceId();
+  }
+  preferences.end();
+
+  Serial.printf("[device] id=%s\n", deviceId.c_str());
 }
 
 bool isWifiCredentialConfigured(size_t index) {
@@ -1707,6 +1829,9 @@ void setDisplayOn(bool on) {
   }
   displayOn = on;
   faceController.setEnabled(on && !infoScreenVisible);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  updateGuruguruFaceAvailability(millis());
+#endif
   if (displayOn) {
     M5.Display.wakeup();
     applyDisplayBrightness();
@@ -1809,6 +1934,30 @@ Pose makePettingPoseFromBase(const Pose& base, bool bigMove) {
   };
 }
 
+bool shouldAnimatePettingFace() {
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  return displayOn && !appClientConnected() && currentState != ChanState::Speaking;
+#else
+  return false;
+#endif
+}
+
+uint8_t petAnimationTouchFrameForX(int32_t x, int32_t centerX) {
+#if STACKCHAN_DEVICE_STOPWATCH
+  const int32_t dx = x - centerX;
+  if (dx < -PET_ANIMATION_TOUCH_CENTER_HALF_WIDTH_PX) {
+    return 4;
+  }
+  if (dx > PET_ANIMATION_TOUCH_CENTER_HALF_WIDTH_PX) {
+    return 2;
+  }
+#else
+  (void)x;
+  (void)centerX;
+#endif
+  return 3;
+}
+
 void setPettingActive(bool active, unsigned long now, unsigned long releaseGraceMs = PET_TOUCH_RELEASE_GRACE_MS) {
   if (active && !displayOn) {
     return;
@@ -1818,18 +1967,29 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
     pettingEndMs = now + releaseGraceMs;
     if (!pettingActive) {
       pettingActive = true;
+      pettingStartedMs = now;
+      pettingFaceAnimated = shouldAnimatePettingFace();
       nextPetMoveMs = 0;
       pettingBasePose = motionController.currentPose();
       cancelListeningNod(false);
+#if STACKCHAN_PET_ANIMATION_ENABLED
+      faceController.setPetFaceMode(true, now, pettingFaceAnimated);
+#else
       faceController.setPetFaceMode(true);
+#endif
       const Pose pose = makePettingPoseFromBase(pettingBasePose, false);
       motionController.setTargetPose(pose.pan, pose.tilt);
-      applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
       sendInteractionEvent("petting", "start", now);
       pulseHaptic(HAPTIC_PETTING_START_LEVEL, HAPTIC_PETTING_START_MS, now);
       lastPettingRepeatEventMs = now;
       Serial.println("[pet] start");
     } else if (now - lastPettingRepeatEventMs >= 800) {
+#if STACKCHAN_PET_ANIMATION_ENABLED
+      if (pettingFaceAnimated && !shouldAnimatePettingFace()) {
+        pettingFaceAnimated = false;
+        faceController.setPetFaceMode(true);
+      }
+#endif
       sendInteractionEvent("petting", "repeat", now);
       lastPettingRepeatEventMs = now;
     }
@@ -1848,13 +2008,33 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
 #endif
 
   pettingActive = false;
+  const bool longPetting = pettingStartedMs != 0 &&
+                           now - pettingStartedMs >= PET_ANIMATION_LONG_THRESHOLD_MS;
+  const bool animateEnd = pettingFaceAnimated && displayOn && !appClientConnected();
+  if (longPetting) {
+    applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
+  } else {
+    applyAffectionResult(affectionController.debugAdjust(PETTING_SHORT_AFFECTION_DELTA), now, true);
+  }
+  pettingStartedMs = 0;
+  pettingFaceAnimated = false;
   pettingEndMs = 0;
   nextPetMoveMs = 0;
   lastPettingRepeatEventMs = 0;
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  faceController.setPetFaceMode(false, now, animateEnd, longPetting);
+#else
   faceController.setPetFaceMode(false);
+#endif
   if (!shakeActive) {
     if (currentState == ChanState::Listening) {
+#if STACKCHAN_PET_ANIMATION_ENABLED
+      if (!animateEnd) {
+        applyListeningPresentation(now);
+      }
+#else
       applyListeningPresentation(now);
+#endif
     } else {
       motionController.setMotion("center");
     }
@@ -2012,6 +2192,21 @@ void updateShake(unsigned long now) {
     M5.Imu.getImuData(&data);
   }
 
+#if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
+  if (guruguruFaceMode) {
+    if (updateGuruguruFaceImu(now, data, imuUpdated)) {
+      setShakeActive(false, now);
+      shakeStrongSamples = 0;
+      return;
+    }
+    if (guruguruFaceCanRun()) {
+      setShakeActive(false, now);
+      shakeStrongSamples = 0;
+      return;
+    }
+  }
+#endif
+
   if (shakeActive) {
     if (imuUpdated) {
       updateShakeMotion(data, now);
@@ -2119,6 +2314,44 @@ void drawBootScreen(const char* message) {
   M5.Display.setCursor(16, 72);
   M5.Display.println(message);
 #endif
+}
+
+void drawModeLoadingScreen(const char* title, const char* detail) {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(3);
+  M5.Display.drawString(title, cx, cy - 42);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString("Loading...", cx, cy + 2);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString(detail, cx, cy + 36);
+  M5.Display.drawCircle(cx, cy + 72, 10, TFT_DARKGREY);
+  M5.Display.fillCircle(cx + 7, cy + 65, 3, TFT_WHITE);
+  M5.Display.setTextDatum(top_left);
+#else
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(16, 32);
+  M5.Display.println(title);
+  M5.Display.setCursor(16, 72);
+  M5.Display.println("Loading...");
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(16, 112);
+  M5.Display.println(detail);
+#endif
+  delay(1);
+}
+
+void drawGuruguruLoadingScreen() {
+  drawModeLoadingScreen("Guruguru", "Preparing face cache");
+}
+
+void drawVoiceLoadingScreen() {
+  drawModeLoadingScreen("Voice", "Preparing talk cache");
 }
 
 void drawInitializeScreen(unsigned long now) {
@@ -2518,8 +2751,14 @@ void handleCaptureRequest() {
 }
 
 void handleStatusRequest() {
+  ensureDeviceId();
   JsonDocument doc;
   const AffectionState& affection = affectionController.state();
+  doc["deviceId"] = deviceId;
+  doc["displayName"] = STACKCHAN_DEVICE_DISPLAY_NAME;
+  doc["firmwareName"] = STACKCHAN_FIRMWARE_NAME;
+  doc["firmwareVersion"] = STACKCHAN_FIRMWARE_VERSION;
+  doc["protocolVersion"] = STACKCHAN_APP_PROTOCOL_VERSION;
   doc["cameraReady"] = cameraManager.isReady();
   doc["networkMode"] = networkModeName();
   doc["wsClientConnected"] = wsClientConnected;
@@ -3919,6 +4158,9 @@ void setInfoScreenVisible(bool visible) {
   }
 #endif
   faceController.setEnabled(displayOn && !visible);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  updateGuruguruFaceAvailability(millis());
+#endif
   applyDisplayBrightness();
   if (visible) {
     if (settingsPage == SettingsPage::StreetPass) {
@@ -4715,6 +4957,32 @@ bool sendUsbSerialJson(const char* payload) {
 #endif
 }
 
+void sendJsonDocument(JsonDocument& doc) {
+  String body;
+  serializeJson(doc, body);
+  if (wsServer.hasClient()) {
+    wsServer.sendText(body.c_str());
+  }
+  sendUsbSerialJson(body.c_str());
+}
+
+void writeDeviceInfo(JsonDocument& response, const char* requestId) {
+  ensureDeviceId();
+  response["type"] = "device.info";
+  if (requestId != nullptr && requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  response["deviceId"] = deviceId;
+  response["displayName"] = STACKCHAN_DEVICE_DISPLAY_NAME;
+  response["firmwareName"] = STACKCHAN_FIRMWARE_NAME;
+  response["firmwareVersion"] = STACKCHAN_FIRMWARE_VERSION;
+  response["protocolVersion"] = STACKCHAN_APP_PROTOCOL_VERSION;
+  JsonArray capabilities = response["capabilities"].to<JsonArray>();
+  capabilities.add("device.info");
+  capabilities.add("affection.get");
+  capabilities.add("affection.sync");
+}
+
 bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags) {
 #if USB_SERIAL_PROTOCOL_ENABLED
   if (!usbSerialClientConnected || length > USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES ||
@@ -4801,6 +5069,12 @@ void sendPongResponse(JsonDocument& request) {
     wsServer.sendText(body.c_str());
   }
   sendUsbSerialJson(body.c_str());
+}
+
+void handleDeviceInfoGetCommand(JsonDocument& doc) {
+  JsonDocument response;
+  writeDeviceInfo(response, doc["requestId"] | "");
+  sendJsonDocument(response);
 }
 
 void sendAffectionState(const char* requestId) {
@@ -4916,6 +5190,44 @@ const char* normalizeAffectionSource(const char* source) {
   return "phone";
 }
 
+bool validCharacterId(const char* characterId) {
+  return characterId != nullptr &&
+         characterId[0] != '\0' &&
+         strlen(characterId) <= 96;
+}
+
+void sendAffectionSyncError(const char* requestId, const char* error) {
+  JsonDocument response;
+  response["type"] = "affection.sync.error";
+  if (requestId != nullptr && requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  response["error"] = error != nullptr ? error : "invalid_request";
+  sendJsonDocument(response);
+}
+
+void writeAffectionSyncState(JsonDocument& response, const char* requestId, const char* characterId) {
+  ensureDeviceId();
+  const AffectionSyncState sync = affectionController.syncStateForCharacter(characterId);
+  response["type"] = "affection.sync.state";
+  if (requestId != nullptr && requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  response["deviceId"] = deviceId;
+  response["characterId"] = sync.characterId;
+  response["affection"] = sync.state.affection;
+  response["mood"] = sync.state.mood;
+  response["confusion"] = sync.state.confusion;
+  response["syncedBaseAffection"] = sync.syncedBaseAffection;
+  response["unsyncedDelta"] = sync.unsyncedDelta;
+}
+
+void sendAffectionSyncState(const char* requestId, const char* characterId) {
+  JsonDocument response;
+  writeAffectionSyncState(response, requestId, characterId);
+  sendJsonDocument(response);
+}
+
 void handleAffectionEventCommand(JsonDocument& doc) {
   const char* eventName = doc["event"] | "";
   const char* eventId = doc["id"] | "";
@@ -4936,6 +5248,37 @@ void handleAffectionEventCommand(JsonDocument& doc) {
 
 void handleAffectionGetCommand(JsonDocument& doc) {
   sendAffectionState(doc["requestId"] | "");
+}
+
+void handleAffectionSyncStateCommand(JsonDocument& doc) {
+  const char* requestId = doc["requestId"] | "";
+  const char* characterId = doc["characterId"] | "";
+  if (!validCharacterId(characterId)) {
+    sendAffectionSyncError(requestId, "invalid_characterId");
+    return;
+  }
+  sendAffectionSyncState(requestId, characterId);
+}
+
+void handleAffectionSyncApplyCommand(JsonDocument& doc) {
+  const char* requestId = doc["requestId"] | "";
+  const char* characterId = doc["characterId"] | "";
+  if (!validCharacterId(characterId)) {
+    sendAffectionSyncError(requestId, "invalid_characterId");
+    return;
+  }
+  if (doc["affection"].isNull()) {
+    sendAffectionSyncError(requestId, "missing_affection");
+    return;
+  }
+
+  const unsigned long now = millis();
+  const AffectionApplyResult result = affectionController.applySyncAffection(
+    characterId,
+    doc["affection"] | affectionController.state().affection
+  );
+  applyAffectionResult(result, now, true, requestId);
+  sendAffectionSyncState(requestId, characterId);
 }
 
 void handleAffectionResetCommand(JsonDocument& doc) {
@@ -5112,6 +5455,8 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
 #endif
   if (strcmp(type, "ping") == 0) {
     sendPongResponse(doc);
+  } else if (strcmp(type, "device.info.get") == 0) {
+    handleDeviceInfoGetCommand(doc);
   } else if (strcmp(type, "audio.speaker_test") == 0) {
     handleSpeakerTestCommand(doc);
   } else if (strcmp(type, "audio.mic_test") == 0) {
@@ -5125,6 +5470,10 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
     handleAffectionEventCommand(doc);
   } else if (strcmp(type, "affection.get") == 0) {
     handleAffectionGetCommand(doc);
+  } else if (strcmp(type, "affection.sync.state") == 0) {
+    handleAffectionSyncStateCommand(doc);
+  } else if (strcmp(type, "affection.sync.apply") == 0) {
+    handleAffectionSyncApplyCommand(doc);
   } else if (strcmp(type, "affection.reset") == 0) {
     handleAffectionResetCommand(doc);
   } else if (strcmp(type, "affection.debug_adjust") == 0) {
@@ -5867,18 +6216,15 @@ void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
     return;
   }
 
-  if (!touch.isPressed()) {
-    screenPettingCandidate = false;
-    screenPettingTravelPx = 0;
-    screenPettingCandidateSinceMs = 0;
-    if (screenPettingTouchActive && screenPettingReleaseSinceMs == 0) {
-      screenPettingReleaseSinceMs = now;
-    }
-    if (screenPettingReleaseSinceMs != 0 && now - screenPettingReleaseSinceMs >= SCREEN_PETTING_RELEASE_MS) {
-      screenPettingReleaseSinceMs = 0;
-      screenPettingTouchActive = false;
-      setPettingActive(false, now);
-    }
+	  if (!touch.isPressed()) {
+	    screenPettingCandidate = false;
+	    screenPettingTravelPx = 0;
+	    screenPettingCandidateSinceMs = 0;
+	    if (screenPettingTouchActive) {
+	      screenPettingReleaseSinceMs = 0;
+	      screenPettingTouchActive = false;
+	      setPettingActive(false, now);
+	    }
     return;
   }
 
@@ -5913,12 +6259,685 @@ void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
   if (heldLongEnough || draggedEnough || screenPettingTouchActive) {
     screenPettingTouchActive = true;
     setPettingActive(true, now);
+#if STACKCHAN_DEVICE_STOPWATCH
+    faceController.setPetAnimationTouchFrame(petAnimationTouchFrameForX(touch.x, cx), now);
+#endif
   }
 #else
   (void)now;
   (void)touch;
 #endif
 }
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+bool littleFsImageExists(const char* path) {
+  if (LittleFS.exists(path)) {
+    return true;
+  }
+  const char* ext = strrchr(path, '.');
+  if (ext == nullptr) {
+    return false;
+  }
+  String jpegPath(path);
+  jpegPath.remove(static_cast<unsigned int>(ext - path));
+  jpegPath += ".jpg";
+  return LittleFS.exists(jpegPath);
+}
+
+bool guruguruFaceAssetsAvailable() {
+  if (guruguruFaceAssetsChecked) {
+    return guruguruFaceAssetsReady;
+  }
+  char path[16];
+#if STACKCHAN_DEVICE_STOPWATCH
+  snprintf(path, sizeof(path), "/dir16.png");
+#else
+  snprintf(path, sizeof(path), "/dir%u.png", static_cast<unsigned>(STACKCHAN_GURUGURU_FACE_CENTER_INDEX));
+#endif
+  guruguruFaceAssetsReady = littleFsImageExists(path);
+  guruguruFaceAssetsChecked = true;
+  return guruguruFaceAssetsReady;
+}
+
+bool guruguruFaceCanRun() {
+  return guruguruFaceMode &&
+         displayOn &&
+         !infoScreenVisible &&
+         currentState == ChanState::Idle &&
+         audioController.state() == ChanState::Idle &&
+         !audioController.isPlaybackDraining() &&
+         !appClientConnected() &&
+         guruguruFaceAssetsAvailable();
+}
+
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+bool guruguruFaceUsesImu() {
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  return true;
+#else
+  return guruguruFaceImuInput;
+#endif
+}
+
+void setGuruguruFaceImuInput(bool enabled) {
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  (void)enabled;
+#else
+  guruguruFaceImuInput = enabled;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  resetGuruguruAffectionTracking();
+  resetGuruguruDizzySpinDetection(true);
+#endif
+  if (guruguruFaceImuInput) {
+    resetGuruguruImuBase();
+  } else {
+    faceController.setGuruguruFaceDirection(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+  }
+  Serial.printf("[guruguru] input=%s\n", guruguruFaceImuInput ? "imu" : "touch");
+#endif
+}
+
+void toggleGuruguruFaceInput() {
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  resetGuruguruImuBase();
+#else
+  setGuruguruFaceImuInput(!guruguruFaceImuInput);
+#endif
+}
+#endif
+
+void updateGuruguruFaceAvailability(unsigned long now) {
+  if (guruguruFaceMode && appClientConnected()) {
+    Serial.println("[guruguru] disabled: client connected");
+    setGuruguruFaceMode(false, now);
+    return;
+  }
+
+  const bool effective = guruguruFaceCanRun();
+  if (guruguruFaceEffective == effective) {
+    return;
+  }
+
+  guruguruFaceEffective = effective;
+  faceController.setGuruguruFaceMode(effective);
+  if (!effective) {
+    faceController.setGuruguruFaceDirection(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+  }
+}
+
+void setGuruguruFaceMode(bool enabled, unsigned long now) {
+  if (enabled && appClientConnected()) {
+    enabled = false;
+  }
+  if (enabled && !guruguruFaceAssetsAvailable()) {
+    enabled = false;
+    Serial.println("[guruguru] disabled: assets missing");
+  }
+  if (guruguruFaceMode == enabled) {
+    updateGuruguruFaceAvailability(now);
+    return;
+  }
+
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  if (enabled) {
+    guruguruRestoreListeningOnExit = currentState == ChanState::Listening;
+    if (guruguruRestoreListeningOnExit &&
+        audioController.state() != ChanState::Speaking &&
+        !audioController.isPlaybackDraining()) {
+      setState(ChanState::Idle);
+    }
+  }
+#endif
+
+  const bool leavingGuruguruMode = guruguruFaceMode && !enabled && displayOn;
+  guruguruFaceMode = enabled;
+  if (enabled && pettingActive) {
+    setPettingActive(false, now);
+  }
+#if (STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_CORES3) && STACKCHAN_GURUGURU_IMU_ENABLED
+  if (enabled) {
+    guruguruFaceImuInput = false;
+  }
+#endif
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (enabled) {
+    resetGuruguruImuBase();
+  } else {
+    resetGuruguruAffectionTracking();
+    resetGuruguruImuDizzyShakeDetection();
+    resetGuruguruDizzySpinDetection(true);
+  }
+#endif
+  if (enabled && displayOn && guruguruFaceCanRun()) {
+    drawGuruguruLoadingScreen();
+  } else if (leavingGuruguruMode) {
+    drawVoiceLoadingScreen();
+  }
+  updateGuruguruFaceAvailability(now);
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  if (!enabled && guruguruRestoreListeningOnExit &&
+      currentState == ChanState::Idle &&
+      audioController.state() == ChanState::Idle &&
+      !audioController.isPlaybackDraining()) {
+    guruguruRestoreListeningOnExit = false;
+    setState(ChanState::Listening);
+  } else if (!enabled) {
+    guruguruRestoreListeningOnExit = false;
+  }
+#endif
+  Serial.printf("[guruguru] mode=%d\n", guruguruFaceMode ? 1 : 0);
+}
+
+uint8_t guruguruDirectionFromTouch(const m5::touch_detail_t& touch) {
+  const int32_t cx = roundCenterX();
+  const int32_t cy = roundCenterY();
+
+  const float dx = static_cast<float>(touch.x - cx);
+  const float dy = static_cast<float>(touch.y - cy);
+
+  if (dx * dx + dy * dy < 50.0f * 50.0f) {
+    return STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  }
+
+  const float angle = atan2f(dy, dx) * 180.0f / PI;
+  const float normalizedAngle = angle < 0.0f ? angle + 360.0f : angle;
+#if STACKCHAN_DEVICE_STOPWATCH
+  return static_cast<uint8_t>(static_cast<int>((normalizedAngle + 22.5f) / 45.0f) & 0x07);
+#else
+  return static_cast<uint8_t>(static_cast<int>((normalizedAngle + 11.25f) / 22.5f) & 0x0F);
+#endif
+}
+
+#if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
+void resetGuruguruDizzySpinDetection(bool resetLastDirection);
+bool updateGuruguruDizzySpinDetection(unsigned long now, uint8_t direction, bool useGameRules);
+void updateGuruguruImuStepTracking(unsigned long now, uint8_t direction);
+bool updateGuruguruImuDizzyShakeDetection(unsigned long now, float sampleDelta);
+#endif
+
+bool updateGuruguruFaceTouch(unsigned long now, const m5::touch_detail_t& touch) {
+  updateGuruguruFaceAvailability(now);
+  if (!guruguruFaceEffective) {
+    return false;
+  }
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (faceController.guruguruDizzyAnimationActive()) {
+    return true;
+  }
+#endif
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+  if (guruguruFaceUsesImu()) {
+#if STACKCHAN_DEVICE_CORES3
+    if (touch.wasHold()) {
+      resetGuruguruImuBase();
+      Serial.println("[guruguru] imu base reset requested by screen hold");
+    }
+#endif
+    return true;
+  }
+#endif
+
+  if (touch.isPressed()) {
+    const uint8_t direction = guruguruDirectionFromTouch(touch);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+    if (updateGuruguruDizzySpinDetection(now, direction, true)) {
+      return true;
+    }
+#endif
+    faceController.setGuruguruFaceDirection(direction);
+  } else {
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+    resetGuruguruDizzySpinDetection(true);
+#endif
+    faceController.setGuruguruFaceDirection(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+  }
+  return true;
+}
+
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+bool normalizeGuruguruImuAccel(const m5::imu_data_t& data, float& x, float& y, float& z) {
+  const float mag = sqrtf(data.accel.x * data.accel.x +
+                          data.accel.y * data.accel.y +
+                          data.accel.z * data.accel.z);
+  if (mag < GURUGURU_IMU_MIN_ACCEL_MAG_G || mag > GURUGURU_IMU_MAX_ACCEL_MAG_G) {
+    return false;
+  }
+  x = data.accel.x / mag;
+  y = data.accel.y / mag;
+  z = data.accel.z / mag;
+  return true;
+}
+
+void resetGuruguruImuBase() {
+  guruguruImuBaseReady = false;
+  guruguruImuFilterReady = false;
+  guruguruImuCandidateDirection = STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  guruguruImuCandidateSamples = 0;
+  nextGuruguruImuUpdateMs = 0;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  resetGuruguruDizzySpinDetection(true);
+#endif
+  faceController.setGuruguruFaceDirection(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+}
+
+bool resetGuruguruImuBase(const m5::imu_data_t& data) {
+  float x;
+  float y;
+  float z;
+  if (!normalizeGuruguruImuAccel(data, x, y, z)) {
+    resetGuruguruImuBase();
+    return false;
+  }
+
+  guruguruImuBaseX = x;
+  guruguruImuBaseY = y;
+  guruguruImuBaseZ = z;
+  guruguruImuFilterX = x;
+  guruguruImuFilterY = y;
+  guruguruImuFilterZ = z;
+  guruguruImuBaseReady = true;
+  guruguruImuFilterReady = true;
+  guruguruImuCandidateDirection = STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  guruguruImuCandidateSamples = 0;
+  faceController.setGuruguruFaceDirection(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+  Serial.println("[guruguru] imu base reset");
+  return true;
+}
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+void applyGuruguruAffectionDelta(int delta, unsigned long now, const char* reason) {
+  if (delta == 0) {
+    return;
+  }
+  applyAffectionResult(affectionController.debugAdjust(delta), now, true);
+  Serial.printf("[guruguru] affection %+d reason=%s\n",
+                delta,
+                reason != nullptr ? reason : "unknown");
+}
+
+void resetGuruguruAffectionTracking() {
+  guruguruAffectionStepAccum = 0;
+  guruguruAffectionStepStartMs = 0;
+  guruguruAffectionDangerCombo = 0;
+  guruguruAffectionRedDangerStreak = 0;
+}
+
+uint8_t guruguruAffectionDangerStart() {
+#if STACKCHAN_DEVICE_CORES3
+  static constexpr uint8_t kDangerStarts[] = {20, 24, 28, 30};
+#else
+  static constexpr uint8_t kDangerStarts[] = {10, 12, 14, 15};
+#endif
+  const uint8_t index = min<uint8_t>(
+    guruguruAffectionDangerCombo,
+    static_cast<uint8_t>((sizeof(kDangerStarts) / sizeof(kDangerStarts[0])) - 1)
+  );
+  return kDangerStarts[index];
+}
+
+void recordGuruguruAffectionMovement(uint8_t steps, unsigned long now, bool useGameRules) {
+  if (steps == 0 || faceController.guruguruDizzyAnimationActive()) {
+    return;
+  }
+
+  if (guruguruAffectionStepAccum == 0) {
+    guruguruAffectionStepStartMs = now;
+  }
+  guruguruAffectionStepAccum += steps;
+  while (guruguruAffectionStepAccum >= GURUGURU_AFFECTION_STEP_COUNT) {
+    guruguruAffectionStepAccum -= GURUGURU_AFFECTION_STEP_COUNT;
+    const unsigned long elapsedMs = guruguruAffectionStepStartMs == 0
+                                      ? GURUGURU_DIZZY_WINDOW_MS
+                                      : max<unsigned long>(1, now - guruguruAffectionStepStartMs);
+    const uint16_t projectedSteps = static_cast<uint16_t>(
+      (static_cast<uint32_t>(GURUGURU_AFFECTION_STEP_COUNT) * GURUGURU_DIZZY_WINDOW_MS +
+       elapsedMs / 2) / elapsedMs
+    );
+
+    const uint16_t dangerStart = guruguruAffectionDangerStart();
+    const bool inDangerZone =
+      projectedSteps >= dangerStart;
+    const bool inRedDangerZone =
+      inDangerZone && dangerStart >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS;
+
+    if (!useGameRules) {
+      guruguruAffectionDangerCombo = 0;
+      guruguruAffectionRedDangerStreak = 0;
+      applyGuruguruAffectionDelta(GURUGURU_AFFECTION_REWARD_DELTA, now, "guruguru_imu");
+      guruguruAffectionStepStartMs = guruguruAffectionStepAccum > 0 ? now : 0;
+      continue;
+    }
+
+    if (projectedSteps <= GURUGURU_AFFECTION_MIN_PROJECTED_STEPS) {
+      guruguruAffectionRedDangerStreak = 0;
+      faceController.showGuruguruStep(static_cast<uint8_t>(min<uint16_t>(projectedSteps, 99)),
+                                      static_cast<uint8_t>(min<uint16_t>(dangerStart, 99)),
+                                      now);
+      Serial.printf("[guruguru] affection skipped slow projected=%u elapsed=%lu slowLimit=%u\n",
+                    static_cast<unsigned>(projectedSteps),
+                    elapsedMs,
+                    static_cast<unsigned>(GURUGURU_AFFECTION_MIN_PROJECTED_STEPS));
+      guruguruAffectionStepStartMs = guruguruAffectionStepAccum > 0 ? now : 0;
+      continue;
+    }
+
+    int reward = GURUGURU_AFFECTION_REWARD_DELTA;
+    const char* reason = "guruguru";
+    if (inDangerZone) {
+      reward += GURUGURU_AFFECTION_DANGER_BONUS_DELTA;
+      reason = "guruguru_danger";
+      if (inRedDangerZone) {
+        reward += guruguruAffectionRedDangerStreak;
+        reason = guruguruAffectionRedDangerStreak > 0
+                   ? "guruguru_red_streak"
+                   : "guruguru_red_danger";
+        if (guruguruAffectionRedDangerStreak < 50) {
+          ++guruguruAffectionRedDangerStreak;
+        }
+      } else {
+        guruguruAffectionRedDangerStreak = 0;
+      }
+      if (guruguruAffectionDangerCombo < 3) {
+        ++guruguruAffectionDangerCombo;
+      }
+      Serial.printf("[guruguru] danger bonus combo=%u redStreak=%u projected=%u elapsed=%lu range=%u-%u\n",
+                    static_cast<unsigned>(guruguruAffectionDangerCombo),
+                    static_cast<unsigned>(guruguruAffectionRedDangerStreak),
+                    static_cast<unsigned>(projectedSteps),
+                    elapsedMs,
+                    static_cast<unsigned>(dangerStart),
+                    static_cast<unsigned>(GURUGURU_DIZZY_TOTAL_STEPS));
+    } else {
+      guruguruAffectionRedDangerStreak = 0;
+    }
+    applyGuruguruAffectionDelta(reward, now, reason);
+    faceController.showGuruguruStep(static_cast<uint8_t>(min<uint16_t>(projectedSteps, 99)),
+                                    static_cast<uint8_t>(min<uint16_t>(dangerStart, 99)),
+                                    now);
+
+    guruguruAffectionStepStartMs = guruguruAffectionStepAccum > 0 ? now : 0;
+  }
+}
+
+void resetGuruguruImuDizzyShakeDetection() {
+  guruguruImuDizzyShakeStartMs = 0;
+  guruguruImuDizzyShakeLastActiveMs = 0;
+}
+
+void resetGuruguruDizzySpinDetection(bool resetLastDirection) {
+  if (resetLastDirection) {
+    guruguruDizzyLastDirection = -1;
+    resetGuruguruAffectionTracking();
+  }
+  guruguruDizzyWindowStartMs = 0;
+  guruguruDizzyTotalSteps = 0;
+  guruguruDizzySignedSteps = 0;
+}
+
+int8_t guruguruCircularDirectionDelta(uint8_t previous, uint8_t current) {
+  int8_t delta = static_cast<int8_t>(current) - static_cast<int8_t>(previous);
+  const int8_t ringCount = static_cast<int8_t>(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+  const int8_t halfRing = ringCount / 2;
+  if (delta > halfRing) {
+    delta -= ringCount;
+  } else if (delta < -halfRing) {
+    delta += ringCount;
+  }
+  return delta;
+}
+
+bool updateGuruguruDizzySpinDetection(unsigned long now, uint8_t direction, bool useGameRules) {
+  if (direction >= STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+    resetGuruguruDizzySpinDetection(true);
+    return false;
+  }
+  if (now < guruguruDizzyCooldownUntilMs) {
+    guruguruDizzyLastDirection = static_cast<int8_t>(direction);
+    resetGuruguruDizzySpinDetection(false);
+    return false;
+  }
+  if (faceController.guruguruDizzyAnimationActive()) {
+    resetGuruguruDizzySpinDetection(true);
+    return false;
+  }
+  if (guruguruDizzyLastDirection < 0) {
+    guruguruDizzyLastDirection = static_cast<int8_t>(direction);
+    guruguruDizzyWindowStartMs = now;
+    return false;
+  }
+
+  const int8_t delta = guruguruCircularDirectionDelta(
+    static_cast<uint8_t>(guruguruDizzyLastDirection),
+    direction
+  );
+  guruguruDizzyLastDirection = static_cast<int8_t>(direction);
+  if (delta == 0) {
+    return false;
+  }
+
+  if (guruguruDizzyWindowStartMs == 0 || now - guruguruDizzyWindowStartMs > GURUGURU_DIZZY_WINDOW_MS) {
+    guruguruDizzyWindowStartMs = now;
+    guruguruDizzyTotalSteps = 0;
+    guruguruDizzySignedSteps = 0;
+  }
+
+  guruguruDizzyTotalSteps += abs(delta);
+  guruguruDizzySignedSteps += delta;
+
+  if (guruguruDizzyTotalSteps >= GURUGURU_DIZZY_TOTAL_STEPS &&
+      abs(guruguruDizzySignedSteps) >= GURUGURU_DIZZY_BIAS_STEPS) {
+    const uint16_t triggeredTotalSteps = guruguruDizzyTotalSteps;
+    const int16_t triggeredSignedSteps = guruguruDizzySignedSteps;
+    const bool reverse = guruguruDizzySignedSteps < 0;
+    if (faceController.startGuruguruDizzyAnimation(reverse, now)) {
+      applyGuruguruAffectionDelta(GURUGURU_DIZZY_AFFECTION_DELTA, now, "dizzy");
+      guruguruDizzyCooldownUntilMs = now + GURUGURU_DIZZY_COOLDOWN_MS;
+      resetGuruguruAffectionTracking();
+      resetGuruguruImuDizzyShakeDetection();
+      resetGuruguruDizzySpinDetection(true);
+      Serial.printf("[guruguru] dizzy triggered total=%u signed=%d reverse=%d\n",
+                    static_cast<unsigned>(triggeredTotalSteps),
+                    static_cast<int>(triggeredSignedSteps),
+                    reverse ? 1 : 0);
+      return true;
+    }
+    guruguruDizzyCooldownUntilMs = now + GURUGURU_DIZZY_COOLDOWN_MS;
+    resetGuruguruDizzySpinDetection(true);
+    resetGuruguruAffectionTracking();
+  }
+
+  recordGuruguruAffectionMovement(static_cast<uint8_t>(abs(delta)), now, useGameRules);
+  return false;
+}
+
+void updateGuruguruImuStepTracking(unsigned long now, uint8_t direction) {
+  if (direction >= STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+    resetGuruguruDizzySpinDetection(true);
+    return;
+  }
+  if (faceController.guruguruDizzyAnimationActive()) {
+    resetGuruguruDizzySpinDetection(true);
+    return;
+  }
+  if (guruguruDizzyLastDirection < 0) {
+    guruguruDizzyLastDirection = static_cast<int8_t>(direction);
+    guruguruDizzyWindowStartMs = now;
+    return;
+  }
+
+  const int8_t delta = guruguruCircularDirectionDelta(
+    static_cast<uint8_t>(guruguruDizzyLastDirection),
+    direction
+  );
+  guruguruDizzyLastDirection = static_cast<int8_t>(direction);
+  if (delta == 0) {
+    return;
+  }
+
+  if (guruguruDizzyWindowStartMs == 0 || now - guruguruDizzyWindowStartMs > GURUGURU_DIZZY_WINDOW_MS) {
+    guruguruDizzyWindowStartMs = now;
+    guruguruDizzyTotalSteps = 0;
+    guruguruDizzySignedSteps = 0;
+  }
+  guruguruDizzyTotalSteps += abs(delta);
+  guruguruDizzySignedSteps += delta;
+  recordGuruguruAffectionMovement(static_cast<uint8_t>(abs(delta)), now, false);
+}
+
+bool updateGuruguruImuDizzyShakeDetection(unsigned long now, float sampleDelta) {
+  if (now < guruguruDizzyCooldownUntilMs || faceController.guruguruDizzyAnimationActive()) {
+    resetGuruguruImuDizzyShakeDetection();
+    return false;
+  }
+
+  if (sampleDelta >= GURUGURU_IMU_DIZZY_SHAKE_THRESHOLD_G) {
+    if (guruguruImuDizzyShakeStartMs == 0 ||
+        now - guruguruImuDizzyShakeLastActiveMs > GURUGURU_IMU_DIZZY_SHAKE_GRACE_MS) {
+      guruguruImuDizzyShakeStartMs = now;
+    }
+    guruguruImuDizzyShakeLastActiveMs = now;
+
+    if (now - guruguruImuDizzyShakeStartMs >= GURUGURU_IMU_DIZZY_SHAKE_MS) {
+      const bool reverse = guruguruDizzySignedSteps < 0;
+      if (faceController.startGuruguruDizzyAnimation(reverse, now)) {
+        applyGuruguruAffectionDelta(GURUGURU_DIZZY_AFFECTION_DELTA, now, "imu_shake_dizzy");
+        guruguruDizzyCooldownUntilMs = now + GURUGURU_DIZZY_COOLDOWN_MS;
+        resetGuruguruAffectionTracking();
+        resetGuruguruDizzySpinDetection(true);
+        resetGuruguruImuDizzyShakeDetection();
+        Serial.printf("[guruguru] imu shake dizzy sample=%.3f reverse=%d\n",
+                      sampleDelta,
+                      reverse ? 1 : 0);
+        return true;
+      }
+      guruguruDizzyCooldownUntilMs = now + GURUGURU_DIZZY_COOLDOWN_MS;
+      resetGuruguruDizzySpinDetection(true);
+      resetGuruguruImuDizzyShakeDetection();
+    }
+    return false;
+  }
+
+  if (guruguruImuDizzyShakeLastActiveMs != 0 &&
+      now - guruguruImuDizzyShakeLastActiveMs > GURUGURU_IMU_DIZZY_SHAKE_GRACE_MS) {
+    resetGuruguruImuDizzyShakeDetection();
+  }
+  return false;
+}
+#endif
+
+uint8_t guruguruDirectionFromImuDelta(float dx, float dy) {
+#if STACKCHAN_DEVICE_STOPWATCH
+  const float deadzone = GURUGURU_IMU_STOPWATCH_DEADZONE_G;
+#else
+  const float deadzone = GURUGURU_IMU_DEADZONE_G;
+#endif
+  if (dx * dx + dy * dy < deadzone * deadzone) {
+    return STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  }
+
+  const float angle = atan2f(dy, dx) * 180.0f / PI;
+  const float normalizedAngle = angle < 0.0f ? angle + 360.0f : angle;
+#if STACKCHAN_DEVICE_STOPWATCH
+  return static_cast<uint8_t>(static_cast<int>((normalizedAngle + 22.5f) / 45.0f) & 0x07);
+#else
+  return static_cast<uint8_t>(static_cast<int>((normalizedAngle + 11.25f) / 22.5f) & 0x0F);
+#endif
+}
+
+bool updateGuruguruFaceImu(unsigned long now, const m5::imu_data_t& data, bool imuUpdated) {
+  updateGuruguruFaceAvailability(now);
+  if (!guruguruFaceEffective || !guruguruFaceUsesImu()) {
+    return false;
+  }
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (faceController.guruguruDizzyAnimationActive()) {
+    return true;
+  }
+#endif
+
+  if (!imuUpdated || now < nextGuruguruImuUpdateMs) {
+    return true;
+  }
+  nextGuruguruImuUpdateMs = now + GURUGURU_IMU_UPDATE_INTERVAL_MS;
+
+  float x;
+  float y;
+  float z;
+  if (!normalizeGuruguruImuAccel(data, x, y, z)) {
+    return true;
+  }
+
+  if (!guruguruImuBaseReady || !guruguruImuFilterReady) {
+    resetGuruguruImuBase(data);
+    return true;
+  }
+
+  const float sampleDelta = sqrtf((x - guruguruImuFilterX) * (x - guruguruImuFilterX) +
+                                  (y - guruguruImuFilterY) * (y - guruguruImuFilterY) +
+                                  (z - guruguruImuFilterZ) * (z - guruguruImuFilterZ));
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (updateGuruguruImuDizzyShakeDetection(now, sampleDelta)) {
+    return true;
+  }
+#endif
+  if (sampleDelta > GURUGURU_IMU_MAX_SAMPLE_DELTA_G) {
+    return true;
+  }
+
+  guruguruImuFilterX += (x - guruguruImuFilterX) * GURUGURU_IMU_EMA_ALPHA;
+  guruguruImuFilterY += (y - guruguruImuFilterY) * GURUGURU_IMU_EMA_ALPHA;
+  guruguruImuFilterZ += (z - guruguruImuFilterZ) * GURUGURU_IMU_EMA_ALPHA;
+
+#if STACKCHAN_DEVICE_STOPWATCH
+  const float dX = guruguruImuFilterX - guruguruImuBaseX;
+  const float dY = guruguruImuFilterY - guruguruImuBaseY;
+  const float dZ = guruguruImuFilterZ - guruguruImuBaseZ;
+  const float dx = 0.36f * dX - 1.50f * dY - 0.20f * dZ;
+  const float dy = -0.96f * dX - 0.13f * dY - 0.64f * dZ;
+#elif STACKCHAN_DEVICE_CORES3
+  const float dx = -(guruguruImuFilterX - guruguruImuBaseX);
+  const float dy = -(guruguruImuFilterZ - guruguruImuBaseZ) * GURUGURU_IMU_VERTICAL_GAIN;
+#else
+  const float dx = -(guruguruImuFilterX - guruguruImuBaseX);
+  const float dy = -(guruguruImuFilterZ - guruguruImuBaseZ) * GURUGURU_IMU_VERTICAL_GAIN;
+#endif
+  const uint8_t direction = guruguruDirectionFromImuDelta(dx, dy);
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (updateGuruguruDizzySpinDetection(now, direction, false)) {
+    return true;
+  }
+#endif
+
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_CORES3
+  if (now - lastGuruguruImuDebugMs >= 500) {
+    lastGuruguruImuDebugMs = now;
+    Serial.printf("[guruguru] imu x=%.2f y=%.2f z=%.2f dx=%.2f dy=%.2f dir=%u\n",
+                  x,
+                  y,
+                  z,
+                  dx,
+                  dy,
+                  static_cast<unsigned>(direction));
+  }
+#endif
+
+  if (direction != guruguruImuCandidateDirection) {
+    guruguruImuCandidateDirection = direction;
+    guruguruImuCandidateSamples = 1;
+    return true;
+  }
+
+  if (guruguruImuCandidateSamples < GURUGURU_IMU_DIRECTION_STABLE_SAMPLES) {
+    ++guruguruImuCandidateSamples;
+  }
+  if (guruguruImuCandidateSamples >= GURUGURU_IMU_DIRECTION_STABLE_SAMPLES) {
+    faceController.setGuruguruFaceDirection(direction);
+  }
+  return true;
+}
+#endif
+#endif
 
 void updateTouch(unsigned long now) {
 #if STACKCHAN_SMALL_DISPLAY
@@ -5933,6 +6952,12 @@ void updateTouch(unsigned long now) {
   if (!displayOn) {
     return;
   }
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (updateGuruguruFaceTouch(now, touch)) {
+    return;
+  }
+#endif
 
   updateScreenPetting(now, touch);
 
@@ -5975,10 +7000,12 @@ void updateTouch(unsigned long now) {
   }
 #endif
 
+#if !STACKCHAN_DEVICE_STOPWATCH
   if (isSettingsSwipe(touch)) {
     setInfoScreenVisible(!infoScreenVisible);
     return;
   }
+#endif
 }
 
 void updateButtons(unsigned long now) {
@@ -6001,6 +7028,13 @@ void updateButtons(unsigned long now) {
   }
   if (M5.BtnA.wasHold()) {
     Serial.println("[button] hold");
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT && STACKCHAN_GURUGURU_FACE_ENABLED
+    if (guruguruFaceMode && !infoScreenVisible) {
+      smallDisplayFacePettingHold = false;
+      resetGuruguruImuBase();
+      return;
+    }
+#endif
     handleSmallDisplayPageHold();
     return;
   }
@@ -6008,71 +7042,198 @@ void updateButtons(unsigned long now) {
     if (M5.BtnA.isHolding()) {
       setPettingActive(true, now, PET_BUTTON_RELEASE_LINGER_MS);
       return;
-    }
-    if (M5.BtnA.wasReleasedAfterHold() || M5.BtnA.isReleased()) {
-      extendPettingReleaseLinger(now, PET_BUTTON_RELEASE_LINGER_MS);
-      smallDisplayFacePettingHold = false;
-      return;
-    }
+	    }
+	    if (M5.BtnA.wasReleasedAfterHold() || M5.BtnA.isReleased()) {
+	      smallDisplayFacePettingHold = false;
+	      setPettingActive(false, now);
+	      return;
+	    }
   }
-  if (M5.BtnA.wasDoubleClicked()) {
-    Serial.println("[button] double");
-    if (infoScreenVisible && settingsPage == SettingsPage::Network) {
-      if (activeNetworkQr != NetworkQrType::None) {
-        activeNetworkQr = NetworkQrType::None;
-      } else {
-        activeNetworkQr = NetworkQrType::Setup;
+  if (M5.BtnA.wasDecideClickCount()) {
+    const uint8_t clickCount = M5.BtnA.getClickCount();
+    Serial.printf("[button] click_count=%u\n", clickCount);
+
+    if (clickCount == 1) {
+      if (infoScreenVisible && settingsPage == SettingsPage::Audio && smallVolumeAdjustMode) {
+        adjustSmallDisplayVolume(SETTINGS_STEP_VALUE);
+        return;
       }
-      if (displayOn) {
-        drawInfoScreen();
+      advanceSmallDisplayPage();
+      return;
+    }
+
+    if (clickCount == 2) {
+      if (infoScreenVisible && settingsPage == SettingsPage::Network) {
+        if (activeNetworkQr != NetworkQrType::None) {
+          activeNetworkQr = NetworkQrType::None;
+        } else {
+          activeNetworkQr = NetworkQrType::Setup;
+        }
+        if (displayOn) {
+          drawInfoScreen();
+        }
+        return;
       }
-      return;
-    }
-    if (infoScreenVisible && settingsPage == SettingsPage::Audio) {
-      smallVolumeAdjustMode = !smallVolumeAdjustMode;
-      smallVolumeHoldRepeatMs = 0;
-      if (displayOn) {
-        drawInfoScreen();
+      if (infoScreenVisible && settingsPage == SettingsPage::Audio) {
+        smallVolumeAdjustMode = !smallVolumeAdjustMode;
+        smallVolumeHoldRepeatMs = 0;
+        if (displayOn) {
+          drawInfoScreen();
+        }
+        return;
       }
-      return;
-    }
-    if (infoScreenVisible && settingsPage == SettingsPage::StreetPass) {
-      smallStreetPassView = (smallStreetPassView + 1) % kSmallStreetPassViewCount;
-      if (displayOn) {
-        drawInfoScreen();
+      if (infoScreenVisible && settingsPage == SettingsPage::StreetPass) {
+        smallStreetPassView = (smallStreetPassView + 1) % kSmallStreetPassViewCount;
+        if (displayOn) {
+          drawInfoScreen();
+        }
+        return;
       }
+      if (infoScreenVisible) {
+        return;
+      }
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT && STACKCHAN_GURUGURU_FACE_ENABLED
+      if (guruguruFaceMode) {
+        return;
+      }
+#endif
+      audioController.setMicMuted(!audioController.micMuted());
+      updateMicStatusOverlay();
       return;
     }
-    if (infoScreenVisible) {
+
+    if (clickCount == 3) {
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT && STACKCHAN_GURUGURU_FACE_ENABLED
+      if (!infoScreenVisible) {
+        setGuruguruFaceMode(!guruguruFaceMode, now);
+      }
+#endif
       return;
     }
-    audioController.setMicMuted(!audioController.micMuted());
-    updateMicStatusOverlay();
-    return;
-  }
-  if (M5.BtnA.wasSingleClicked()) {
-    Serial.println("[button] single");
-    if (infoScreenVisible && settingsPage == SettingsPage::Audio && smallVolumeAdjustMode) {
-      adjustSmallDisplayVolume(SETTINGS_STEP_VALUE);
-      return;
-    }
-    advanceSmallDisplayPage();
-    return;
   }
 #else
 #if STACKCHAN_DEVICE_STOPWATCH
-  if (M5.BtnA.wasClicked()) {
-    setInfoScreenVisible(!infoScreenVisible);
+  if (M5.BtnA.wasDoubleClicked()) {
+    setGuruguruFaceMode(!guruguruFaceMode, now);
+    return;
   }
-  if (M5.BtnB.wasClicked()) {
-    setDisplayOn(!displayOn);
+  if (M5.BtnA.wasSingleClicked()) {
+    setInfoScreenVisible(!infoScreenVisible);
+    return;
+  }
+  if (M5.BtnB.wasHold()) {
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+    if (guruguruFaceMode && !infoScreenVisible) {
+      resetGuruguruImuBase();
+      return;
+    }
+#endif
+  }
+  if (M5.BtnB.wasDecideClickCount()) {
+    const uint8_t clickCount = M5.BtnB.getClickCount();
+    Serial.printf("[button] key_b_click_count=%u\n", clickCount);
+    if (clickCount == 1) {
+      setDisplayOn(!displayOn);
+      return;
+    }
+    if (clickCount == 2) {
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+      if (guruguruFaceMode && !infoScreenVisible) {
+        toggleGuruguruFaceInput();
+      }
+#endif
+      return;
+    }
+    return;
   }
 #endif
+#if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+  if (M5.BtnPWR.wasDecideClickCount()) {
+    const uint8_t clickCount = M5.BtnPWR.getClickCount();
+    Serial.printf("[button] pwr_click_count=%u\n", clickCount);
+    if (clickCount == 1) {
+      setDisplayOn(!displayOn);
+      return;
+    }
+    if (clickCount == 2) {
+      setGuruguruFaceMode(!guruguruFaceMode, now);
+      return;
+    }
+    if (clickCount >= 3) {
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+      if (guruguruFaceMode && !infoScreenVisible) {
+        toggleGuruguruFaceInput();
+      }
+#endif
+      return;
+    }
+    return;
+  }
+#else
   if (M5.BtnPWR.wasClicked()) {
     setDisplayOn(!displayOn);
   }
 #endif
+#endif
 }
+
+#if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+void resetBackTouchGuruguruGesture() {
+  backTouchGuruguruPressed = false;
+  backTouchGuruguruHoldFired = false;
+  backTouchGuruguruPressSinceMs = 0;
+  backTouchGuruguruFirstTapMs = 0;
+}
+
+bool handleGuruguruBackTouch(unsigned long now, bool backTouchDetected) {
+#if STACKCHAN_GURUGURU_IMU_ENABLED
+  if (!guruguruFaceMode || infoScreenVisible) {
+    resetBackTouchGuruguruGesture();
+    return false;
+  }
+
+  if (pettingActive) {
+    setPettingActive(false, now);
+  }
+
+  if (backTouchDetected) {
+    if (!backTouchGuruguruPressed) {
+      backTouchGuruguruPressed = true;
+      backTouchGuruguruHoldFired = false;
+      backTouchGuruguruPressSinceMs = now;
+    }
+    return true;
+  }
+
+  if (backTouchGuruguruPressed) {
+    const unsigned long pressDurationMs = now - backTouchGuruguruPressSinceMs;
+    backTouchGuruguruPressed = false;
+
+    if (!backTouchGuruguruHoldFired &&
+        pressDurationMs >= BACK_TOUCH_GURUGURU_TAP_MIN_MS &&
+        pressDurationMs <= BACK_TOUCH_GURUGURU_TAP_MAX_MS) {
+      if (backTouchGuruguruFirstTapMs != 0 &&
+          now - backTouchGuruguruFirstTapMs <= BACK_TOUCH_GURUGURU_DOUBLE_TAP_MS) {
+        backTouchGuruguruFirstTapMs = 0;
+      } else {
+        backTouchGuruguruFirstTapMs = now;
+      }
+    }
+    return true;
+  }
+
+  if (backTouchGuruguruFirstTapMs != 0 &&
+      now - backTouchGuruguruFirstTapMs > BACK_TOUCH_GURUGURU_DOUBLE_TAP_MS) {
+    backTouchGuruguruFirstTapMs = 0;
+  }
+  return true;
+#else
+  (void)now;
+  (void)backTouchDetected;
+  return false;
+#endif
+}
+#endif
 
 void updateBackTouch(unsigned long now) {
 #if STACKCHAN_HAS_BACK_TOUCH
@@ -6082,10 +7243,16 @@ void updateBackTouch(unsigned long now) {
     backTouchReleasedSinceMs = 0;
     backTouchCandidateSinceMs = 0;
     backTouchClearSinceMs = 0;
+#if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+    resetBackTouchGuruguruGesture();
+#endif
     return;
   }
 
   if (infoScreenVisible) {
+#if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+    resetBackTouchGuruguruGesture();
+#endif
     return;
   }
 
@@ -6113,6 +7280,14 @@ void updateBackTouch(unsigned long now) {
     Serial.println("[touch] back touch ready");
     return;
   }
+
+#if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+  if (handleGuruguruBackTouch(now, backTouchDetected)) {
+    backTouchCandidateSinceMs = 0;
+    backTouchClearSinceMs = 0;
+    return;
+  }
+#endif
 
   if (backTouchDetected) {
     backTouchClearSinceMs = 0;
@@ -6188,6 +7363,7 @@ void setup() {
                 static_cast<unsigned long>(millis()));
 
   randomSeed(esp_random());
+  ensureDeviceId();
   networkMode = loadNetworkMode();
   loadWifiCredentials();
   loadDeviceSettings();
@@ -6251,6 +7427,9 @@ void loop() {
   updateThermalStatus(now);
   updateMicStatusOverlay();
   updateTouch(now);
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  updateGuruguruFaceAvailability(now);
+#endif
   updateBackTouch(now);
   updateShake(now);
   updateHaptic(now);
@@ -6345,7 +7524,15 @@ void loop() {
 #endif
   if (displayOn) {
     const bool speaking = currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
-    if (speaking || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
+    bool guruguruDizzyAnimating = false;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+    guruguruDizzyAnimating = faceController.guruguruDizzyAnimationActive();
+#endif
+    bool petFaceAnimating = false;
+#if STACKCHAN_PET_ANIMATION_ENABLED
+    petFaceAnimating = faceController.petAnimationActive();
+#endif
+    if (speaking || guruguruDizzyAnimating || petFaceAnimating || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
       lastFaceUpdateMs = now;
       faceController.update(now);
       drawLowPowerPrompt();

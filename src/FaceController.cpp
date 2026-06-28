@@ -9,6 +9,9 @@ void FaceController::begin() {
   if (!canvasReady_) {
     Serial.println("[face] failed to allocate canvas; direct drawing fallback enabled");
   }
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  preparePetAnimationCache();
+#endif
   prepareTalkCache();
 
   scheduleBlink(millis());
@@ -38,6 +41,12 @@ void FaceController::setState(ChanState state) {
   lipOpen_ = false;
   blinking_ = false;
   smiling_ = false;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  stopGuruguruDizzyAnimation(false);
+#endif
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  stopPetAnimation(false);
+#endif
   lastLipSyncMs_ = millis();
   scheduleBlink(lastLipSyncMs_);
   scheduleSmile(lastLipSyncMs_);
@@ -249,6 +258,9 @@ void FaceController::setPhotoMasterFaceMode(bool enabled) {
 }
 
 void FaceController::setPetFaceMode(bool enabled) {
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  setPetFaceMode(enabled, millis(), false, false);
+#else
   if (petFaceMode_ == enabled) {
     return;
   }
@@ -270,7 +282,82 @@ void FaceController::setPetFaceMode(bool enabled) {
     currentPath_ = "";
     showBaseFace();
   }
+#endif
 }
+
+#if STACKCHAN_PET_ANIMATION_ENABLED
+void FaceController::setPetFaceMode(bool enabled, unsigned long now, bool animate, bool longPetting) {
+  const bool wasPetFaceMode = petFaceMode_;
+  if (petFaceMode_ == enabled) {
+    if (!enabled && petAnimationActive()) {
+      if (animate) {
+        finishPetAnimation(now, longPetting);
+      } else {
+        stopPetAnimation(true);
+      }
+    }
+    return;
+  }
+
+#if FACE_DIAG_LOG_ENABLED
+  logSpeakingInterference("setPet", enabled ? 1 : 0);
+#endif
+  petFaceMode_ = enabled;
+  const bool useAnimationPath = (enabled && animate) ||
+                                (!enabled && animate && wasPetFaceMode && petAnimationActive());
+#if STACKCHAN_ROUND_DISPLAY
+  if (!useAnimationPath) {
+    prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+  }
+#endif
+  lipOpen_ = false;
+  blinking_ = false;
+  smiling_ = false;
+  lastLipSyncMs_ = now;
+  scheduleBlink(lastLipSyncMs_);
+
+  if (enabled) {
+    if (animate && startPetAnimation(now)) {
+      return;
+    }
+    stopPetAnimation(false);
+  } else if (animate && wasPetFaceMode && petAnimationActive()) {
+    finishPetAnimation(now, longPetting);
+    return;
+  } else {
+    stopPetAnimation(false);
+  }
+
+  if (enabled_) {
+    currentPath_ = "";
+    showBaseFace();
+  }
+}
+
+bool FaceController::petAnimationActive() const {
+  return petAnimationPhase_ != PetAnimationPhase::None;
+}
+
+void FaceController::setPetAnimationTouchFrame(uint8_t frame, unsigned long now) {
+  frame = constrain(frame, static_cast<uint8_t>(2), static_cast<uint8_t>(4));
+  if (petAnimationTouchFrame_ == frame) {
+    return;
+  }
+
+  petAnimationTouchFrame_ = frame;
+  if (petAnimationPhase_ != PetAnimationPhase::Loop || !enabled_) {
+    return;
+  }
+
+  if (!drawPetAnimationFrame(petAnimationTouchFrame_)) {
+    Serial.printf("[face] pet animation touch draw failed frame=%u\n",
+                  static_cast<unsigned>(petAnimationTouchFrame_));
+    stopPetAnimation(true);
+    return;
+  }
+  nextPetAnimationFrameMs_ = now + PET_ANIMATION_LOOP_INTERVAL_MS;
+}
+#endif
 
 void FaceController::setShakeFaceMode(bool enabled) {
   if (shakeFaceMode_ == enabled) {
@@ -296,6 +383,377 @@ void FaceController::setShakeFaceMode(bool enabled) {
   }
 }
 
+void FaceController::setGuruguruFaceMode(bool enabled) {
+  if (guruguruFaceMode_ == enabled) {
+    return;
+  }
+
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  if (enabled) {
+#if STACKCHAN_DEVICE_CORES3
+    releaseTalkCache();
+#endif
+    releasePetAnimationCache();
+    prepareGuruguruFaceCache();
+    releaseGuruguruBlinkCache();
+    prepareGuruguruBlinkCache(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+    if (!preloadGuruguruDizzyPlaybackRange(false,
+                                           0,
+                                           GURUGURU_DIZZY_FRAME_COUNT,
+                                           kGuruguruDizzyCanvasSlots)) {
+      releaseGuruguruBlinkCache();
+      preloadGuruguruDizzyPlaybackRange(false,
+                                        0,
+                                        GURUGURU_DIZZY_FRAME_COUNT,
+                                        kGuruguruDizzyCanvasSlots);
+      if (prepareGuruguruBlinkCache(STACKCHAN_GURUGURU_FACE_CENTER_INDEX) < 0) {
+        releaseGuruguruDizzySourceRange(13, 15);
+        prepareGuruguruBlinkCache(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+      }
+    }
+  } else {
+    releaseGuruguruFaceCache();
+#if STACKCHAN_DEVICE_CORES3
+    prepareTalkCache();
+#endif
+    preparePetAnimationCache();
+  }
+#endif
+
+  guruguruFaceMode_ = enabled;
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  stopGuruguruDizzyAnimation(false);
+#endif
+  if (enabled) {
+    guruguruFaceDirection_ = STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  }
+  lipOpen_ = false;
+  blinking_ = false;
+  smiling_ = false;
+  lastLipSyncMs_ = millis();
+  scheduleBlink(lastLipSyncMs_);
+  scheduleSmile(lastLipSyncMs_);
+
+  if (enabled_ && state_ == ChanState::Idle) {
+    currentPath_ = "";
+    showBaseFace();
+  }
+}
+
+void FaceController::setGuruguruFaceDirection(uint8_t direction) {
+  direction = constrain(direction,
+                        static_cast<uint8_t>(0),
+                        static_cast<uint8_t>(STACKCHAN_GURUGURU_FACE_COUNT - 1));
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (guruguruDizzyAnimating_) {
+    return;
+  }
+#endif
+  if (guruguruFaceDirection_ == direction) {
+    return;
+  }
+
+  guruguruFaceDirection_ = direction;
+  if (!enabled_ || !guruguruFaceMode_ || state_ != ChanState::Idle) {
+    return;
+  }
+
+  currentPath_ = "";
+  if (blinking_) {
+    drawFace(blinkFacePath());
+  } else {
+    showBaseFace();
+  }
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  if (direction == STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+    prepareGuruguruBlinkCache(direction);
+  }
+#endif
+}
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+bool FaceController::startGuruguruDizzyAnimation(bool reverse, unsigned long now) {
+  if (!enabled_ || !guruguruFaceMode_ || state_ != ChanState::Idle) {
+    return false;
+  }
+
+  const String firstFramePath = guruguruDizzyFramePath(reverse, 0);
+  if (firstFramePath.isEmpty()) {
+    Serial.printf("[guruguru] dizzy animation missing reverse=%d\n", reverse ? 1 : 0);
+    return false;
+  }
+
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  guruguruDizzyBlinkReleased_ = false;
+  if (!preloadGuruguruDizzyPlaybackRange(reverse,
+                                         0,
+                                         GURUGURU_DIZZY_FRAME_COUNT,
+                                         kGuruguruDizzyCanvasSlots)) {
+    releaseGuruguruBlinkCache();
+    guruguruDizzyBlinkReleased_ = true;
+    if (!preloadGuruguruDizzyPlaybackRange(reverse,
+                                           0,
+                                           GURUGURU_DIZZY_FRAME_COUNT,
+                                           kGuruguruDizzyCanvasSlots)) {
+    Serial.printf("[guruguru] dizzy full preload with dir cache failed reverse=%d freePsram=%u\n",
+                  reverse ? 1 : 0,
+                  static_cast<unsigned>(ESP.getFreePsram()));
+    releaseGuruguruDizzyJpegCache();
+    releaseGuruguruDirCache();
+    if (!preloadGuruguruDizzyPlaybackRange(reverse,
+                                           0,
+                                           GURUGURU_DIZZY_FRAME_COUNT,
+                                           kGuruguruDizzyCanvasSlots)) {
+      Serial.printf("[guruguru] dizzy full preload failed reverse=%d freePsram=%u\n",
+                    reverse ? 1 : 0,
+                    static_cast<unsigned>(ESP.getFreePsram()));
+      releaseGuruguruDizzyJpegCache();
+      prepareGuruguruFaceCache();
+      return false;
+    }
+    prepareGuruguruFaceCache();
+    }
+  }
+  guruguruDizzySpinReleased_ = false;
+  guruguruDizzyKeepSpinCacheOnStop_ = false;
+#endif
+
+  guruguruDizzyAnimating_ = true;
+  guruguruDizzyReverse_ = reverse;
+  guruguruDizzyFrame_ = 0;
+  guruguruDizzyStartedMs_ = now;
+  nextGuruguruDizzyFrameMs_ = now;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  Serial.printf("[guruguru] dizzy animation start reverse=%d\n", reverse ? 1 : 0);
+  return true;
+}
+
+bool FaceController::guruguruDizzyAnimationActive() const {
+  return guruguruDizzyAnimating_;
+}
+
+void FaceController::stopGuruguruDizzyAnimation(bool restoreFace) {
+  if (!guruguruDizzyAnimating_) {
+    return;
+  }
+  guruguruDizzyAnimating_ = false;
+  guruguruDizzyFrame_ = 0;
+  guruguruDizzyStartedMs_ = 0;
+  nextGuruguruDizzyFrameMs_ = 0;
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  const bool keepDizzyCache = guruguruDizzyKeepSpinCacheOnStop_ &&
+                              enabled_ &&
+                              guruguruFaceMode_ &&
+                              state_ == ChanState::Idle;
+  if (!keepDizzyCache) {
+    releaseGuruguruDizzyJpegCache();
+  }
+  guruguruDizzyBlinkReleased_ = false;
+  guruguruDizzySpinReleased_ = false;
+  guruguruDizzyKeepSpinCacheOnStop_ = false;
+  if (enabled_ && guruguruFaceMode_ && state_ == ChanState::Idle) {
+    prepareGuruguruFaceCache();
+    if (prepareGuruguruBlinkCache(STACKCHAN_GURUGURU_FACE_CENTER_INDEX) < 0) {
+      releaseGuruguruDizzySourceRange(13, 15);
+      prepareGuruguruBlinkCache(STACKCHAN_GURUGURU_FACE_CENTER_INDEX);
+    }
+  }
+#endif
+  if (restoreFace && enabled_ && state_ == ChanState::Idle) {
+    guruguruFaceDirection_ = STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+    currentPath_ = "";
+    showBaseFace();
+  }
+}
+
+void FaceController::drawGuruguruDizzyFrame(unsigned long now) {
+  if (!guruguruFaceMode_ || state_ != ChanState::Idle) {
+    stopGuruguruDizzyAnimation(true);
+    return;
+  }
+
+  if (now < nextGuruguruDizzyFrameMs_) {
+    return;
+  }
+
+  const uint8_t frame = guruguruDizzyFrame_;
+
+  if (frame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    stopGuruguruDizzyAnimation(true);
+    Serial.println("[guruguru] dizzy animation end");
+    return;
+  }
+
+  const String framePath = guruguruDizzyFramePath(guruguruDizzyReverse_, frame);
+  const char* path = framePath.c_str();
+  if (framePath.isEmpty()) {
+    Serial.printf("[guruguru] dizzy frame missing reverse=%d frame=%u\n",
+                  guruguruDizzyReverse_ ? 1 : 0,
+                  static_cast<unsigned>(frame));
+    stopGuruguruDizzyAnimation(true);
+    return;
+  }
+
+  if (!drawGuruguruDizzyFrameDirect(path, frame)) {
+    Serial.printf("[guruguru] dizzy frame draw failed: %s\n", path);
+    stopGuruguruDizzyAnimation(true);
+    return;
+  }
+  guruguruDizzyFrame_ = frame + 1;
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  serviceGuruguruDizzyCache(frame);
+#endif
+  if (guruguruDizzyFrame_ >= GURUGURU_DIZZY_FRAME_COUNT) {
+    Serial.println("[guruguru] dizzy animation end");
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+    guruguruDizzyKeepSpinCacheOnStop_ = true;
+#endif
+    stopGuruguruDizzyAnimation(true);
+  } else {
+    nextGuruguruDizzyFrameMs_ = now + GURUGURU_DIZZY_FRAME_INTERVAL_MS;
+  }
+}
+
+bool FaceController::drawGuruguruDizzyFrameDirect(const char* path, uint8_t frame) {
+  const String imagePath = resolvedImagePath(path);
+  if (imagePath.isEmpty()) {
+    return false;
+  }
+
+#if STACKCHAN_ROUND_DISPLAY
+  const int32_t drawSize = faceImageDrawSize();
+  const int32_t baseX = (M5.Display.width() - drawSize) / 2;
+  const int32_t baseY = (M5.Display.height() - drawSize) / 2;
+  const float scale = faceImageScale();
+#else
+  const int32_t baseX = faceImageDrawX();
+  const int32_t baseY = faceImageDrawY();
+  const float scale = 1.0f;
+#endif
+
+  int32_t x = baseX;
+  int32_t y = baseY;
+#if STACKCHAN_ROUND_DISPLAY
+  int32_t scaledW = drawSize;
+  int32_t scaledH = drawSize;
+#else
+  int32_t scaledW = FACE_IMAGE_WIDTH;
+  int32_t scaledH = FACE_IMAGE_HEIGHT;
+#endif
+
+  M5.Display.startWrite();
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  const int16_t frameX = frame < GURUGURU_DIZZY_FRAME_COUNT ? guruguruDizzyFrameX_[frame] : 0;
+  const int16_t frameY = frame < GURUGURU_DIZZY_FRAME_COUNT ? guruguruDizzyFrameY_[frame] : 0;
+  const int16_t metaW = frame < GURUGURU_DIZZY_FRAME_COUNT ? guruguruDizzyFrameW_[frame] : 0;
+  const int16_t metaH = frame < GURUGURU_DIZZY_FRAME_COUNT ? guruguruDizzyFrameH_[frame] : 0;
+  const int16_t frameW = metaW > 0 ? metaW : FACE_IMAGE_WIDTH;
+  const int16_t frameH = metaH > 0 ? metaH : FACE_IMAGE_HEIGHT;
+  x = baseX + static_cast<int32_t>(frameX * scale + 0.5f);
+  y = baseY + static_cast<int32_t>(frameY * scale + 0.5f);
+  scaledW = max<int32_t>(1, static_cast<int32_t>(frameW * scale + 0.5f));
+  scaledH = max<int32_t>(1, static_cast<int32_t>(frameH * scale + 0.5f));
+  const uint8_t cacheIndex = guruguruDizzySourceFrame(guruguruDizzyReverse_, frame);
+  int8_t canvasSlot = findGuruguruDizzyCanvasSlot(cacheIndex);
+  if (canvasSlot < 0 && loadGuruguruDizzyCanvasFrame(guruguruDizzyReverse_, frame)) {
+    canvasSlot = findGuruguruDizzyCanvasSlot(cacheIndex);
+  }
+  if (canvasSlot >= 0) {
+    const int32_t canvasX = x + (scaledW - GURUGURU_DIZZY_CANVAS_SIZE) / 2;
+    const int32_t canvasY = y + (scaledH - GURUGURU_DIZZY_CANVAS_SIZE) / 2;
+    const unsigned long overlayNow = millis();
+    const void* buffer = guruguruDizzyCanvasCache_[canvasSlot].getBuffer();
+    if (canvasReady_ && buffer != nullptr) {
+      M5.Display.endWrite();
+      canvas_.fillScreen(TFT_BLACK);
+      canvas_.pushImage(canvasX,
+                        canvasY,
+                        GURUGURU_DIZZY_CANVAS_SIZE,
+                        GURUGURU_DIZZY_CANVAS_SIZE,
+                        static_cast<const uint16_t*>(buffer));
+      drawAffectionOverlayOnCanvas(overlayNow);
+      drawBatteryOverlayOnCanvas();
+      drawCameraOverlayOnCanvas();
+      drawMicOverlayOnCanvas();
+      canvas_.pushSprite(&M5.Display, 0, 0);
+    } else {
+#if STACKCHAN_ROUND_DISPLAY
+      M5.Display.fillRect(baseX, baseY, drawSize, drawSize, TFT_BLACK);
+#else
+      M5.Display.fillRect(baseX, baseY, FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT, TFT_BLACK);
+#endif
+      guruguruDizzyCanvasCache_[canvasSlot].pushSprite(&M5.Display, canvasX, canvasY);
+      M5.Display.endWrite();
+      drawAffectionOverlay(overlayNow);
+      drawBatteryOverlay();
+      drawCameraOverlay();
+      drawMicOverlay();
+    }
+    currentPath_ = path;
+    return true;
+  }
+#endif
+
+  File file = LittleFS.open(imagePath, "r");
+  if (!file) {
+    M5.Display.endWrite();
+    Serial.printf("[guruguru] dizzy frame open failed: %s\n", imagePath.c_str());
+    return false;
+  }
+#if STACKCHAN_ROUND_DISPLAY
+  M5.Display.fillRect(baseX, baseY, drawSize, drawSize, TFT_BLACK);
+#else
+  M5.Display.fillRect(baseX, baseY, FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT, TFT_BLACK);
+#endif
+#if STACKCHAN_ROUND_DISPLAY
+  const bool ok = isJpegPath(imagePath.c_str())
+                    ? M5.Display.drawJpg(&file,
+                                         x,
+                                         y,
+                                         scaledW,
+                                         scaledH,
+                                         0,
+                                         0,
+                                         scale,
+                                         scale,
+                                         datum_t::top_left)
+                    : M5.Display.drawPng(&file,
+                                         x,
+                                         y,
+                                         scaledW,
+                                         scaledH,
+                                         0,
+                                         0,
+                                         scale,
+                                         scale,
+                                         datum_t::top_left);
+#else
+  const bool ok = isJpegPath(imagePath.c_str()) ? M5.Display.drawJpg(&file, x, y)
+                                                : M5.Display.drawPng(&file, x, y);
+#endif
+  M5.Display.endWrite();
+  file.close();
+  if (ok) {
+    const unsigned long overlayNow = millis();
+    drawAffectionOverlay(overlayNow);
+    drawBatteryOverlay();
+    drawCameraOverlay();
+    drawMicOverlay();
+  }
+  currentPath_ = path;
+  return ok;
+}
+
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+bool FaceController::preloadGuruguruDizzyAnimation(bool reverse, uint8_t maxFrames) {
+  releaseGuruguruBlinkCache();
+  return preloadGuruguruDizzyJpegCache(reverse, maxFrames);
+}
+#endif
+#endif
+
 void FaceController::setAuthFaceMode(AuthFaceMode mode) {
   if (authFaceMode_ == mode) {
     return;
@@ -318,7 +776,12 @@ void FaceController::setAuthFaceMode(AuthFaceMode mode) {
   lastLipSyncMs_ = millis();
   scheduleBlink(lastLipSyncMs_);
 
-  if (enabled_ && (state_ == ChanState::Listening || state_ == ChanState::Speaking)) {
+  if (enabled_ &&
+      (state_ == ChanState::Listening || state_ == ChanState::Speaking)
+#if STACKCHAN_PET_ANIMATION_ENABLED
+      && !petAnimationActive()
+#endif
+  ) {
     currentPath_ = "";
     showBaseFace();
   }
@@ -430,13 +893,24 @@ void FaceController::setAffectionState(const AffectionState& state) {
   const uint8_t newTier = visualTierIndex();
   affectionOverlayDirty_ = true;
   if (enabled_) {
-    if (oldTier != newTier && !photoFaceMode_ && !photoMasterFaceMode_ && authFaceMode_ == AuthFaceMode::Unknown) {
-#if STACKCHAN_ROUND_DISPLAY
-      prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+	    if (oldTier != newTier &&
+	        !photoFaceMode_ &&
+	        !photoMasterFaceMode_ &&
+	        !guruguruFaceMode_ &&
+	        authFaceMode_ == AuthFaceMode::Unknown
+#if STACKCHAN_PET_ANIMATION_ENABLED
+        && !petAnimationActive()
 #endif
-      currentPath_ = "";
-      showBaseFace();
-    }
+    ) {
+#if STACKCHAN_ROUND_DISPLAY
+	      prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
+#else
+	      releaseTalkCache();
+	      prepareTalkCache();
+#endif
+	      currentPath_ = "";
+	      showBaseFace();
+	    }
     drawAffectionOverlay(millis());
   }
 }
@@ -450,6 +924,19 @@ void FaceController::showAffectionDelta(int delta, unsigned long now) {
   affectionOverlayDirty_ = true;
   if (enabled_) {
     drawAffectionOverlay(now);
+  }
+}
+
+void FaceController::showGuruguruStep(uint8_t steps, uint8_t difficulty, unsigned long now) {
+  guruguruStep_ = steps;
+  guruguruStepDifficulty_ = difficulty;
+  if (affectionDeltaUntilMs_ == 0 || now + 1800 > affectionDeltaUntilMs_) {
+    affectionDeltaUntilMs_ = now + 1800;
+  }
+  batteryOverlayDirty_ = true;
+  clockOverlayDirty_ = true;
+  if (enabled_ && state_ == ChanState::Idle) {
+    drawBatteryOverlay();
   }
 }
 
@@ -491,7 +978,31 @@ void FaceController::update(unsigned long now) {
   lastSpeakingUpdateMs_ = 0;
 #endif
 
-  if (affectionOverlayDirty_ || batteryOverlayDirty_ || clockOverlayDirty_ || cameraOverlayDirty_ || micOverlayDirty_ || (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_)) {
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (guruguruDizzyAnimating_) {
+    drawGuruguruDizzyFrame(now);
+    return;
+  }
+#endif
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  if (petAnimationActive()) {
+    updatePetAnimation(now);
+    return;
+  }
+#endif
+
+  const bool affectionDeltaExpired = affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_;
+  if (affectionDeltaExpired && guruguruStep_ > 0) {
+    currentPath_ = "";
+    showBaseFace();
+    return;
+  }
+  if (affectionOverlayDirty_ ||
+      batteryOverlayDirty_ ||
+      clockOverlayDirty_ ||
+      cameraOverlayDirty_ ||
+      micOverlayDirty_ ||
+      affectionDeltaExpired) {
     drawAffectionOverlay(now);
     drawBatteryOverlay();
     drawCameraOverlay();
@@ -518,6 +1029,7 @@ void FaceController::update(unsigned long now) {
 
   if (!shakeFaceMode_ &&
       !petFaceMode_ &&
+      !guruguruFaceMode_ &&
       !photoFaceMode_ &&
       !photoMasterFaceMode_ &&
       thermalFaceMode_ == ThermalFaceMode::Normal &&
@@ -602,6 +1114,9 @@ const char* FaceController::listeningFacePath() const {
 }
 
 const char* FaceController::blinkFacePath() const {
+  if (guruguruFaceMode_ && state_ == ChanState::Idle) {
+    return guruguruFacePath(true);
+  }
   if (shakeFaceMode_) {
     return shakeFacePath(0);
   }
@@ -714,8 +1229,87 @@ const char* FaceController::shakeFacePath(uint8_t index) const {
   return index == 0 ? FACE_FURIFURI_0_PATH : FACE_FURIFURI_1_PATH;
 }
 
+const char* FaceController::guruguruFacePath(bool blink) const {
+  static const char* dirPaths[25] = {
+    "/dir0.png",
+    "/dir1.png",
+    "/dir2.png",
+    "/dir3.png",
+    "/dir4.png",
+    "/dir5.png",
+    "/dir6.png",
+    "/dir7.png",
+    "/dir8.png",
+    "/dir9.png",
+    "/dir10.png",
+    "/dir11.png",
+    "/dir12.png",
+    "/dir13.png",
+    "/dir14.png",
+    "/dir15.png",
+    "/dir16.png",
+    "/dir17.png",
+    "/dir18.png",
+    "/dir19.png",
+    "/dir20.png",
+    "/dir21.png",
+    "/dir22.png",
+    "/dir23.png",
+    "/dir24.png",
+  };
+  static const char* blinkPaths[25] = {
+    "/blink0.png",
+    "/blink1.png",
+    "/blink2.png",
+    "/blink3.png",
+    "/blink4.png",
+    "/blink5.png",
+    "/blink6.png",
+    "/blink7.png",
+    "/blink8.png",
+    "/blink9.png",
+    "/blink10.png",
+    "/blink11.png",
+    "/blink12.png",
+    "/blink13.png",
+    "/blink14.png",
+    "/blink15.png",
+    "/blink16.png",
+    "/blink17.png",
+    "/blink18.png",
+    "/blink19.png",
+    "/blink20.png",
+    "/blink21.png",
+    "/blink22.png",
+    "/blink23.png",
+    "/blink24.png",
+  };
+
+  const uint8_t direction = guruguruFaceDirection_ < STACKCHAN_GURUGURU_FACE_COUNT
+                                ? guruguruFaceDirection_
+                                : STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+  const uint8_t sourceIndex = guruguruFaceSourceIndex(direction);
+  const bool useBlink = blink &&
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+                        direction == STACKCHAN_GURUGURU_FACE_CENTER_INDEX;
+#else
+                        true;
+#endif
+  const char* preferred = useBlink ? blinkPaths[sourceIndex] : dirPaths[sourceIndex];
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  static char virtualPath[16];
+  snprintf(virtualPath,
+           sizeof(virtualPath),
+           useBlink ? "/blink%u.png" : "/dir%u.png",
+           static_cast<unsigned>(direction));
+  return virtualPath;
+#else
+  return fallbackFacePath(preferred, useBlink ? FACE_BLINK_PATH : FACE_IDLE_PATH);
+#endif
+}
+
 const char* FaceController::fallbackFacePath(const char* preferred, const char* fallback) const {
-  return LittleFS.exists(preferred) ? preferred : fallback;
+  return resolvedImagePath(preferred).isEmpty() ? fallback : preferred;
 }
 
 uint8_t FaceController::visualTierIndex() const {
@@ -752,7 +1346,7 @@ void FaceController::logSpeakingInterference(const char* source, int value) cons
 void FaceController::showBaseFace() {
   switch (state_) {
     case ChanState::Idle:
-      drawFace(shakeFaceMode_ ? shakeFacePath(0) : (petFaceMode_ ? petFacePath(0) : (photoMasterFaceMode_ ? FACE_PHOTO_MASTER_0_PATH : (photoFaceMode_ ? FACE_PHOTO_0_PATH : idleFacePath()))));
+      drawFace(guruguruFaceMode_ ? guruguruFacePath(false) : (shakeFaceMode_ ? shakeFacePath(0) : (petFaceMode_ ? petFacePath(0) : (photoMasterFaceMode_ ? FACE_PHOTO_MASTER_0_PATH : (photoFaceMode_ ? FACE_PHOTO_0_PATH : idleFacePath())))));
       break;
     case ChanState::Listening:
       drawFace(listeningFacePath());
@@ -763,7 +1357,7 @@ void FaceController::showBaseFace() {
   }
 }
 
-void FaceController::drawFace(const char* path) {
+void FaceController::drawFace(const char* path, bool drawOverlays) {
   if (currentPath_ == path) {
 #if FACE_DIAG_LOG_ENABLED
     if (state_ == ChanState::Speaking) {
@@ -789,10 +1383,17 @@ void FaceController::drawFace(const char* path) {
     currentPath_ = path;
     return;
   }
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  if (drawCachedGuruguruFace(path)) {
+    currentPath_ = path;
+    return;
+  }
+#endif
 
   currentPath_ = path;
 
-  if (!LittleFS.exists(path)) {
+  const String imagePath = resolvedImagePath(path);
+  if (imagePath.isEmpty()) {
     Serial.printf("[face] missing file: %s\n", path);
     M5.Display.setTextColor(TFT_RED, TFT_BLACK);
     M5.Display.setTextSize(2);
@@ -801,37 +1402,354 @@ void FaceController::drawFace(const char* path) {
     return;
   }
 
-  File file = LittleFS.open(path, "r");
+  File file = LittleFS.open(imagePath, "r");
   if (!file) {
-    Serial.printf("[face] failed to open: %s\n", path);
+    Serial.printf("[face] failed to open: %s\n", imagePath.c_str());
     return;
   }
 
   bool ok = false;
   if (canvasReady_) {
     canvas_.fillScreen(TFT_BLACK);
-    ok = drawFaceImageTarget(canvas_, file);
-    if (ok) {
+    ok = drawFaceImageTarget(canvas_, file, imagePath.c_str());
+    if (ok && drawOverlays) {
       drawAffectionOverlayOnCanvas(millis());
       drawBatteryOverlayOnCanvas();
       drawCameraOverlayOnCanvas();
       drawMicOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
+    } else if (ok) {
+      canvas_.pushSprite(&M5.Display, 0, 0);
     }
   } else {
     M5.Display.fillScreen(TFT_BLACK);
-    ok = drawFaceImageTarget(M5.Display, file);
+    ok = drawFaceImageTarget(M5.Display, file, imagePath.c_str());
   }
   file.close();
   if (!ok) {
     Serial.printf("[face] failed to draw: %s\n", path);
-  } else if (!canvasReady_) {
+  } else if (!canvasReady_ && drawOverlays) {
     drawAffectionOverlay(millis());
     drawBatteryOverlay();
     drawCameraOverlay();
     drawMicOverlay();
   }
 }
+
+#if STACKCHAN_PET_ANIMATION_ENABLED
+String FaceController::petAnimationFramePath(uint8_t frame) const {
+  if (frame >= kPetAnimationFrameCount) {
+    return String();
+  }
+
+  char path[24];
+  snprintf(path, sizeof(path), "/pet_anim_%u.png", static_cast<unsigned>(frame));
+  return resolvedImagePath(path);
+}
+
+bool FaceController::preparePetAnimationCache() {
+  if (petAnimationCachePrepared_) {
+    return true;
+  }
+
+#if STACKCHAN_ROUND_DISPLAY
+  releaseRoundTalkCache();
+#endif
+
+  const int32_t cacheW = M5.Display.width();
+  const int32_t cacheH = M5.Display.height();
+  bool ok = true;
+  for (uint8_t frame = 0; frame < kPetAnimationFrameCount; ++frame) {
+    if (petAnimationCacheReady_[frame]) {
+      continue;
+    }
+
+    if (petAnimationFramePath(frame).isEmpty()) {
+      Serial.printf("[face] pet animation frame missing: %u\n", static_cast<unsigned>(frame));
+      ok = false;
+      break;
+    }
+
+    if (!petAnimationCacheAllocated_[frame]) {
+      petAnimationCanvas_[frame].setPsram(true);
+      petAnimationCanvas_[frame].setColorDepth(16);
+      if (petAnimationCanvas_[frame].createSprite(cacheW, cacheH) == nullptr) {
+        Serial.printf("[face] pet animation cache %u allocate failed freePsram=%u\n",
+                      static_cast<unsigned>(frame),
+                      static_cast<unsigned>(ESP.getFreePsram()));
+        ok = false;
+        break;
+      }
+      petAnimationCacheAllocated_[frame] = true;
+    }
+
+    petAnimationCacheReady_[frame] = loadPetAnimationFrameToCanvas(petAnimationCanvas_[frame], frame);
+    Serial.printf("[face] pet animation cache %u: %s freePsram=%u\n",
+                  static_cast<unsigned>(frame),
+                  petAnimationCacheReady_[frame] ? "ready" : "failed",
+                  static_cast<unsigned>(ESP.getFreePsram()));
+    ok &= petAnimationCacheReady_[frame];
+    if (!ok) {
+      break;
+    }
+  }
+
+  if (!ok) {
+    releasePetAnimationCache();
+    return false;
+  }
+
+  petAnimationCachePrepared_ = true;
+  return true;
+}
+
+void FaceController::releasePetAnimationCache() {
+  stopPetAnimation(false);
+  for (uint8_t frame = 0; frame < kPetAnimationFrameCount; ++frame) {
+    if (petAnimationCacheAllocated_[frame]) {
+      petAnimationCanvas_[frame].deleteSprite();
+    }
+    petAnimationCacheAllocated_[frame] = false;
+    petAnimationCacheReady_[frame] = false;
+  }
+  petAnimationCachePrepared_ = false;
+}
+
+bool FaceController::loadPetAnimationFrameToCanvas(M5Canvas& canvas, uint8_t frame) {
+  const String imagePath = petAnimationFramePath(frame);
+  if (imagePath.isEmpty()) {
+    return false;
+  }
+
+  File file = LittleFS.open(imagePath, "r");
+  if (!file) {
+    Serial.printf("[face] pet animation frame open failed: %s\n", imagePath.c_str());
+    return false;
+  }
+
+  canvas.fillScreen(TFT_BLACK);
+  const bool ok = drawFaceImageTarget(canvas, file, imagePath.c_str());
+  file.close();
+  return ok;
+}
+
+bool FaceController::drawPetAnimationFrame(uint8_t frame) {
+  if (frame >= kPetAnimationFrameCount || !preparePetAnimationCache() || !petAnimationCacheReady_[frame]) {
+    return false;
+  }
+
+  const void* buffer = petAnimationCanvas_[frame].getBuffer();
+  const int32_t w = M5.Display.width();
+  const int32_t h = M5.Display.height();
+  const unsigned long now = millis();
+#if STACKCHAN_SMALL_DISPLAY
+  (void)buffer;
+  (void)w;
+  (void)h;
+  petAnimationCanvas_[frame].pushSprite(&M5.Display, 0, 0);
+  drawAffectionOverlay(now);
+  drawBatteryOverlay();
+  drawCameraOverlay();
+  drawMicOverlay();
+#else
+  if (canvasReady_ && buffer != nullptr) {
+    canvas_.pushImage(0, 0, w, h, static_cast<const uint16_t*>(buffer));
+    drawAffectionOverlayOnCanvas(now);
+    drawBatteryOverlayOnCanvas();
+    drawCameraOverlayOnCanvas();
+    drawMicOverlayOnCanvas();
+    canvas_.pushSprite(&M5.Display, 0, 0);
+  } else {
+    petAnimationCanvas_[frame].pushSprite(&M5.Display, 0, 0);
+    drawAffectionOverlay(now);
+    drawBatteryOverlay();
+    drawCameraOverlay();
+    drawMicOverlay();
+  }
+#endif
+  currentPath_ = "";
+  return true;
+}
+
+bool FaceController::startPetAnimation(unsigned long now) {
+  if (!enabled_ || state_ == ChanState::Speaking || !preparePetAnimationCache()) {
+    return false;
+  }
+
+  petAnimationPhase_ = PetAnimationPhase::Start;
+  petAnimationSequenceIndex_ = 0;
+  petAnimationTouchFrame_ = 3;
+  petAnimationLong_ = false;
+  nextPetAnimationFrameMs_ = now;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  updatePetAnimation(now);
+  return petAnimationActive();
+}
+
+void FaceController::finishPetAnimation(unsigned long now, bool longPetting) {
+  if (!petAnimationActive() || !preparePetAnimationCache()) {
+    stopPetAnimation(true);
+    return;
+  }
+
+  petAnimationPhase_ = PetAnimationPhase::End;
+  petAnimationSequenceIndex_ = 0;
+  petAnimationLong_ = longPetting;
+  nextPetAnimationFrameMs_ = now;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  updatePetAnimation(now);
+}
+
+void FaceController::stopPetAnimation(bool restoreFace) {
+  const bool wasActive = petAnimationActive();
+  petAnimationPhase_ = PetAnimationPhase::None;
+  petAnimationSequenceIndex_ = 0;
+  petAnimationLong_ = false;
+  nextPetAnimationFrameMs_ = 0;
+
+  if (restoreFace && wasActive && enabled_) {
+    currentPath_ = "";
+    showBaseFace();
+  }
+}
+
+const uint8_t* FaceController::petAnimationSequence(uint8_t& length, unsigned long& intervalMs) const {
+  static const uint8_t kStart[] = {0, 1};
+  static const uint8_t kLoop[] = {3, 2, 3, 4};
+  static const uint8_t kEnd[] = {3, 2};
+  static const uint8_t kLongAfter[] = {1, 0, 5, 6, 5, 6, 5, 6, 5};
+  static const uint8_t kShortAfter[] = {1, 0, 7, 8, 7, 8, 7, 8, 7};
+
+  switch (petAnimationPhase_) {
+    case PetAnimationPhase::Start:
+      length = static_cast<uint8_t>(sizeof(kStart) / sizeof(kStart[0]));
+      intervalMs = PET_ANIMATION_START_INTERVAL_MS;
+      return kStart;
+    case PetAnimationPhase::Loop:
+#if STACKCHAN_DEVICE_STOPWATCH
+      length = 0;
+      intervalMs = PET_ANIMATION_LOOP_INTERVAL_MS;
+      return nullptr;
+#else
+      length = static_cast<uint8_t>(sizeof(kLoop) / sizeof(kLoop[0]));
+      intervalMs = PET_ANIMATION_LOOP_INTERVAL_MS;
+      return kLoop;
+#endif
+    case PetAnimationPhase::End:
+      length = static_cast<uint8_t>(sizeof(kEnd) / sizeof(kEnd[0]));
+      intervalMs = PET_ANIMATION_END_INTERVAL_MS;
+      return kEnd;
+    case PetAnimationPhase::After:
+      if (petAnimationLong_) {
+        length = static_cast<uint8_t>(sizeof(kLongAfter) / sizeof(kLongAfter[0]));
+        intervalMs = PET_ANIMATION_AFTER_INTERVAL_MS;
+        return kLongAfter;
+      }
+      length = static_cast<uint8_t>(sizeof(kShortAfter) / sizeof(kShortAfter[0]));
+      intervalMs = PET_ANIMATION_AFTER_INTERVAL_MS;
+      return kShortAfter;
+    case PetAnimationPhase::None:
+    default:
+      length = 0;
+      intervalMs = 0;
+      return nullptr;
+  }
+}
+
+void FaceController::updatePetAnimation(unsigned long now) {
+  if (!petAnimationActive()) {
+    return;
+  }
+  if (!enabled_) {
+    stopPetAnimation(false);
+    return;
+  }
+  if (state_ == ChanState::Speaking) {
+    stopPetAnimation(true);
+    return;
+  }
+  if (now < nextPetAnimationFrameMs_) {
+    return;
+  }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (petAnimationPhase_ == PetAnimationPhase::Loop) {
+    if (!drawPetAnimationFrame(petAnimationTouchFrame_)) {
+      Serial.printf("[face] pet animation loop draw failed frame=%u\n",
+                    static_cast<unsigned>(petAnimationTouchFrame_));
+      stopPetAnimation(true);
+      return;
+    }
+    nextPetAnimationFrameMs_ = now + PET_ANIMATION_LOOP_INTERVAL_MS;
+    return;
+  }
+#endif
+
+  uint8_t length = 0;
+  unsigned long intervalMs = 0;
+  const uint8_t* sequence = petAnimationSequence(length, intervalMs);
+  if (sequence == nullptr || length == 0 || intervalMs == 0) {
+    stopPetAnimation(true);
+    return;
+  }
+
+  if (petAnimationSequenceIndex_ >= length) {
+    switch (petAnimationPhase_) {
+      case PetAnimationPhase::Start:
+        petAnimationPhase_ = PetAnimationPhase::Loop;
+        petAnimationSequenceIndex_ = 0;
+        break;
+      case PetAnimationPhase::Loop:
+        petAnimationSequenceIndex_ = 0;
+        break;
+      case PetAnimationPhase::End:
+        petAnimationPhase_ = PetAnimationPhase::After;
+        petAnimationSequenceIndex_ = 0;
+        break;
+      case PetAnimationPhase::After:
+        stopPetAnimation(true);
+        return;
+      case PetAnimationPhase::None:
+      default:
+        stopPetAnimation(true);
+        return;
+    }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+    if (petAnimationPhase_ == PetAnimationPhase::Loop) {
+      if (!drawPetAnimationFrame(petAnimationTouchFrame_)) {
+        Serial.printf("[face] pet animation loop draw failed frame=%u\n",
+                      static_cast<unsigned>(petAnimationTouchFrame_));
+        stopPetAnimation(true);
+        return;
+      }
+      nextPetAnimationFrameMs_ = now + PET_ANIMATION_LOOP_INTERVAL_MS;
+      return;
+    }
+#endif
+
+    sequence = petAnimationSequence(length, intervalMs);
+    if (sequence == nullptr || length == 0 || intervalMs == 0) {
+      stopPetAnimation(true);
+      return;
+    }
+  }
+
+  const uint8_t frame = sequence[petAnimationSequenceIndex_];
+  if (!drawPetAnimationFrame(frame)) {
+    Serial.printf("[face] pet animation draw failed frame=%u\n", static_cast<unsigned>(frame));
+    stopPetAnimation(true);
+    return;
+  }
+
+  ++petAnimationSequenceIndex_;
+  nextPetAnimationFrameMs_ = now + intervalMs;
+}
+#endif
 
 int32_t FaceController::faceImageDrawSize() const {
 #if STACKCHAN_ROUND_DISPLAY
@@ -860,12 +1778,80 @@ float FaceController::faceImageScale() const {
 #endif
 }
 
+bool FaceController::isJpegPath(const char* path) const {
+  if (path == nullptr) {
+    return false;
+  }
+  const char* ext = strrchr(path, '.');
+  return ext != nullptr && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0);
+}
+
+bool FaceController::isPngPath(const char* path) const {
+  if (path == nullptr) {
+    return false;
+  }
+  const char* ext = strrchr(path, '.');
+  return ext != nullptr && strcasecmp(ext, ".png") == 0;
+}
+
+String FaceController::resolvedImagePath(const char* path) const {
+  if (path == nullptr || path[0] == '\0') {
+    return String();
+  }
+
+  const size_t pathLen = strlen(path);
+  const bool cacheable = pathLen < kImagePathCacheMaxLen;
+  if (cacheable) {
+    for (uint8_t i = 0; i < kImagePathCacheCount; ++i) {
+      if (imagePathCacheReady_[i] && strcmp(imagePathCacheRequest_[i], path) == 0) {
+        return imagePathCacheResolved_[i][0] == '\0' ? String() : String(imagePathCacheResolved_[i]);
+      }
+    }
+  }
+
+  String resolved;
+  if (LittleFS.exists(path)) {
+    resolved = path;
+  } else {
+    const char* ext = strrchr(path, '.');
+    if (ext != nullptr) {
+      String jpegPath(path);
+      jpegPath.remove(static_cast<unsigned int>(ext - path));
+      jpegPath += ".jpg";
+      if (LittleFS.exists(jpegPath)) {
+        resolved = jpegPath;
+      }
+    }
+  }
+
+  if (cacheable && (resolved.isEmpty() || resolved.length() < kImagePathCacheMaxLen)) {
+    const uint8_t slot = imagePathCacheNext_;
+    snprintf(imagePathCacheRequest_[slot], kImagePathCacheMaxLen, "%s", path);
+    snprintf(imagePathCacheResolved_[slot], kImagePathCacheMaxLen, "%s", resolved.c_str());
+    imagePathCacheReady_[slot] = true;
+    imagePathCacheNext_ = static_cast<uint8_t>((imagePathCacheNext_ + 1) % kImagePathCacheCount);
+  }
+  return resolved;
+}
+
 template <typename Target>
-bool FaceController::drawFaceImageTarget(Target& target, File& file) const {
+bool FaceController::drawFaceImageTarget(Target& target, File& file, const char* path) const {
 #if STACKCHAN_ROUND_DISPLAY
   const int32_t drawSize = faceImageDrawSize();
   const int32_t x = (M5.Display.width() - drawSize) / 2;
   const int32_t y = (M5.Display.height() - drawSize) / 2;
+  if (isJpegPath(path)) {
+    return target.drawJpg(&file,
+                          x,
+                          y,
+                          drawSize,
+                          drawSize,
+                          0,
+                          0,
+                          faceImageScale(),
+                          faceImageScale(),
+                          datum_t::top_left);
+  }
   return target.drawPng(&file,
                         x,
                         y,
@@ -877,6 +1863,9 @@ bool FaceController::drawFaceImageTarget(Target& target, File& file) const {
                         faceImageScale(),
                         datum_t::top_left);
 #else
+  if (isJpegPath(path)) {
+    return target.drawJpg(&file, faceImageDrawX(), faceImageDrawY());
+  }
   return target.drawPng(&file, faceImageDrawX(), faceImageDrawY());
 #endif
 }
@@ -887,6 +1876,8 @@ void FaceController::drawRoundAffectionOverlayTarget(Target& target, unsigned lo
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
     affectionDeltaUntilMs_ = 0;
     affectionDelta_ = 0;
+    guruguruStep_ = 0;
+    guruguruStepDifficulty_ = 0;
   }
 
   const int32_t cx = M5.Display.width() / 2;
@@ -929,6 +1920,7 @@ void FaceController::drawRoundAffectionOverlayTarget(Target& target, unsigned lo
 
 template <typename Target>
 void FaceController::drawRoundBatteryOverlayTarget(Target& target) {
+  const unsigned long now = millis();
   const int32_t cx = M5.Display.width() / 2;
   const int32_t w = 30;
   const int32_t h = 14;
@@ -953,6 +1945,9 @@ void FaceController::drawRoundBatteryOverlayTarget(Target& target) {
   const int32_t clearY = max<int32_t>(0, statusCy - 18);
   const int32_t clearW = min<int32_t>(M5.Display.width() - clearX, totalW + 18);
   const int32_t clearH = min<int32_t>(M5.Display.height() - clearY, 34);
+  const int32_t comboW = 70;
+  const int32_t comboH = 16;
+  const int32_t comboY = statusCy - 28;
 
   target.fillRect(clearX, clearY, clearW, clearH, TFT_BLACK);
 
@@ -961,6 +1956,38 @@ void FaceController::drawRoundBatteryOverlayTarget(Target& target) {
     target.setTextDatum(middle_left);
     target.setTextColor(clockColor, TFT_BLACK);
     target.drawString(clockText_, startX, statusCy);
+    target.setTextDatum(top_left);
+  }
+
+  if (guruguruStep_ > 0 && affectionDeltaUntilMs_ != 0) {
+    const String stepText = String("STEP ") + String(guruguruStep_);
+    uint16_t stepBg = M5.Display.color565(34, 26, 10);
+    uint16_t stepBorder = M5.Display.color565(112, 82, 28);
+    uint16_t stepColor = M5.Display.color565(255, 210, 90);
+    if (guruguruStepDifficulty_ >= 15) {
+      stepBg = M5.Display.color565(64, 10, 16);
+      stepBorder = M5.Display.color565(230, 68, 78);
+      stepColor = M5.Display.color565(255, 225, 210);
+    } else if (guruguruStepDifficulty_ >= 14) {
+      stepBg = M5.Display.color565(58, 24, 8);
+      stepBorder = M5.Display.color565(220, 105, 44);
+      stepColor = M5.Display.color565(255, 222, 130);
+    } else if (guruguruStepDifficulty_ >= 12) {
+      stepBg = M5.Display.color565(46, 34, 8);
+      stepBorder = M5.Display.color565(184, 136, 38);
+      stepColor = M5.Display.color565(255, 220, 96);
+    } else if (guruguruStepDifficulty_ >= 10) {
+      stepBg = M5.Display.color565(32, 38, 16);
+      stepBorder = M5.Display.color565(128, 150, 50);
+      stepColor = M5.Display.color565(230, 235, 110);
+    }
+    target.fillRoundRect(cx - comboW / 2, comboY - comboH / 2, comboW, comboH, 5, stepBg);
+    target.drawRoundRect(cx - comboW / 2, comboY - comboH / 2, comboW, comboH, 5, stepBorder);
+    target.setFont(&fonts::Font0);
+    target.setTextSize(1);
+    target.setTextDatum(middle_center);
+    target.setTextColor(stepColor, stepBg);
+    target.drawString(stepText, cx, comboY);
     target.setTextDatum(top_left);
   }
 
@@ -1062,6 +2089,8 @@ void FaceController::drawAffectionOverlay(unsigned long now) {
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
     affectionDeltaUntilMs_ = 0;
     affectionDelta_ = 0;
+    guruguruStep_ = 0;
+    guruguruStepDifficulty_ = 0;
   }
 
 #if STACKCHAN_SMALL_DISPLAY
@@ -1148,6 +2177,42 @@ void FaceController::drawBatteryOverlay() {
                           ? M5.Display.color565(255, 92, 80)
                           : M5.Display.color565(82, 220, 128);
 
+  const int32_t stepCx = M5.Display.width() / 2;
+  const int32_t stepBadgeW = 74;
+  const int32_t stepBadgeH = 17;
+  const int32_t stepBadgeY = M5.Display.height() - 18;
+  if (guruguruStep_ > 0 && affectionDeltaUntilMs_ != 0) {
+    const String stepText = String("STEP ") + String(guruguruStep_);
+    uint16_t stepBg = M5.Display.color565(34, 26, 10);
+    uint16_t stepBorder = M5.Display.color565(112, 82, 28);
+    uint16_t stepColor = M5.Display.color565(255, 210, 90);
+    if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS) {
+      stepBg = M5.Display.color565(64, 10, 16);
+      stepBorder = M5.Display.color565(230, 68, 78);
+      stepColor = M5.Display.color565(255, 225, 210);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 2) {
+      stepBg = M5.Display.color565(58, 24, 8);
+      stepBorder = M5.Display.color565(220, 105, 44);
+      stepColor = M5.Display.color565(255, 222, 130);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 6) {
+      stepBg = M5.Display.color565(46, 34, 8);
+      stepBorder = M5.Display.color565(184, 136, 38);
+      stepColor = M5.Display.color565(255, 220, 96);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 10) {
+      stepBg = M5.Display.color565(32, 38, 16);
+      stepBorder = M5.Display.color565(128, 150, 50);
+      stepColor = M5.Display.color565(230, 235, 110);
+    }
+    M5.Display.fillRoundRect(stepCx - stepBadgeW / 2, stepBadgeY - stepBadgeH / 2, stepBadgeW, stepBadgeH, 5, stepBg);
+    M5.Display.drawRoundRect(stepCx - stepBadgeW / 2, stepBadgeY - stepBadgeH / 2, stepBadgeW, stepBadgeH, 5, stepBorder);
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(stepColor, stepBg);
+    M5.Display.drawString(stepText, stepCx, stepBadgeY);
+    M5.Display.setTextDatum(top_left);
+  }
+
   M5.Display.fillRect(x - 3, y - 4, w + nubW + 8, h + 8, TFT_BLACK);
   M5.Display.drawRect(x, y, w, h, border);
   M5.Display.drawRect(x + w, y + 3, nubW, h - 6, border);
@@ -1181,6 +2246,8 @@ void FaceController::drawAffectionOverlayOnCanvas(unsigned long now) {
   if (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_) {
     affectionDeltaUntilMs_ = 0;
     affectionDelta_ = 0;
+    guruguruStep_ = 0;
+    guruguruStepDifficulty_ = 0;
   }
 
 #if STACKCHAN_SMALL_DISPLAY
@@ -1266,6 +2333,42 @@ void FaceController::drawBatteryOverlayOnCanvas() {
   const uint16_t fill = batteryLevel_ >= 0 && batteryLevel_ <= 20
                           ? M5.Display.color565(255, 92, 80)
                           : M5.Display.color565(82, 220, 128);
+
+  const int32_t stepCx = M5.Display.width() / 2;
+  const int32_t stepBadgeW = 74;
+  const int32_t stepBadgeH = 17;
+  const int32_t stepBadgeY = M5.Display.height() - 18;
+  if (guruguruStep_ > 0 && affectionDeltaUntilMs_ != 0) {
+    const String stepText = String("STEP ") + String(guruguruStep_);
+    uint16_t stepBg = M5.Display.color565(34, 26, 10);
+    uint16_t stepBorder = M5.Display.color565(112, 82, 28);
+    uint16_t stepColor = M5.Display.color565(255, 210, 90);
+    if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS) {
+      stepBg = M5.Display.color565(64, 10, 16);
+      stepBorder = M5.Display.color565(230, 68, 78);
+      stepColor = M5.Display.color565(255, 225, 210);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 2) {
+      stepBg = M5.Display.color565(58, 24, 8);
+      stepBorder = M5.Display.color565(220, 105, 44);
+      stepColor = M5.Display.color565(255, 222, 130);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 6) {
+      stepBg = M5.Display.color565(46, 34, 8);
+      stepBorder = M5.Display.color565(184, 136, 38);
+      stepColor = M5.Display.color565(255, 220, 96);
+    } else if (guruguruStepDifficulty_ >= GURUGURU_AFFECTION_RED_PROJECTED_STEPS - 10) {
+      stepBg = M5.Display.color565(32, 38, 16);
+      stepBorder = M5.Display.color565(128, 150, 50);
+      stepColor = M5.Display.color565(230, 235, 110);
+    }
+    canvas_.fillRoundRect(stepCx - stepBadgeW / 2, stepBadgeY - stepBadgeH / 2, stepBadgeW, stepBadgeH, 5, stepBg);
+    canvas_.drawRoundRect(stepCx - stepBadgeW / 2, stepBadgeY - stepBadgeH / 2, stepBadgeW, stepBadgeH, 5, stepBorder);
+    canvas_.setFont(&fonts::Font0);
+    canvas_.setTextSize(1);
+    canvas_.setTextDatum(middle_center);
+    canvas_.setTextColor(stepColor, stepBg);
+    canvas_.drawString(stepText, stepCx, stepBadgeY);
+    canvas_.setTextDatum(top_left);
+  }
 
   canvas_.fillRect(x - 3, y - 4, w + nubW + 8, h + 8, TFT_BLACK);
   canvas_.drawRect(x, y, w, h, border);
@@ -1563,10 +2666,31 @@ bool FaceController::drawCachedTalkFace(const char* path) {
 #else
   int setIndex = -1;
   int index = -1;
-  if (strcmp(path, FACE_TALK_0_PATH) == 0) {
+  const char* tierTalk0 = FACE_TALK_0_PATH;
+  const char* tierTalk1 = FACE_TALK_1_PATH;
+  const char* tierIdle = FACE_IDLE_PATH;
+  const char* tierListen = FACE_LISTEN_PATH;
+  const char* tierBlink = FACE_BLINK_PATH;
+  if (visualTierIndex() == 1) {
+    tierTalk0 = fallbackFacePath(FACE_TALK_GUARDED_0_PATH,
+                                 fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_TALK_0_PATH));
+    tierTalk1 = fallbackFacePath(FACE_TALK_GUARDED_1_PATH, FACE_TALK_1_PATH);
+    tierIdle = fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_IDLE_PATH);
+    tierListen = fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_LISTEN_PATH);
+    tierBlink = fallbackFacePath(FACE_BLINK_GUARDED_0_PATH, FACE_BLINK_PATH);
+  } else if (visualTierIndex() == 3) {
+    tierTalk0 = fallbackFacePath(FACE_TALK_ATTACHED_0_PATH,
+                                 fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_TALK_0_PATH));
+    tierTalk1 = fallbackFacePath(FACE_TALK_ATTACHED_1_PATH, FACE_TALK_1_PATH);
+    tierIdle = fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_IDLE_PATH);
+    tierListen = fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_LISTEN_PATH);
+    tierBlink = fallbackFacePath(FACE_BLINK_ATTACHED_0_PATH, FACE_BLINK_PATH);
+  }
+
+  if (strcmp(path, tierTalk0) == 0) {
     setIndex = 0;
     index = 0;
-  } else if (strcmp(path, FACE_TALK_1_PATH) == 0) {
+  } else if (strcmp(path, tierTalk1) == 0) {
     setIndex = 0;
     index = 1;
   } else if (strcmp(path, FACE_BAD_0_PATH) == 0) {
@@ -1593,73 +2717,67 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   } else if (strcmp(path, FACE_PHOTO_MASTER_1_PATH) == 0) {
     setIndex = 4;
     index = 1;
-  } else if (strcmp(path, FACE_NADENADE_0_PATH) == 0) {
-    setIndex = 5;
-    index = 0;
-  } else if (strcmp(path, FACE_NADENADE_1_PATH) == 0) {
-    setIndex = 5;
-    index = 1;
-  } else if (strcmp(path, FACE_FURIFURI_0_PATH) == 0) {
-    setIndex = 6;
-    index = 0;
-  } else if (strcmp(path, FACE_FURIFURI_1_PATH) == 0) {
-    setIndex = 6;
-    index = 1;
-  } else if (strcmp(path, FACE_TALK_GUARDED_0_PATH) == 0 || strcmp(path, FACE_IDLE_GUARDED_0_PATH) == 0) {
-    setIndex = 7;
-    index = 0;
-  } else if (strcmp(path, FACE_TALK_GUARDED_1_PATH) == 0) {
-    setIndex = 7;
-    index = 1;
-  } else if (strcmp(path, FACE_TALK_ATTACHED_0_PATH) == 0 || strcmp(path, FACE_IDLE_ATTACHED_0_PATH) == 0) {
-    setIndex = 8;
-    index = 0;
-  } else if (strcmp(path, FACE_TALK_ATTACHED_1_PATH) == 0) {
-    setIndex = 8;
-    index = 1;
-  } else if (strcmp(path, FACE_PET_GUARDED_0_PATH) == 0) {
-    setIndex = 9;
-    index = 0;
-  } else if (strcmp(path, FACE_PET_GUARDED_1_PATH) == 0) {
-    setIndex = 9;
-    index = 1;
-  } else if (strcmp(path, FACE_PET_ATTACHED_0_PATH) == 0) {
-    setIndex = 10;
-    index = 0;
-  } else if (strcmp(path, FACE_PET_ATTACHED_1_PATH) == 0) {
-    setIndex = 10;
-    index = 1;
-  } else if (strcmp(path, FACE_SHAKE_GUARDED_0_PATH) == 0) {
-    setIndex = 11;
-    index = 0;
-  } else if (strcmp(path, FACE_SHAKE_GUARDED_1_PATH) == 0) {
-    setIndex = 11;
-    index = 1;
-  } else if (strcmp(path, FACE_SHAKE_ATTACHED_0_PATH) == 0) {
-    setIndex = 12;
-    index = 0;
-  } else if (strcmp(path, FACE_SHAKE_ATTACHED_1_PATH) == 0) {
-    setIndex = 12;
-    index = 1;
-  } else if (strcmp(path, FACE_TIRED_0_PATH) == 0) {
-    setIndex = 13;
-    index = 0;
-  } else if (strcmp(path, FACE_TIRED_TALK_PATH) == 0) {
-    setIndex = 13;
-    index = 1;
-  } else if (strcmp(path, FACE_EXHAUSTED_0_PATH) == 0) {
-    setIndex = 14;
-    index = 0;
-  } else if (strcmp(path, FACE_EXHAUSTED_TALK_PATH) == 0) {
-    setIndex = 14;
-    index = 1;
-  } else if (strcmp(path, FACE_LOW_POWER_0_PATH) == 0) {
-    setIndex = 15;
-    index = 0;
-  } else if (strcmp(path, FACE_LOW_POWER_TALK_PATH) == 0) {
-    setIndex = 15;
-    index = 1;
-  }
+	  } else if (strcmp(path, FACE_FURIFURI_0_PATH) == 0) {
+	    setIndex = 5;
+	    index = 0;
+	  } else if (strcmp(path, FACE_FURIFURI_1_PATH) == 0) {
+	    setIndex = 5;
+	    index = 1;
+		  } else if (strcmp(path, tierIdle) == 0) {
+		    setIndex = 6;
+		    index = 0;
+		  } else if (strcmp(path, tierListen) == 0) {
+		    setIndex = 6;
+		    index = 1;
+		  } else if (strcmp(path, tierBlink) == 0) {
+		    setIndex = 7;
+		    index = 0;
+		  } else if (strcmp(path, FACE_SMILE_PATH) == 0) {
+		    setIndex = 7;
+		    index = 1;
+		  } else if (strcmp(path, FACE_GOOD_BLINK_PATH) == 0) {
+		    setIndex = 8;
+		    index = 0;
+		  } else if (strcmp(path, FACE_PHOTO_BLINK_PATH) == 0) {
+		    setIndex = 8;
+		    index = 1;
+		  } else if (strcmp(path, FACE_PHOTO_BLINK_TALK_PATH) == 0) {
+		    setIndex = 9;
+		    index = 0;
+		  } else if (strcmp(path, FACE_TIRED_BLINK_PATH) == 0) {
+		    setIndex = 9;
+		    index = 1;
+		  } else if (strcmp(path, FACE_EXHAUSTED_BLINK_PATH) == 0) {
+		    setIndex = 10;
+		    index = 0;
+		  } else if (strcmp(path, FACE_LOW_POWER_BLINK_PATH) == 0) {
+		    setIndex = 10;
+		    index = 1;
+		  } else if (strcmp(path, FACE_TIRED_0_PATH) == 0) {
+		    setIndex = 11;
+		    index = 0;
+		  } else if (strcmp(path, FACE_TIRED_TALK_PATH) == 0) {
+		    setIndex = 11;
+		    index = 1;
+		  } else if (strcmp(path, FACE_EXHAUSTED_0_PATH) == 0) {
+		    setIndex = 12;
+		    index = 0;
+		  } else if (strcmp(path, FACE_EXHAUSTED_TALK_PATH) == 0) {
+		    setIndex = 12;
+		    index = 1;
+		  } else if (strcmp(path, FACE_LOW_POWER_0_PATH) == 0) {
+		    setIndex = 13;
+		    index = 0;
+		  } else if (strcmp(path, FACE_LOW_POWER_TALK_PATH) == 0) {
+		    setIndex = 13;
+		    index = 1;
+		  } else if (strcmp(path, FACE_NADENADE_0_PATH) == 0) {
+		    setIndex = 14;
+		    index = 0;
+		  } else if (strcmp(path, FACE_NADENADE_1_PATH) == 0) {
+		    setIndex = 14;
+		    index = 1;
+		  }
 
   if (setIndex < 0 || index < 0 || !talkCacheReady_[setIndex][index]) {
     return false;
@@ -1687,12 +2805,10 @@ bool FaceController::drawCachedTalkFace(const char* path) {
   }
 #else
   talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
-  if (overlaysNeedRefresh(now)) {
-    drawAffectionOverlay(now);
-    drawBatteryOverlay();
-    drawCameraOverlay();
-    drawMicOverlay();
-  }
+  drawAffectionOverlay(now);
+  drawBatteryOverlay();
+  drawCameraOverlay();
+  drawMicOverlay();
 #endif
   return true;
 #endif
@@ -1767,22 +2883,695 @@ bool FaceController::prepareRoundTalkCache(const char* path0, const char* path1)
   return ok;
 }
 
+void FaceController::releaseRoundTalkCache() {
+  for (uint8_t i = 0; i < 2; ++i) {
+    if (roundTalkCacheAllocated_[i]) {
+      roundTalkCanvas_[i].deleteSprite();
+    }
+    roundTalkCacheAllocated_[i] = false;
+    roundTalkCacheReady_[i] = false;
+    roundTalkCachePath_[i] = "";
+  }
+}
+
 bool FaceController::loadRoundBaseFaceToCanvas(M5Canvas& canvas, const char* path) {
-  if (!LittleFS.exists(path)) {
+  const String imagePath = resolvedImagePath(path);
+  if (imagePath.isEmpty()) {
     Serial.printf("[face] missing round cache file: %s\n", path);
+    return false;
+  }
+
+  File file = LittleFS.open(imagePath, "r");
+  if (!file) {
+    Serial.printf("[face] failed to open round cache file: %s\n", imagePath.c_str());
+    return false;
+  }
+
+  canvas.fillScreen(TFT_BLACK);
+  const bool ok = drawFaceImageTarget(canvas, file, imagePath.c_str());
+  file.close();
+  return ok;
+}
+#endif
+
+uint8_t FaceController::guruguruFaceSourceIndex(uint8_t direction) const {
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (direction >= STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+    return 16;
+  }
+  return static_cast<uint8_t>(direction * 2);
+#else
+  return direction;
+#endif
+}
+
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+bool FaceController::parseGuruguruFacePath(const char* path, bool& blink, uint8_t& direction) const {
+  if (path == nullptr) {
+    return false;
+  }
+
+  const char* prefix = nullptr;
+  blink = false;
+  if (strncmp(path, "/dir", 4) == 0) {
+    prefix = path + 4;
+  } else if (strncmp(path, "/blink", 6) == 0) {
+    prefix = path + 6;
+    blink = true;
+  } else {
+    return false;
+  }
+
+  char* end = nullptr;
+  const long value = strtol(prefix, &end, 10);
+  if (end == prefix || strcmp(end, ".png") != 0 || value < 0 || value >= STACKCHAN_GURUGURU_FACE_COUNT) {
+    return false;
+  }
+
+  direction = static_cast<uint8_t>(value);
+  return true;
+}
+
+bool FaceController::loadGuruguruFaceToCanvas(M5Canvas& canvas, const char* path) {
+  const String imagePath = resolvedImagePath(path);
+  if (imagePath.isEmpty()) {
+    Serial.printf("[face] missing guruguru cache file: %s\n", path);
+    return false;
+  }
+
+  File file = LittleFS.open(imagePath, "r");
+  if (!file) {
+    Serial.printf("[face] failed to open guruguru cache file: %s\n", imagePath.c_str());
+    return false;
+  }
+
+  canvas.fillScreen(TFT_BLACK);
+  const bool ok = isJpegPath(imagePath.c_str()) ? canvas.drawJpg(&file, 0, 0) : canvas.drawPng(&file, 0, 0);
+  file.close();
+  return ok;
+}
+
+bool FaceController::prepareGuruguruFaceCache() {
+  if (guruguruCachePrepared_) {
+    return true;
+  }
+
+#if STACKCHAN_ROUND_DISPLAY
+  releaseRoundTalkCache();
+#endif
+
+  bool ok = true;
+  for (uint8_t direction = 0; direction < STACKCHAN_GURUGURU_FACE_COUNT; ++direction) {
+    if (guruguruDirCacheReady_[direction]) {
+      continue;
+    }
+
+    char path[16];
+    snprintf(path,
+             sizeof(path),
+             "/dir%u.png",
+             static_cast<unsigned>(guruguruFaceSourceIndex(direction)));
+    if (resolvedImagePath(path).isEmpty()) {
+      guruguruDirCacheReady_[direction] = false;
+      ok = false;
+      continue;
+    }
+
+    if (!guruguruDirCacheAllocated_[direction]) {
+      guruguruDirCache_[direction].setPsram(true);
+      guruguruDirCache_[direction].setColorDepth(16);
+      if (guruguruDirCache_[direction].createSprite(FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT) == nullptr) {
+        Serial.printf("[face] guruguru dir cache %u allocate failed freePsram=%u\n",
+                      static_cast<unsigned>(direction),
+                      static_cast<unsigned>(ESP.getFreePsram()));
+        ok = false;
+        break;
+      }
+      guruguruDirCacheAllocated_[direction] = true;
+    }
+
+    guruguruDirCacheReady_[direction] = loadGuruguruFaceToCanvas(guruguruDirCache_[direction], path);
+    Serial.printf("[face] guruguru dir cache %u: %s freePsram=%u\n",
+                  static_cast<unsigned>(direction),
+                  guruguruDirCacheReady_[direction] ? "ready" : "failed",
+                  static_cast<unsigned>(ESP.getFreePsram()));
+    ok &= guruguruDirCacheReady_[direction];
+  }
+
+  guruguruCachePrepared_ = ok;
+  return ok;
+}
+
+void FaceController::releaseGuruguruDirCache() {
+  for (uint8_t i = 0; i < STACKCHAN_GURUGURU_FACE_COUNT; ++i) {
+    if (guruguruDirCacheAllocated_[i]) {
+      guruguruDirCache_[i].deleteSprite();
+    }
+    guruguruDirCacheAllocated_[i] = false;
+    guruguruDirCacheReady_[i] = false;
+  }
+  guruguruCachePrepared_ = false;
+}
+
+void FaceController::releaseGuruguruFaceCache() {
+  releaseGuruguruDirCache();
+  releaseGuruguruBlinkCache();
+  releaseGuruguruDizzyJpegCache();
+}
+
+void FaceController::releaseGuruguruBlinkCache() {
+  for (uint8_t i = 0; i < kGuruguruBlinkCacheSlots; ++i) {
+    if (guruguruBlinkCacheAllocated_[i]) {
+      guruguruBlinkCache_[i].deleteSprite();
+    }
+    guruguruBlinkCacheAllocated_[i] = false;
+    guruguruBlinkCacheReady_[i] = false;
+    guruguruBlinkCacheDirection_[i] = 0;
+    guruguruBlinkCacheLastUseMs_[i] = 0;
+  }
+}
+
+void FaceController::releaseGuruguruDizzyJpegCache() {
+  for (uint8_t i = 0; i < kGuruguruDizzyCanvasSlots; ++i) {
+    if (guruguruDizzyCanvasCacheAllocated_[i]) {
+      guruguruDizzyCanvasCache_[i].deleteSprite();
+    }
+    guruguruDizzyCanvasCacheAllocated_[i] = false;
+    guruguruDizzyCanvasCacheReady_[i] = false;
+    guruguruDizzyCanvasCacheSource_[i] = 0;
+  }
+
+  for (uint8_t i = 0; i < GURUGURU_DIZZY_FRAME_COUNT; ++i) {
+    if (guruguruDizzyJpegCache_[i] != nullptr) {
+      free(guruguruDizzyJpegCache_[i]);
+    }
+    guruguruDizzyJpegCache_[i] = nullptr;
+    guruguruDizzyJpegCacheSize_[i] = 0;
+    guruguruDizzyFrameX_[i] = 0;
+    guruguruDizzyFrameY_[i] = 0;
+    guruguruDizzyFrameW_[i] = FACE_IMAGE_WIDTH;
+    guruguruDizzyFrameH_[i] = FACE_IMAGE_HEIGHT;
+  }
+  guruguruDizzyJpegCacheReady_ = false;
+  guruguruDizzyFrameMetaReady_ = false;
+}
+
+void FaceController::releaseGuruguruDizzySourceRange(uint8_t firstSourceFrame, uint8_t lastSourceFrame) {
+  for (uint8_t i = 0; i < kGuruguruDizzyCanvasSlots; ++i) {
+    const uint8_t source = guruguruDizzyCanvasCacheSource_[i];
+    if (source >= firstSourceFrame && source <= lastSourceFrame) {
+      if (guruguruDizzyCanvasCacheAllocated_[i]) {
+        guruguruDizzyCanvasCache_[i].deleteSprite();
+      }
+      guruguruDizzyCanvasCacheAllocated_[i] = false;
+      guruguruDizzyCanvasCacheReady_[i] = false;
+      guruguruDizzyCanvasCacheSource_[i] = 0;
+    }
+  }
+
+  for (uint8_t i = firstSourceFrame; i <= lastSourceFrame && i < GURUGURU_DIZZY_FRAME_COUNT; ++i) {
+    if (guruguruDizzyJpegCache_[i] != nullptr) {
+      free(guruguruDizzyJpegCache_[i]);
+    }
+    guruguruDizzyJpegCache_[i] = nullptr;
+    guruguruDizzyJpegCacheSize_[i] = 0;
+  }
+}
+
+bool FaceController::preloadGuruguruDizzyJpegCache(bool reverse, uint8_t maxFrames) {
+  if (maxFrames == 0) {
+    return guruguruDizzyJpegCacheReady_ && guruguruDizzyJpegCacheReverse_ == reverse;
+  }
+  return preloadGuruguruDizzyPlaybackRange(reverse, 0, GURUGURU_DIZZY_FRAME_COUNT, maxFrames);
+}
+
+bool FaceController::preloadGuruguruDizzyPlaybackRange(bool reverse,
+                                                       uint8_t firstFrame,
+                                                       uint8_t endFrame,
+                                                       uint8_t maxLoads) {
+#if !STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  if (guruguruDizzyJpegCacheReady_ && guruguruDizzyJpegCacheReverse_ != reverse) {
+    releaseGuruguruDizzyJpegCache();
+  }
+#endif
+  if (!guruguruDizzyJpegCacheReady_) {
+    guruguruDizzyJpegCacheReverse_ = reverse;
+    guruguruDizzyJpegCacheReady_ = true;
+  }
+
+  const String firstFramePath = guruguruDizzyFramePath(reverse, 0);
+  const bool useJpegFrames = isJpegPath(firstFramePath.c_str());
+  const bool usePngFrames = isPngPath(firstFramePath.c_str());
+  if (!useJpegFrames && !usePngFrames) {
+    guruguruDizzyJpegCacheReady_ = false;
+    return false;
+  }
+  for (uint8_t i = 0; i < GURUGURU_DIZZY_FRAME_COUNT; ++i) {
+    guruguruDizzyFrameX_[i] = 0;
+    guruguruDizzyFrameY_[i] = 0;
+    guruguruDizzyFrameW_[i] = FACE_IMAGE_WIDTH;
+    guruguruDizzyFrameH_[i] = FACE_IMAGE_HEIGHT;
+  }
+  guruguruDizzyFrameMetaReady_ = false;
+
+  uint8_t loadedThisCall = 0;
+  for (uint8_t frame = firstFrame; frame < endFrame && frame < GURUGURU_DIZZY_FRAME_COUNT; ++frame) {
+    const uint8_t cacheIndex = guruguruDizzySourceFrame(reverse, frame);
+    if (cacheIndex >= GURUGURU_DIZZY_FRAME_COUNT) {
+      continue;
+    }
+    if (findGuruguruDizzyCanvasSlot(cacheIndex) >= 0 ||
+        (guruguruDizzyJpegCache_[cacheIndex] != nullptr && guruguruDizzyJpegCacheSize_[cacheIndex] > 0)) {
+      continue;
+    }
+    if (loadedThisCall >= maxLoads) {
+      continue;
+    }
+
+    if (!loadGuruguruDizzyCacheFrame(reverse, frame)) {
+      return false;
+    }
+    ++loadedThisCall;
+  }
+
+  bool allLoaded = true;
+  size_t totalBytes = 0;
+  bool countedSources[GURUGURU_DIZZY_FRAME_COUNT] = {};
+  for (uint8_t frame = firstFrame; frame < endFrame && frame < GURUGURU_DIZZY_FRAME_COUNT; ++frame) {
+    const uint8_t cacheIndex = guruguruDizzySourceFrame(reverse, frame);
+    if (cacheIndex >= GURUGURU_DIZZY_FRAME_COUNT ||
+        findGuruguruDizzyCanvasSlot(cacheIndex) < 0) {
+      allLoaded = false;
+      break;
+    }
+    if (!countedSources[cacheIndex]) {
+      countedSources[cacheIndex] = true;
+      totalBytes += static_cast<size_t>(GURUGURU_DIZZY_CANVAS_SIZE) * static_cast<size_t>(GURUGURU_DIZZY_CANVAS_SIZE) * sizeof(uint16_t);
+    }
+  }
+
+  Serial.printf("[guruguru] dizzy preload reverse=%d range=%u-%u jpg=%d png=%d loaded=%u bytes=%u freePsram=%u\n",
+                reverse ? 1 : 0,
+                static_cast<unsigned>(firstFrame),
+                static_cast<unsigned>(endFrame),
+                useJpegFrames ? 1 : 0,
+                usePngFrames ? 1 : 0,
+                static_cast<unsigned>(loadedThisCall),
+                static_cast<unsigned>(totalBytes),
+                static_cast<unsigned>(ESP.getFreePsram()));
+  return allLoaded;
+}
+
+bool FaceController::loadGuruguruDizzyCacheFrame(bool reverse, uint8_t frame) {
+  return loadGuruguruDizzyCanvasFrame(reverse, frame);
+}
+
+int8_t FaceController::findGuruguruDizzyCanvasSlot(uint8_t sourceFrame) const {
+  if (sourceFrame == 0 || sourceFrame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    return -1;
+  }
+  for (uint8_t i = 0; i < kGuruguruDizzyCanvasSlots; ++i) {
+    if (guruguruDizzyCanvasCacheReady_[i] &&
+        guruguruDizzyCanvasCacheSource_[i] == sourceFrame) {
+      return static_cast<int8_t>(i);
+    }
+  }
+  return -1;
+}
+
+int8_t FaceController::prepareGuruguruDizzyCanvasSlot(uint8_t sourceFrame) {
+  const int8_t existing = findGuruguruDizzyCanvasSlot(sourceFrame);
+  if (existing >= 0) {
+    return existing;
+  }
+
+  int8_t slot = -1;
+  for (uint8_t i = 0; i < kGuruguruDizzyCanvasSlots; ++i) {
+    if (!guruguruDizzyCanvasCacheReady_[i]) {
+      slot = static_cast<int8_t>(i);
+      break;
+    }
+  }
+  if (slot < 0) {
+    return -1;
+  }
+
+  if (!guruguruDizzyCanvasCacheAllocated_[slot]) {
+    guruguruDizzyCanvasCache_[slot].setPsram(true);
+    guruguruDizzyCanvasCache_[slot].setColorDepth(16);
+    if (guruguruDizzyCanvasCache_[slot].createSprite(GURUGURU_DIZZY_CANVAS_SIZE, GURUGURU_DIZZY_CANVAS_SIZE) == nullptr) {
+      Serial.printf("[guruguru] dizzy canvas alloc failed source=%u freePsram=%u\n",
+                    static_cast<unsigned>(sourceFrame),
+                    static_cast<unsigned>(ESP.getFreePsram()));
+      return -1;
+    }
+    guruguruDizzyCanvasCacheAllocated_[slot] = true;
+  }
+  return slot;
+}
+
+bool FaceController::loadGuruguruDizzyCanvasFrame(bool reverse, uint8_t frame) {
+  const uint8_t sourceFrame = guruguruDizzySourceFrame(reverse, frame);
+  if (sourceFrame == 0 || sourceFrame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    return false;
+  }
+  if (findGuruguruDizzyCanvasSlot(sourceFrame) >= 0) {
+    return true;
+  }
+
+  const int8_t slot = prepareGuruguruDizzyCanvasSlot(sourceFrame);
+  if (slot < 0) {
+    return false;
+  }
+
+  const String imagePath = guruguruDizzyFramePath(reverse, frame);
+  if (imagePath.isEmpty()) {
+    return false;
+  }
+
+  File file = LittleFS.open(imagePath, "r");
+  if (!file) {
+    Serial.printf("[guruguru] dizzy canvas open failed: %s\n", imagePath.c_str());
+    return false;
+  }
+
+  guruguruDizzyCanvasCache_[slot].fillScreen(TFT_BLACK);
+  const float drawScale = static_cast<float>(GURUGURU_DIZZY_CANVAS_SIZE) / static_cast<float>(FACE_IMAGE_WIDTH);
+  const int32_t drawW = GURUGURU_DIZZY_CANVAS_SIZE;
+  const int32_t drawH = GURUGURU_DIZZY_CANVAS_SIZE;
+  const int32_t drawX = 0;
+  const int32_t drawY = 0;
+  const bool ok = isJpegPath(imagePath.c_str())
+                    ? guruguruDizzyCanvasCache_[slot].drawJpg(&file,
+                                                              drawX,
+                                                              drawY,
+                                                              drawW,
+                                                              drawH,
+                                                              0,
+                                                              0,
+                                                              drawScale,
+                                                              drawScale,
+                                                              datum_t::top_left)
+                    : guruguruDizzyCanvasCache_[slot].drawPng(&file,
+                                                              drawX,
+                                                              drawY,
+                                                              drawW,
+                                                              drawH,
+                                                              0,
+                                                              0,
+                                                              drawScale,
+                                                              drawScale,
+                                                              datum_t::top_left);
+  file.close();
+
+  if (!ok) {
+    Serial.printf("[guruguru] dizzy canvas decode failed source=%u path=%s\n",
+                  static_cast<unsigned>(sourceFrame),
+                  imagePath.c_str());
+    guruguruDizzyCanvasCacheReady_[slot] = false;
+    guruguruDizzyCanvasCacheSource_[slot] = 0;
+    return false;
+  }
+
+  guruguruDizzyCanvasCacheReady_[slot] = true;
+  guruguruDizzyCanvasCacheSource_[slot] = sourceFrame;
+  Serial.printf("[guruguru] dizzy canvas source=%u slot=%d freePsram=%u\n",
+                static_cast<unsigned>(sourceFrame),
+                static_cast<int>(slot),
+                static_cast<unsigned>(ESP.getFreePsram()));
+  return true;
+}
+
+void FaceController::serviceGuruguruDizzyCache(uint8_t displayedFrame) {
+  if (kGuruguruDizzyCanvasSlots >= 15) {
+    return;
+  }
+
+  if (!guruguruDizzyBlinkReleased_) {
+    releaseGuruguruBlinkCache();
+    guruguruDizzyBlinkReleased_ = true;
+  }
+
+  const uint8_t firstFutureFrame = displayedFrame + 1;
+  if (firstFutureFrame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    return;
+  }
+  uint8_t endFutureFrame = firstFutureFrame + kGuruguruDizzyCanvasSlots;
+  if (endFutureFrame > GURUGURU_DIZZY_FRAME_COUNT) {
+    endFutureFrame = GURUGURU_DIZZY_FRAME_COUNT;
+  }
+
+  for (uint8_t slot = 0; slot < kGuruguruDizzyCanvasSlots; ++slot) {
+    if (!guruguruDizzyCanvasCacheReady_[slot]) {
+      continue;
+    }
+    const uint8_t cachedSource = guruguruDizzyCanvasCacheSource_[slot];
+    bool needed = false;
+    for (uint8_t frame = firstFutureFrame; frame < endFutureFrame; ++frame) {
+      if (guruguruDizzySourceFrame(guruguruDizzyReverse_, frame) == cachedSource) {
+        needed = true;
+        break;
+      }
+    }
+    if (!needed) {
+      guruguruDizzyCanvasCacheReady_[slot] = false;
+      guruguruDizzyCanvasCacheSource_[slot] = 0;
+    }
+  }
+
+  for (uint8_t frame = firstFutureFrame; frame < endFutureFrame; ++frame) {
+    if (!loadGuruguruDizzyCacheFrame(guruguruDizzyReverse_, frame)) {
+      Serial.printf("[guruguru] dizzy lookahead failed frame=%u freePsram=%u\n",
+                    static_cast<unsigned>(frame),
+                    static_cast<unsigned>(ESP.getFreePsram()));
+      break;
+    }
+  }
+}
+
+uint8_t FaceController::guruguruDizzySourceFrame(bool reverse, uint8_t frame) const {
+  if (frame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    return GURUGURU_DIZZY_FRAME_COUNT;
+  }
+
+  if (frame < 16) {
+    const uint8_t spinFrame = frame % 8;
+    return reverse ? static_cast<uint8_t>(8 - spinFrame)
+                   : static_cast<uint8_t>(1 + spinFrame);
+  }
+  return static_cast<uint8_t>(9 + (frame - 16));
+}
+
+String FaceController::guruguruDizzyFramePath(bool reverse, uint8_t frame) const {
+  const uint8_t sourceFrame = guruguruDizzySourceFrame(reverse, frame);
+  if (sourceFrame >= GURUGURU_DIZZY_FRAME_COUNT) {
+    return String();
+  }
+
+  char pngPath[24];
+  snprintf(pngPath, sizeof(pngPath), "/dizzy_%02u.png", static_cast<unsigned>(sourceFrame));
+  if (LittleFS.exists(pngPath)) {
+    return String(pngPath);
+  }
+
+  const String jpgPath = resolvedImagePath(pngPath);
+  if (!jpgPath.isEmpty()) {
+    return jpgPath;
+  }
+
+  char legacyPath[32];
+  snprintf(legacyPath,
+           sizeof(legacyPath),
+           reverse ? "/dizzy_ccw_%02u.png" : "/dizzy_cw_%02u.png",
+           static_cast<unsigned>(frame));
+  return resolvedImagePath(legacyPath);
+}
+
+bool FaceController::loadGuruguruDizzyFrameMeta(bool reverse) {
+  if (guruguruDizzyFrameMetaReady_ && guruguruDizzyJpegCacheReverse_ == reverse) {
+    return true;
+  }
+
+  for (uint8_t i = 0; i < GURUGURU_DIZZY_FRAME_COUNT; ++i) {
+    guruguruDizzyFrameX_[i] = 0;
+    guruguruDizzyFrameY_[i] = 0;
+    guruguruDizzyFrameW_[i] = FACE_IMAGE_WIDTH;
+    guruguruDizzyFrameH_[i] = FACE_IMAGE_HEIGHT;
+  }
+
+  const char* path = reverse ? "/dizzy_ccw_meta.txt" : "/dizzy_cw_meta.txt";
+  if (!LittleFS.exists(path)) {
+    guruguruDizzyFrameMetaReady_ = false;
     return false;
   }
 
   File file = LittleFS.open(path, "r");
   if (!file) {
-    Serial.printf("[face] failed to open round cache file: %s\n", path);
+    Serial.printf("[guruguru] dizzy meta open failed: %s\n", path);
+    guruguruDizzyFrameMetaReady_ = false;
     return false;
   }
 
-  canvas.fillScreen(TFT_BLACK);
-  const bool ok = drawFaceImageTarget(canvas, file);
+  uint8_t frame = 0;
+  while (file.available() && frame < GURUGURU_DIZZY_FRAME_COUNT) {
+    const String line = file.readStringUntil('\n');
+    int x = 0;
+    int y = 0;
+    int w = FACE_IMAGE_WIDTH;
+    int h = FACE_IMAGE_HEIGHT;
+    if (sscanf(line.c_str(), "%d %d %d %d", &x, &y, &w, &h) == 4) {
+      guruguruDizzyFrameX_[frame] = constrain(x, 0, FACE_IMAGE_WIDTH - 1);
+      guruguruDizzyFrameY_[frame] = constrain(y, 0, FACE_IMAGE_HEIGHT - 1);
+      guruguruDizzyFrameW_[frame] = constrain(w, 1, FACE_IMAGE_WIDTH);
+      guruguruDizzyFrameH_[frame] = constrain(h, 1, FACE_IMAGE_HEIGHT);
+    }
+    ++frame;
+  }
   file.close();
-  return ok;
+
+  guruguruDizzyFrameMetaReady_ = frame == GURUGURU_DIZZY_FRAME_COUNT;
+  Serial.printf("[guruguru] dizzy meta %s frames=%u ready=%d\n",
+                path,
+                static_cast<unsigned>(frame),
+                guruguruDizzyFrameMetaReady_ ? 1 : 0);
+  return guruguruDizzyFrameMetaReady_;
+}
+
+int8_t FaceController::findGuruguruBlinkCacheSlot(uint8_t direction) const {
+  for (uint8_t i = 0; i < kGuruguruBlinkCacheSlots; ++i) {
+    if (guruguruBlinkCacheReady_[i] && guruguruBlinkCacheDirection_[i] == direction) {
+      return static_cast<int8_t>(i);
+    }
+  }
+  return -1;
+}
+
+int8_t FaceController::prepareGuruguruBlinkCache(uint8_t direction) {
+#if STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED
+  if (direction != STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+    return -1;
+  }
+#endif
+  const int8_t existing = findGuruguruBlinkCacheSlot(direction);
+  if (existing >= 0) {
+    guruguruBlinkCacheLastUseMs_[existing] = millis();
+    return existing;
+  }
+
+  uint8_t slot = 0;
+  bool foundFree = false;
+  for (uint8_t i = 0; i < kGuruguruBlinkCacheSlots; ++i) {
+    if (!guruguruBlinkCacheAllocated_[i]) {
+      slot = i;
+      foundFree = true;
+      break;
+    }
+  }
+  if (!foundFree) {
+    unsigned long oldest = ~0UL;
+    bool foundEvictable = false;
+    for (uint8_t i = 0; i < kGuruguruBlinkCacheSlots; ++i) {
+      if (guruguruBlinkCacheReady_[i] &&
+          guruguruBlinkCacheDirection_[i] == STACKCHAN_GURUGURU_FACE_CENTER_INDEX) {
+        continue;
+      }
+      if (!foundEvictable || guruguruBlinkCacheLastUseMs_[i] < oldest) {
+        oldest = guruguruBlinkCacheLastUseMs_[i];
+        slot = i;
+        foundEvictable = true;
+      }
+    }
+  }
+
+  if (!guruguruBlinkCacheAllocated_[slot]) {
+    guruguruBlinkCache_[slot].setPsram(true);
+    guruguruBlinkCache_[slot].setColorDepth(16);
+    if (guruguruBlinkCache_[slot].createSprite(FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT) == nullptr) {
+      Serial.printf("[face] guruguru blink cache allocate failed dir=%u freePsram=%u\n",
+                    static_cast<unsigned>(direction),
+                    static_cast<unsigned>(ESP.getFreePsram()));
+      return -1;
+    }
+    guruguruBlinkCacheAllocated_[slot] = true;
+  }
+
+  char path[18];
+  snprintf(path,
+           sizeof(path),
+           "/blink%u.png",
+           static_cast<unsigned>(guruguruFaceSourceIndex(direction)));
+  if (!loadGuruguruFaceToCanvas(guruguruBlinkCache_[slot], path)) {
+    guruguruBlinkCacheReady_[slot] = false;
+    return -1;
+  }
+
+  guruguruBlinkCacheReady_[slot] = true;
+  guruguruBlinkCacheDirection_[slot] = direction;
+  guruguruBlinkCacheLastUseMs_[slot] = millis();
+  Serial.printf("[face] guruguru blink cache slot=%u dir=%u freePsram=%u\n",
+                static_cast<unsigned>(slot),
+                static_cast<unsigned>(direction),
+                static_cast<unsigned>(ESP.getFreePsram()));
+  return static_cast<int8_t>(slot);
+}
+
+bool FaceController::drawCachedGuruguruFace(const char* path) {
+  if (!guruguruFaceMode_ || state_ != ChanState::Idle) {
+    return false;
+  }
+  if (!prepareGuruguruFaceCache()) {
+    return false;
+  }
+
+  bool blink = false;
+  uint8_t direction = 0;
+  if (!parseGuruguruFacePath(path, blink, direction)) {
+    return false;
+  }
+
+  M5Canvas* source = nullptr;
+  if (blink) {
+    const int8_t slot = prepareGuruguruBlinkCache(direction);
+    if (slot < 0 || !guruguruBlinkCacheReady_[slot]) {
+      if (!guruguruDirCacheReady_[direction]) {
+        return true;
+      }
+      source = &guruguruDirCache_[direction];
+    } else {
+      source = &guruguruBlinkCache_[slot];
+    }
+  } else {
+    if (!guruguruDirCacheReady_[direction]) {
+      return false;
+    }
+    source = &guruguruDirCache_[direction];
+  }
+
+  const void* buffer = source->getBuffer();
+  if (buffer == nullptr) {
+    return false;
+  }
+
+  const int32_t x = (M5.Display.width() - FACE_IMAGE_WIDTH) / 2;
+  const int32_t y = (M5.Display.height() - FACE_IMAGE_HEIGHT) / 2;
+  const unsigned long now = millis();
+  if (canvasReady_) {
+    canvas_.fillScreen(TFT_BLACK);
+    canvas_.pushImage(x, y, FACE_IMAGE_WIDTH, FACE_IMAGE_HEIGHT, static_cast<const uint16_t*>(buffer));
+    drawAffectionOverlayOnCanvas(now);
+    drawBatteryOverlayOnCanvas();
+    drawCameraOverlayOnCanvas();
+    drawMicOverlayOnCanvas();
+    canvas_.pushSprite(&M5.Display, 0, 0);
+  } else {
+    M5.Display.fillScreen(TFT_BLACK);
+    source->pushSprite(&M5.Display, x, y);
+    drawAffectionOverlay(now);
+    drawBatteryOverlay();
+    drawCameraOverlay();
+    drawMicOverlay();
+  }
+  return true;
 }
 #endif
 
@@ -1800,28 +3589,51 @@ void FaceController::prepareTalkCache() {
   prepareRoundTalkCache(talkFacePath(0), talkFacePath(1));
   return;
 #else
+  const char* tierTalk0 = FACE_TALK_0_PATH;
+  const char* tierTalk1 = FACE_TALK_1_PATH;
+  const char* tierIdle = FACE_IDLE_PATH;
+  const char* tierListen = FACE_LISTEN_PATH;
+  const char* tierBlink = FACE_BLINK_PATH;
+  if (visualTierIndex() == 1) {
+    tierTalk0 = fallbackFacePath(FACE_TALK_GUARDED_0_PATH,
+                                 fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_TALK_0_PATH));
+    tierTalk1 = fallbackFacePath(FACE_TALK_GUARDED_1_PATH, FACE_TALK_1_PATH);
+    tierIdle = fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_IDLE_PATH);
+    tierListen = fallbackFacePath(FACE_IDLE_GUARDED_0_PATH, FACE_LISTEN_PATH);
+    tierBlink = fallbackFacePath(FACE_BLINK_GUARDED_0_PATH, FACE_BLINK_PATH);
+  } else if (visualTierIndex() == 3) {
+    tierTalk0 = fallbackFacePath(FACE_TALK_ATTACHED_0_PATH,
+                                 fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_TALK_0_PATH));
+    tierTalk1 = fallbackFacePath(FACE_TALK_ATTACHED_1_PATH, FACE_TALK_1_PATH);
+    tierIdle = fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_IDLE_PATH);
+    tierListen = fallbackFacePath(FACE_IDLE_ATTACHED_0_PATH, FACE_LISTEN_PATH);
+    tierBlink = fallbackFacePath(FACE_BLINK_ATTACHED_0_PATH, FACE_BLINK_PATH);
+  }
+
   const char* paths[kTalkCacheSetCount][2] = {
-    {FACE_TALK_0_PATH, FACE_TALK_1_PATH},
-    {FACE_BAD_0_PATH, FACE_BAD_1_PATH},
-    {FACE_GOOD_0_PATH, FACE_GOOD_1_PATH},
-    {FACE_PHOTO_0_PATH, FACE_PHOTO_1_PATH},
-    {FACE_PHOTO_MASTER_0_PATH, FACE_PHOTO_MASTER_1_PATH},
-    {FACE_NADENADE_0_PATH, FACE_NADENADE_1_PATH},
-    {FACE_FURIFURI_0_PATH, FACE_FURIFURI_1_PATH},
-    {fallbackFacePath(FACE_TALK_GUARDED_0_PATH, FACE_IDLE_GUARDED_0_PATH), FACE_TALK_GUARDED_1_PATH},
-    {fallbackFacePath(FACE_TALK_ATTACHED_0_PATH, FACE_IDLE_ATTACHED_0_PATH), FACE_TALK_ATTACHED_1_PATH},
-    {FACE_PET_GUARDED_0_PATH, FACE_PET_GUARDED_1_PATH},
-    {FACE_PET_ATTACHED_0_PATH, FACE_PET_ATTACHED_1_PATH},
-    {FACE_SHAKE_GUARDED_0_PATH, FACE_SHAKE_GUARDED_1_PATH},
-    {FACE_SHAKE_ATTACHED_0_PATH, FACE_SHAKE_ATTACHED_1_PATH},
-    {FACE_TIRED_0_PATH, FACE_TIRED_TALK_PATH},
-    {FACE_EXHAUSTED_0_PATH, FACE_EXHAUSTED_TALK_PATH},
-    {FACE_LOW_POWER_0_PATH, FACE_LOW_POWER_TALK_PATH},
-  };
+	    {tierTalk0, tierTalk1},
+	    {FACE_BAD_0_PATH, FACE_BAD_1_PATH},
+	    {FACE_GOOD_0_PATH, FACE_GOOD_1_PATH},
+	    {FACE_PHOTO_0_PATH, FACE_PHOTO_1_PATH},
+	    {FACE_PHOTO_MASTER_0_PATH, FACE_PHOTO_MASTER_1_PATH},
+	    {FACE_FURIFURI_0_PATH, FACE_FURIFURI_1_PATH},
+	    {tierIdle, tierListen},
+	    {tierBlink, FACE_SMILE_PATH},
+	    {FACE_GOOD_BLINK_PATH, FACE_PHOTO_BLINK_PATH},
+	    {FACE_PHOTO_BLINK_TALK_PATH, FACE_TIRED_BLINK_PATH},
+	    {FACE_EXHAUSTED_BLINK_PATH, FACE_LOW_POWER_BLINK_PATH},
+	    {FACE_TIRED_0_PATH, FACE_TIRED_TALK_PATH},
+	    {FACE_EXHAUSTED_0_PATH, FACE_EXHAUSTED_TALK_PATH},
+	    {FACE_LOW_POWER_0_PATH, FACE_LOW_POWER_TALK_PATH},
+	    {FACE_NADENADE_0_PATH, FACE_NADENADE_1_PATH},
+	  };
 
   for (int setIndex = 0; setIndex < kTalkCacheSetCount; ++setIndex) {
     for (int i = 0; i < 2; ++i) {
-      if (!LittleFS.exists(paths[setIndex][i])) {
+      if (talkCacheReady_[setIndex][i]) {
+        continue;
+      }
+      if (resolvedImagePath(paths[setIndex][i]).isEmpty()) {
         Serial.printf("[face] talk cache %d:%d skipped missing %s\n", setIndex, i, paths[setIndex][i]);
         talkCacheReady_[setIndex][i] = false;
         continue;
@@ -1835,32 +3647,48 @@ void FaceController::prepareTalkCache() {
       }
 
       talkCanvas_[setIndex][i].fillScreen(TFT_BLACK);
-      talkCacheReady_[setIndex][i] = loadPngToCanvas(talkCanvas_[setIndex][i], paths[setIndex][i], 0, 0);
+      talkCacheReady_[setIndex][i] = loadImageToCanvas(talkCanvas_[setIndex][i], paths[setIndex][i], 0, 0);
       Serial.printf("[face] talk cache %d:%d: %s\n", setIndex, i, talkCacheReady_[setIndex][i] ? "ready" : "failed");
     }
   }
 #endif
 }
 
-bool FaceController::loadPngToCanvas(M5Canvas& canvas, const char* path, int32_t x, int32_t y) {
-  if (!LittleFS.exists(path)) {
+void FaceController::releaseTalkCache() {
+#if STACKCHAN_ROUND_DISPLAY
+  releaseRoundTalkCache();
+#else
+  for (int setIndex = 0; setIndex < kTalkCacheSetCount; ++setIndex) {
+    for (int i = 0; i < 2; ++i) {
+      talkCanvas_[setIndex][i].deleteSprite();
+      talkCacheReady_[setIndex][i] = false;
+    }
+  }
+#endif
+}
+
+bool FaceController::loadImageToCanvas(M5Canvas& canvas, const char* path, int32_t x, int32_t y) {
+  const String imagePath = resolvedImagePath(path);
+  if (imagePath.isEmpty()) {
     Serial.printf("[face] missing cache file: %s\n", path);
     return false;
   }
 
-  File file = LittleFS.open(path, "r");
+  File file = LittleFS.open(imagePath, "r");
   if (!file) {
-    Serial.printf("[face] failed to open cache file: %s\n", path);
+    Serial.printf("[face] failed to open cache file: %s\n", imagePath.c_str());
     return false;
   }
 
-  bool ok = canvas.drawPng(&file, x, y);
+  bool ok = isJpegPath(imagePath.c_str()) ? canvas.drawJpg(&file, x, y) : canvas.drawPng(&file, x, y);
   file.close();
   return ok;
 }
 
 void FaceController::scheduleBlink(unsigned long now) {
-  nextBlinkMs_ = now + random(BLINK_MIN_INTERVAL_MS, BLINK_MAX_INTERVAL_MS + 1);
+  const unsigned long minInterval = guruguruFaceMode_ ? GURUGURU_BLINK_MIN_INTERVAL_MS : BLINK_MIN_INTERVAL_MS;
+  const unsigned long maxInterval = guruguruFaceMode_ ? GURUGURU_BLINK_MAX_INTERVAL_MS : BLINK_MAX_INTERVAL_MS;
+  nextBlinkMs_ = now + random(minInterval, maxInterval + 1);
 }
 
 void FaceController::scheduleSmile(unsigned long now) {

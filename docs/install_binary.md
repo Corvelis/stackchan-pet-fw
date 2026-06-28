@@ -20,7 +20,8 @@ device. Download the file that matches your device from the Release.
 | factory image | First-time install. Combines bootloader, partition table, firmware, and LittleFS runtime image data. |
 
 For release maintainers, this command generates assets with the same file names
-into `dist/`:
+into `dist/`. It uses the normal image directories for release assets, so do not
+set `STACKCHAN_FACE_DATA_DIR` when running it.
 
 ```sh
 bash scripts/build_release_bins.sh all
@@ -44,20 +45,25 @@ Example attribution for posts:
 Used with Stack-chan Multi-Device Controller
 ```
 
-## Tsukuyomi-chan Credit
+## Images And Credits
 
-This firmware uses standing illustration material for the free character
-"Tsukuyomi-chan" (© Rei Yumesaki).
+Factory images distributed through GitHub Releases include the normal image
+directories from this repository:
 
 ```text
-フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
-https://tyc.rei-yumesaki.net/
-
-つくよみちゃん万能立ち絵素材（花兎*様）
-https://tyc.rei-yumesaki.net/material/illust/
+data/
+data_stopwatch/
+data_atoms3r/
 ```
 
-Before publishing, review the official Tsukuyomi-chan terms and credit rules:
+`data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/` are local
+replacement sets. They are not committed and are not included in GitHub Release
+assets.
+
+If you use Tsukuyomi-chan material in a local replacement set, review the terms
+and credit rules for the free character "Tsukuyomi-chan" (© Rei Yumesaki) and
+the specific standing illustration material you use. This repository and the
+normal release binaries do not include the Tsukuyomi-chan material itself.
 
 - Terms: https://tyc.rei-yumesaki.net/about/terms/
 - Credit rules: https://tyc.rei-yumesaki.net/about/terms/credit/
@@ -69,8 +75,8 @@ On first boot, or when Wi-Fi is not configured, the device starts a setup access
 | Device | SSID | Password | URL |
 | --- | --- | --- | --- |
 | CoreS3 | `StackChan-Direct` | `stackchan123` | `http://192.168.4.1/wifi` |
-| StopWatch | `StopWatch` | `stackchan123` | `http://192.168.4.1/wifi` |
-| AtomS3R | `AtomS3R` | `stackchan123` | `http://192.168.4.1/wifi` |
+| StopWatch | `StopWatch` | `stopwatch123` | `http://192.168.4.1/wifi` |
+| AtomS3R | `AtomS3R` | `atoms3r123` | `http://192.168.4.1/wifi` |
 
 On the device Network screen, use `Wi-Fi QR` to connect to the setup Wi-Fi, then
 use `Setup QR` to open the setup page. Without QR codes, connect a phone or PC
@@ -226,17 +232,34 @@ Common:
   Audio playback and lip-sync during speech continue.
 - CoreS3 mutes or unmutes mic streaming by tapping the mic overlay. AtomS3R Chatbot mutes or unmutes mic streaming by double-clicking BtnA on the normal face screen. StopWatch has no on-device mic mute control.
 
+Normal/voice screen and guruguru mode:
+
+Here, normal/voice screen means the face screen, not a settings screen. Guruguru
+face mode is not shown while a WebSocket / USB Serial conversation client is
+connected, while a settings screen is visible, or while the display is off. To
+try guruguru, disconnect the conversation client and return to the normal face
+screen.
+
+| Device | Enter/exit from normal/voice screen | Face direction in guruguru | Extra controls in guruguru |
+| --- | --- | --- | --- |
+| CoreS3 + Stack-chan | Double-click the power button | Touch input: touch/drag the screen for 16 directions plus center. IMU input: tilt the device | Triple-click or more on the power button switches touch/IMU input. Hold the screen in IMU input mode to reset the baseline |
+| StopWatch | Double-click BtnA | Touch input: touch/drag the screen for 8 directions plus center. IMU input: tilt the device | Double-click BtnB to switch touch/IMU input. Hold BtnB to reset the baseline |
+| AtomS3R Chatbot | Triple-click BtnA on the normal face screen | IMU only. Tilt the device for 16 directions plus center | Hold BtnA to reset the baseline. BtnA double-click does not mute the mic while guruguru is active |
+
 CoreS3:
 
 - Flick from an edge of the touch screen to show or hide the settings screen.
 - Back touch triggers petting.
+- Double-click the power button to toggle guruguru face mode. While guruguru is active, triple-click or more on the power button to switch between touch input and IMU input.
 - Tapping the camera overlay sends a `camera_button` event.
 - `Servo` saves the face reference position or returns to the saved position.
 
 StopWatch:
 
 - Short-press BtnA to show or hide the settings screen.
+- Double-click BtnA to toggle guruguru face mode.
 - Press BtnB or the power button to turn the display on or off.
+- While guruguru is active, double-click BtnB to switch between touch input and IMU input, and hold BtnB to reset the IMU baseline.
 - Touch or drag near the center of the normal face screen to trigger petting.
 - The settings screen order is Network, Display, Audio, Power, and StreetPass. Use the top `<` / `>` buttons or left/right flicks to switch pages.
 - On Display and Audio, tap `-` / `+` to adjust brightness or volume in 20-point steps.
@@ -244,11 +267,13 @@ StopWatch:
 AtomS3R Chatbot:
 
 - Short-press BtnA to advance pages. From the normal face screen it opens Network, then cycles Network -> StreetPass -> Audio -> Power -> normal screen.
+- Short-pressing BtnA while guruguru is active still advances pages. Opening Network stops the guruguru display.
 - Network screen: short-press moves to StreetPass, double-click shows or hides `Setup QR`, and hold switches between STA and SoftAP.
 - StreetPass screen: short-press moves to Audio, double-click switches Status / Profile / Latest views, and hold toggles StreetPass.
 - Audio screen: short-press moves to Power. Double-click enters volume adjust mode; while in that mode, short-press increases volume and hold decreases volume.
 - Power screen: short-press returns to the normal face screen, and hold toggles low-power mode.
 - Normal face screen: hold triggers petting, and double-click mutes or unmutes mic streaming.
+- Triple-click BtnA on the normal face screen to toggle IMU-only guruguru face mode. While guruguru is active, holding BtnA resets the IMU baseline instead of triggering petting.
 
 ### Calibrate CoreS3 Servo Home
 

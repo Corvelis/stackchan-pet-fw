@@ -4,7 +4,9 @@
 
 This directory describes the assets and steps for generating a 6x6 face sprite sheet for Stack-chan pet firmware with image generation AI tools such as ChatGPT Image or Gemini.
 
-The splitting step that creates the 48 firmware PNG files is handled separately in `tools/face_image_builder/build_faces_from_sprite_sheet/`.
+The splitting step that creates the 48 base face files is handled separately in
+`tools/face_image_builder/build_faces_from_sprite_sheet/`. Final firmware files
+are standardized to JPG with `prepare_firmware_assets.py`.
 
 ## Files
 
@@ -12,8 +14,15 @@ The splitting step that creates the 48 firmware PNG files is handled separately 
 tools/face_image_builder/generate_sprite_sheet/
   README.md
   README.en.md
-  sprite_sheet_prompt.md
+  sprite_sheet_prompt.txt
   grid_template_6x6.png
+  animation_prompts/
+    README.md
+    README.en.md
+    guruguru_5x5_prompt.txt
+    guruguru_blink_5x5_prompt.txt
+    petting_3x3_prompt.txt
+    dizzy_4x4_prompt.txt
   references/
     face_reference_01.png
     face_reference_02.png
@@ -33,7 +42,7 @@ Image B:
   one face image of your choice
 
 Prompt:
-  the full text of sprite_sheet_prompt.md
+  the full text of sprite_sheet_prompt.txt
 ```
 
 `grid_template_6x6.png` is the fixed 6x6 grid template.
@@ -41,7 +50,11 @@ Prompt:
 Image B should be one face image for the character you want to generate. The images in `references/` are sample reference images used while testing this repository.
 Choose one mostly front-facing image where the hairstyle, eyes, outfit, and accessories are easy to see.
 
-`sprite_sheet_prompt.md` is the prompt I used. Edit it as needed.
+`sprite_sheet_prompt.txt` is the prompt I used. Edit it as needed.
+
+For guruguru, petting, and dizzy animation sheets, use the prompt files under
+`animation_prompts/`. Split generated sheets with
+`tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py`.
 
 ## Image Generation Steps
 
@@ -53,25 +66,31 @@ Steps:
 1. Open a ChatGPT or Gemini chat where image generation is available.
 2. Attach `grid_template_6x6.png`.
 3. Attach one face image of your choice.
-4. Paste the full text of `sprite_sheet_prompt.md` into the message field.
+4. Paste the full text of `sprite_sheet_prompt.txt` into the message field.
 5. Start generation.
 6. Save the generated square 6x6 sprite sheet image.
-7. Pass the saved image to `build_faces.py` to split it into the 48 firmware PNG files.
+7. Pass the saved image to `build_faces.py` to split it into the 48 base face files.
+8. Convert the result into target-device JPG files with `prepare_firmware_assets.py`.
 
 ```bash
-python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --install-to data --backup-existing --detect-grid --clean
+python tools/face_image_builder/build_faces_from_sprite_sheet/build_faces.py sprite_sheet.png --out output_faces --detect-grid --clean
+python3 tools/face_image_builder/prepare_firmware_assets.py output_faces data --target cores3 --format jpg --clean
 ```
+
+Use `tools/face_image_builder/sprite_sheets/` when you want a local in-project
+staging area for generated sprite sheets. Actual image files under that folder
+are ignored by Git.
 
 ## Sample Generation Environments
 
-The sample images in `tools/face_image_builder/build_faces_from_sprite_sheet/samples/` were generated with the following setups.
+The sample images in `tools/face_image_builder/build_faces_from_sprite_sheet/samples/base_faces_6x6/` were generated with the following setups.
 
 | Sample | Generation environment |
 | --- | --- |
-| `sprite_sheet_sample_01.png` | Gemini Pro + nano banana 2 |
-| `sprite_sheet_sample_02.png` | Gemini Pro + nano banana 2 |
-| `sprite_sheet_sample_03.png` | GPT-5.5 highest intelligence + ChatGPT Image 2.0 |
-| `sprite_sheet_sample_04.png` | GPT-5.5 highest intelligence + ChatGPT Image 2.0 |
+| `base_faces_6x6/sprite_sheet_sample_01.png` | Gemini Pro + nano banana 2 |
+| `base_faces_6x6/sprite_sheet_sample_02.png` | Gemini Pro + nano banana 2 |
+| `base_faces_6x6/sprite_sheet_sample_03.png` | GPT-5.5 highest intelligence + ChatGPT Image 2.0 |
+| `base_faces_6x6/sprite_sheet_sample_04.png` | GPT-5.5 highest intelligence + ChatGPT Image 2.0 |
 
 Gemini was tested as a free user. ChatGPT was tested as a paid user. Both were tested from smartphone app chat UIs.
 

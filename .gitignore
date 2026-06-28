@@ -10,6 +10,9 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+*.log
+*.tmp
+*.bak
 tools/**/.DS_Store
 tools/**/__pycache__/
 tools/**/*.pyc
@@ -18,7 +21,17 @@ assets/.DS_Store
 assets/**/.DS_Store
 assets/
 backups/
+asset_backups/
+output_faces*/
+previews/
+tools/face_image_builder/**/output_faces*/
+tools/face_image_builder/**/previews/
+data_local/
+data_stopwatch_local/
+data_atoms3r_local/
 src/config_private.h
+src/idf_component.yml
 scripts/audit_face_assets.py
 scripts/capture_mic_ws.py
+scripts/convert_stopwatch_assets.py
 scripts/generate_stopwatch_assets.py
