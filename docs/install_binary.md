@@ -14,10 +14,25 @@ device. Download the file that matches your device from the Release.
 | StopWatch | `stackchan_stopwatch_firmware.bin` | `stackchan_stopwatch_factory.bin` |
 | AtomS3R Chatbot | `stackchan_atoms3r_firmware.bin` | `stackchan_atoms3r_factory.bin` |
 
+Also download `SHA256SUMS`, `LICENSE`, `ASSET_LICENSE.md`, and
+`THIRD_PARTY_NOTICES.md`. Run this in the directory containing the binaries to
+detect a damaged or mismatched download:
+
+```sh
+shasum -a 256 --ignore-missing -c SHA256SUMS
+```
+
+This verifies only the target files you downloaded. If you download every
+asset, omit `--ignore-missing` to detect missing files as well.
+
 | Type | Use |
 | --- | --- |
 | firmware bin | Update an existing install. Preserves Wi-Fi settings, LittleFS images, and CoreS3 servo calibration. |
 | factory image | First-time install. Combines bootloader, partition table, firmware, and LittleFS runtime image data. |
+
+After face asset v2 is installed, downgrading only the firmware may leave v2-only
+LittleFS assets that an older firmware cannot use. Restore the matching factory
+image or LittleFS image as well. See the [Face Asset v2 Migration Guide](face_asset_migration.md).
 
 For release maintainers, this command generates assets with the same file names
 into `dist/`. It uses the normal image directories for release assets, so do not
@@ -32,6 +47,7 @@ To generate one device, pass `cores3`, `stopwatch`, or `atoms3r`.
 ## Important Notes
 
 - Do not flash a binary built for a different device.
+- When downgrading from face asset v2, pair the old firmware with its matching old LittleFS image.
 - Flashing a factory image resets saved Wi-Fi settings, StreetPass settings, and CoreS3 servo home calibration.
 - Conversation does not work with this firmware alone.
 - Conversation, speech recognition, TTS, and response generation require a compatible phone app, WebSocket client, or USB Serial client.
@@ -60,13 +76,15 @@ data_atoms3r/
 replacement sets. They are not committed and are not included in GitHub Release
 assets.
 
-If you use Tsukuyomi-chan material in a local replacement set, review the terms
-and credit rules for the free character "Tsukuyomi-chan" (© Rei Yumesaki) and
-the specific standing illustration material you use. This repository and the
-normal release binaries do not include the Tsukuyomi-chan material itself.
+To replace the character, use the prompts, splitter, samples, and three-target
+workflow in the [Face Image Builder](../tools/face_image_builder/README.en.md).
+Create and validate a complete v2 set, then upload the target device's
+`data_local*` directory to LittleFS.
 
-- Terms: https://tyc.rei-yumesaki.net/about/terms/
-- Credit rules: https://tyc.rei-yumesaki.net/about/terms/credit/
+See [`ASSET_LICENSE.md`](../ASSET_LICENSE.md) for the terms covering bundled
+runtime images, sprite-sheet samples, and image-generation references. When
+replacing them, verify the rights and terms for every character and source
+asset you use.
 
 ## Wi-Fi Setup
 
@@ -224,13 +242,14 @@ See the [Device Guide](devices.md) for detailed target-specific controls.
 Common:
 
 - `Network` shows the current Wi-Fi mode, IP address, WebSocket endpoint, and Wi-Fi setup QR codes.
+- Turning the display off suspends Wi-Fi, HTTP, WebSocket, and USB Serial app connections. Turning it on starts Wi-Fi reconnection, so the conversation client must reconnect too. StreetPass BLE continues at a reduced rate.
 - If Wi-Fi is not configured, the device starts the target-specific setup Wi-Fi. Connect a phone or PC to it, then open `http://192.168.4.1/wifi`.
 - `Display` adjusts brightness and screen on/off. AtomS3R Chatbot has no `Display` screen.
 - `Audio` adjusts speaker volume.
 - `Pwr` shows battery, temperature, and low-power mode controls.
 - Low-power mode caps display brightness and reduces idle face updates.
   Audio playback and lip-sync during speech continue.
-- CoreS3 mutes or unmutes mic streaming by tapping the mic overlay. AtomS3R Chatbot mutes or unmutes mic streaming by double-clicking BtnA on the normal face screen. StopWatch has no on-device mic mute control.
+- CoreS3 mutes or unmutes mic streaming from its right-side mic overlay, StopWatch from its lower-right rim overlay, and AtomS3R Chatbot by double-clicking BtnA on the normal face screen.
 
 Normal/voice screen and guruguru mode:
 
@@ -261,8 +280,9 @@ StopWatch:
 - Press BtnB or the power button to turn the display on or off.
 - While guruguru is active, double-click BtnB to switch between touch input and IMU input, and hold BtnB to reset the IMU baseline.
 - Touch or drag near the center of the normal face screen to trigger petting.
-- The settings screen order is Network, Display, Audio, Power, and StreetPass. Use the top `<` / `>` buttons or left/right flicks to switch pages.
+- The settings screen order is Network, Display, Audio, Power, Steps, and StreetPass. Use the top `<` / `>` buttons or left/right flicks to switch pages.
 - On Display and Audio, tap `-` / `+` to adjust brightness or volume in 20-point steps.
+- Steps shows today's count, the 04:00 reset, and stored daily history.
 
 AtomS3R Chatbot:
 

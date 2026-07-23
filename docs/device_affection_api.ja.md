@@ -54,14 +54,38 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
   "deviceId": "stackchan_8f3a21",
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "dev",
+  "firmwareVersion": "0.4.0",
   "protocolVersion": 2,
-  "capabilities": ["device.info", "affection.get", "affection.sync"]
+  "faceRenderer": "image",
+  "faceRendererMode": "animated",
+  "faceAssetSchema": 2,
+  "faceAssetManifestPresent": true,
+  "faceAssetManifestValid": true,
+  "legacyFaceFallbackActive": false,
+  "capabilities": ["device.info", "affection.get", "affection.sync", "display.speech_bubble.v1"],
+  "display": {"width": 320, "height": 240, "shape": "rect"},
+  "speechBubble": {
+    "version": 1,
+    "sampleRate": 16000,
+    "maxSequenceIdUtf8Bytes": 64,
+    "maxTextUtf8Bytes": 512,
+    "maxQueuedCues": 16,
+    "maxPcmBytes": 8388608,
+    "defaultHoldMs": 800,
+    "maxHoldMs": 5000,
+    "stallTimeoutMs": 15000,
+    "preSpeakingHoldMs": 500
+  }
 }
 ```
 
 `deviceId` は初回起動時に生成してNVSに保存する安定IDです。IPアドレスやUSB接続ごとの
 一時IDではありません。保存できない場合は eFuse MAC 由来の安定IDへ fallback します。
+`faceRendererMode` は実際に選択された `classic` / `animated` / `transition` / `legacy` /
+`emergency` のいずれかです。不正なmanifestでは `faceAssetError`、画像欠落時は
+`faceAssetMissing` も追加されます。`display`と`speechBubble`は、クライアントが画面形状と
+吹き出し制限を実機から判定するための値です。StopWatchでは`capabilities`に`steps.sync`も
+追加されます。歩数JSONは[歩数カウンター／同期仕様](step_counter_protocol.ja.md)を参照してください。
 
 ## 本体が保持する状態
 
@@ -90,7 +114,9 @@ TTS 再生中または再生バッファのドレイン中は、音声再生を�
 絶対時刻ではありません。ログ、デバッグ、短時間の `repeat` 間引き補助に使い、
 再起動をまたいだ順序比較には使わないでください。
 
-会話スタイルは 5 段階、画像表示は 3 段階です。
+会話スタイルは5段階です。`visualTier`は旧クライアントとの互換と表示スタイル分類のため
+3段階で維持しますが、v2顔レンダラーではtierごとの静止顔画像を選びません。`legacy` fallbackでは
+互換のためこの値が参照される場合があります。
 
 | `levelIndex` | `level` | `styleId` | `visualTier` |
 | ---: | --- | --- | --- |

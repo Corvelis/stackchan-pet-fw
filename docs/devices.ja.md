@@ -14,6 +14,41 @@ USB Serial API は README と各 API 仕様を参照してください。
 
 設定用 Wi-Fi のパスワードはデバイス別です。設定ページは `http://192.168.4.1/wifi` です。
 
+## クラシック顔ビルド
+
+画像顔の代わりに、黒い背景へ白い目と口をプログラムで描くｽﾀｯｸﾁｬﾝのクラシック顔を選べます。
+通常の env は従来どおり画像顔を使います。
+
+| デバイス | クラシック顔 env |
+| --- | --- |
+| CoreS3 + ｽﾀｯｸﾁｬﾝ | `m5stack-cores3-classic` |
+| M5Stack StopWatch | `m5stack-stopwatch-classic` |
+| M5Stack AtomS3R Chatbot | `m5stack-atoms3r-chatbot-classic` |
+
+たとえば CoreS3 は次のようにビルドします。
+
+```sh
+pio run -e m5stack-cores3-classic
+pio run -e m5stack-cores3-classic -t upload
+```
+
+クラシック顔では、機種ごとの画面に合わせた位置と比率で目と口を描画し、瞬きとPCMの平均振幅に連動した
+8 段階・約6fpsの口パクを行います。CoreS3 は従来の320×240レイアウト、StopWatch は丸い正方形画面を
+広く使いながら口を下部の吹き出しより上に収めるレイアウト、AtomS3R は上部の吹き出しより下に目を置き、
+小さい画面でも潰れない線幅にした128×128レイアウトを使用します。吹き出しや接続状態などのオーバーレイは
+引き続き表示します。
+画像固有のなでなで・ぐるぐる・混乱顔アニメーションと、ぐるぐる操作は無効になります。
+なでなで入力による愛着度更新、音声再生、CoreS3 のサーボなど、その他のデバイス機能は
+そのまま動作します。
+
+外部の Avatar ライブラリは追加しておらず、既存の M5GFX 描画だけを使用します。
+接続先は `device.info.faceRenderer` の `classic` / `image` でビルド方式を判別できます。
+画像ビルドは起動時に `animated` / `transition` / `legacy` / `emergency` を選びます。
+実際の選択は `faceRendererMode`、manifest schemaは `faceAssetSchema`、検証結果は
+`faceAssetManifestPresent` / `faceAssetManifestValid` で確認できます。旧5枚fallback中は
+`legacyFaceFallbackActive` が `true` です。既存の `faceRenderer` は互換のため維持します。詳細は
+`docs/face_renderer_v2.ja.md` を参照してください。
+
 ## 機能差分
 
 | 機能 | CoreS3 | StopWatch | AtomS3R Chatbot |
@@ -34,6 +69,7 @@ USB Serial API は README と各 API 仕様を参照してください。
 | ぐるぐる混乱 | あり | あり | あり |
 | バイブ | なし | あり | なし |
 | 時計表示 | なし | あり | なし |
+| 歩数カウンター／30日履歴 | なし | あり | なし |
 | StreetPass | あり | あり | あり |
 
 `motion` / `pose` コマンドはサーボ非搭載機種でも受け付けますが、物理的な首振りは発生しません。
@@ -44,8 +80,9 @@ USB Serial API は README と各 API 仕様を参照してください。
 - CoreS3 は `STACKCHAN_HAS_SERVO=1`、`STACKCHAN_HAS_CAMERA=1`、`STACKCHAN_HAS_BACK_TOUCH=1` で、サーボ、カメラ、背面タッチを使います。
 - StopWatch は `STACKCHAN_ROUND_DISPLAY=1`、`STACKCHAN_HAS_SCREEN_TOUCH_PETTING=1`、`STACKCHAN_HAS_HAPTIC=1` で、丸画面、画面タッチなでなで、バイブ、時計表示を使います。
 - AtomS3R Chatbot は `STACKCHAN_SMALL_DISPLAY=1`、`STACKCHAN_HAS_ATOMIC_ECHO_BASE=1` で、タッチなしの BtnA 操作と Atomic Echo Base の音声入出力を使います。
-- なでなで表示は3機種とも `pet_anim_0..pet_anim_8` を使います。発火入力だけが異なり、CoreS3 は背面タッチ、StopWatch は画面中央付近のタッチ/ドラッグ、AtomS3R は BtnA 長押しです。
-- ぐるぐる表示は3機種とも `dir*` / `blink*` / `dizzy_*` 画像を使います。CoreS3 と AtomS3R は16方向+中央、StopWatch は実行時は8方向+中央です。画像セットは生成フローを統一するため、StopWatch 用フォルダにも `dir0..dir16` と `blink0..blink16` を置きます。
+- StopWatchはIMUで歩数を計測し、日本時間の午前4時を日付区切りとして当日を含む最大30日分を本体へ保存します。詳細は[歩数カウンター／同期仕様](step_counter_protocol.ja.md)を参照してください。
+- なでなで表示は3機種とも `pet_anim_0..pet_anim_15` を使います。発火入力だけが異なり、CoreS3 は背面タッチ、StopWatch は画面中央付近のタッチ/ドラッグ、AtomS3R は BtnA 長押しです。
+- ぐるぐる表示は3機種とも `dir*` / `blink*` / `dizzy_*` 画像を使います。CoreS3 と AtomS3R は `dir0..16` と中央の `blink16`、StopWatch は縮約した `dir0..8` と中央の `blink8` を使います。
 - ぐるぐる混乱の回転判定は機種別です。CoreS3 は2秒窓で合計32ステップ/偏り24ステップ、StopWatch は合計16ステップ/偏り12ステップ、AtomS3R は合計22ステップ/偏り4ステップを使います。AtomS3R はさらに大きく不規則に振られた時の IMU shake 混乱判定として、0.40G 以上の変化が900ms続く条件も使います。
 - 画像ファイルは LittleFS 上のJPGとして持ち、実行時のぐるぐる方向、blink、混乱フレームは `STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED` 配下で `M5Canvas` にキャッシュします。キャンバスは `setPsram(true)` を使い、PSRAMを優先して確保します。
 
@@ -57,8 +94,13 @@ USB Serial API は README と各 API 仕様を参照してください。
 | デバイス | 通常/ボイス画面 | ぐるぐる顔モード中 | 設定画面 |
 | --- | --- | --- | --- |
 | CoreS3 + ｽﾀｯｸﾁｬﾝ | 電源短押しで画面ON/OFF。電源ダブルクリックでぐるぐるON。背面タッチでなでなで。画面端フリックで設定画面 | 電源ダブルクリックでぐるぐるOFF。電源3クリック以上でタッチ/IMU切替。タッチ入力時は画面タッチ/ドラッグで16方向+中央。IMU入力時は本体傾き、画面長押しで基準リセット | Network 長押しでSTA/SoftAP切替。Servo画面で原点保存/復帰 |
-| StopWatch | BtnA短押しで設定画面。BtnAダブルクリックでぐるぐるON。BtnB/電源短押しで画面ON/OFF。画面中央タッチ/ドラッグでなでなで | BtnAダブルクリックでぐるぐるOFF。BtnBダブルクリックでタッチ/IMU切替。BtnB長押しで基準リセット。タッチ入力時は画面タッチ/ドラッグで8方向+中央。IMU入力時は本体傾き | `<` / `>` または左右フリックでページ移動。Network長押しでSTA/SoftAP切替 |
+| StopWatch | BtnA短押しで設定画面。BtnAダブルクリックでぐるぐるON。BtnB/電源短押しで画面ON/OFF。画面中央タッチ/ドラッグでなでなで。接続中は右下のマイク表示タップでミュート | BtnAダブルクリックでぐるぐるOFF。BtnBダブルクリックでタッチ/IMU切替。BtnB長押しで基準リセット。タッチ入力時は画面タッチ/ドラッグで8方向+中央。IMU入力時は本体傾き | `<` / `>` または左右フリックでページ移動。Network長押しでSTA/SoftAP切替 |
 | AtomS3R Chatbot | BtnA短押しでNetworkへ。BtnAダブルクリックでマイクミュート。BtnA長押しでなでなで。BtnA 3クリックでぐるぐるON | BtnA 3クリックでぐるぐるOFF。IMU入力固定。BtnA長押しで基準リセット。BtnA短押しはページ送りとして扱い、Networkを開くとぐるぐる表示は止まる。BtnAダブルクリックは無効 | BtnA短押しでページ移動。Network長押しでSTA/SoftAP切替。Audioでダブルクリックすると音量調整モード |
+
+画面をオフにすると、音声状態とアプリ接続を終了し、Wi-Fi、HTTP、WebSocket、USB Serialを
+停止します。画面をオンにするとWi-Fi再接続を開始するため、クライアント側も再接続してください。
+StreetPass BLEは画面オフ中も低頻度で継続します。StopWatchはさらにCPU周波数を下げ、短い
+light sleepを使用します。
 
 ## 共通セットアップ
 
@@ -166,20 +208,21 @@ StopWatch はデフォルトで `data_stopwatch/` を LittleFS に書き込み�
 - ぐるぐる顔モード中の BtnB ダブルクリック: タッチ入力と IMU 入力を切り替え。
 - ぐるぐる顔モード中の BtnB 長押し: IMU 基準姿勢をリセット。
 - 通常画面中央付近を短く押し続ける、または中央付近からドラッグ: なでなで反応。画面オフ中と設定画面表示中は無効です。
+- WebSocket または USB Serial クライアント接続中に通常画面右下外周のマイク表示をタップ: マイク送信のミュート/解除。マイク表示のタップ領域はなでなで判定から除外されます。
 - ぐるぐる顔モード中の通常画面タッチ/ドラッグ: タッチ入力時は8方向+中央の顔向きとして扱います。IMU 入力時は本体の傾きで顔向きを動かします。
 - 設定画面上部の `<` / `>` ボタンをタップ: 前/次の設定ページへ移動。
 - 設定画面を左右フリック: 前/次の設定ページへ移動。左向きフリックで次ページ、右向きフリックで前ページです。
-- 設定ページの順序: Network -> Display -> Audio -> Power -> StreetPass -> Network。StopWatch には Servo ページはありません。
+- 設定ページの順序: Network -> Display -> Audio -> Power -> Steps -> StreetPass -> Network。StopWatch には Servo ページはありません。
 - QR 表示中に画面をタップ: Network 画面へ戻る。
 - Network 画面を長押し: STA / SoftAP の切り替え。SoftAP では `Wi-Fi QR` と `Setup QR`、STA 接続済みでは `Setup QR` をタップして QR を表示できます。
 - Display 画面: `-` / `+` をタップして明るさを 20 単位で調整。`Screen Off` / `Screen On` をタップして画面オン/オフ。
 - Audio 画面: `-` / `+` をタップしてスピーカー音量を 20 単位で調整。
 - Power 画面: `Low Power On` / `Low Power Off` をタップして低電力モードを切り替え。
+- Steps 画面: 当日の歩数、午前4時のリセット、保存済みの日別履歴を確認。
 - StreetPass 画面: `Turn On` / `Turn Off` で StreetPass On/Off、`Profile` / `History` で自分のプロフィール表示と最新履歴表示を切り替え。
 
 StopWatch にはカメラとサーボがありません。HTTP `/capture`、USB Serial `capture.request`、
-サーボ原点調整、カメラ表示操作は使えません。丸画面 UI ではマイク表示タップによる
-ミュート/解除操作もありません。
+サーボ原点調整、カメラ表示操作は使えません。
 
 ## M5Stack AtomS3R Chatbot
 

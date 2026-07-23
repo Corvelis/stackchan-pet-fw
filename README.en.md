@@ -1,6 +1,6 @@
 # Stack-chan Multi-Device Controller
 
-[日本語](README.md) | [English](README.en.md)
+[日本語](README.ja.md) | [English](README.en.md)
 
 Firmware for an M5Stack CoreS3 based Stack-chan, M5Stack StopWatch, and M5Stack
 AtomS3R Chatbot. It provides face rendering, microphone/speaker streaming,
@@ -29,7 +29,8 @@ implementations are out of scope.
 - Local petting and shake reactions. The physical interaction differs by device.
 - Persistent affection state controlled through WebSocket events.
 - Device-side interaction events for petting, shake, camera button, session start, and level changes.
-- On-device settings screen for network, display, audio, power, and StreetPass controls.
+- On-device settings for network, display, audio, power, StreetPass, and StopWatch Steps.
+- StopWatch device-side step counting, 04:00 day rollover, 30-day history, and client sync.
 - Battery, microphone, affection, thermal, and low-power visual overlays.
 
 ## Hardware
@@ -45,11 +46,11 @@ implementations are out of scope.
 
 PlatformIO environments:
 
-| Device | env | LittleFS image directory |
-| --- | --- | --- |
-| CoreS3 + Stack-chan | `m5stack-cores3` | `data/` |
-| StopWatch | `m5stack-stopwatch` | `data_stopwatch/` |
-| AtomS3R Chatbot | `m5stack-atoms3r-chatbot` | `data_atoms3r/` |
+| Device | Image face env | Classic face env | LittleFS image directory |
+| --- | --- | --- | --- |
+| CoreS3 + Stack-chan | `m5stack-cores3` | `m5stack-cores3-classic` | `data/` |
+| StopWatch | `m5stack-stopwatch` | `m5stack-stopwatch-classic` | `data_stopwatch/` |
+| AtomS3R Chatbot | `m5stack-atoms3r-chatbot` | `m5stack-atoms3r-chatbot-classic` | `data_atoms3r/` |
 
 See the [Device Guide](docs/devices.md) for target-specific build commands,
 controls, and unsupported features.
@@ -78,13 +79,18 @@ Required:
 - `platformio.ini`: PlatformIO build configuration.
 - `boards/`: board definitions not bundled with PlatformIO.
 - `src/`: firmware source code.
+- `src/*Controller.{h,cpp}`: feature controllers for display, audio, communication, and sensors.
+- `CONTRIBUTING.md`: build checks and commit guidance for changes.
 - `data/`: CoreS3 LittleFS face images. Default JPG files are included.
 - `data_stopwatch/`: StopWatch LittleFS face images.
 - `data_atoms3r/`: AtomS3R Chatbot LittleFS face images.
 - `docs/devices.md`: device-specific build and operation guide.
 - `docs/device_affection_api.md`: detailed device-side affection API notes.
 - `docs/usb_serial_protocol.md`: USB Serial frame protocol notes for app clients.
+- `docs/step_counter_protocol.md`: StopWatch step-counter and sync JSON protocol.
+- `docs/speech_bubble_protocol.md`: TTS speech-bubble protocol details.
 - `docs/streetpass_protocol.md`: StreetPass BLE and JSON API details.
+- `docs/release_notes_0.4.0.md`: 0.4.0 update, migration, and downgrade notes.
 
 Optional:
 
@@ -94,9 +100,13 @@ Optional:
 Ignored:
 
 - `.pio/`: build output and downloaded dependencies.
+- `dist/`: generated firmware and factory images for GitHub Releases.
 - `.DS_Store`: macOS metadata.
 - `src/config_private.h`: local Wi-Fi credentials.
 - `assets/`: local source/reference image assets.
+- `data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/`: personal complete image sets.
+- `face_assets_v2_work/`: sprite-sheet splitting, conversion, and review workspace.
+- `legacy_face_assets_local/`: legacy migration and fallback-test fixtures.
 
 ## Setup
 
@@ -118,9 +128,10 @@ cp src/config_private.example.h src/config_private.h
 #define WIFI_PASSWORD_2 ""
 ```
 
-4. Prepare the face image files listed below as `.jpg` in the target device's image
-   directory. CoreS3 uses `data/`, StopWatch uses `data_stopwatch/`, and
-   AtomS3R Chatbot uses `data_atoms3r/`.
+4. The bundled face asset v2 set is ready to use. Only when replacing the
+   character, use the [Face Image Builder](tools/face_image_builder/README.en.md)
+   to create a complete v2 set and `face_assets.json`, then place it in an
+   ignored `data_local*` directory.
 5. Connect the target device by USB.
 6. Optionally compile without flashing. Replace `<env>` with the target
    environment:
@@ -165,19 +176,30 @@ The generated filenames match the release asset table in the
 
 ## Face Images
 
-The firmware loads face images from LittleFS using the paths in `src/config.h`.
-The file names are shared by all devices, but the upload source directory and
-recommended image size differ by target.
+> [!IMPORTANT]
+> Release assets have completed the face asset v2 cutover and select the
+> `animated` renderer. Legacy static faces are not shipped. Firmware-only
+> updates can still use an old five-file set already present on a device as a limited fallback.
 
-| Device | Upload source | Recommended size |
-| --- | --- | --- |
-| CoreS3 + Stack-chan | `data/` | 240 x 240 |
-| StopWatch | `data_stopwatch/` | 386 x 386 |
-| AtomS3R Chatbot | `data_atoms3r/` | 128 x 128 |
+See the [0.4.0 Release Notes](docs/release_notes_0.4.0.md) for the change summary
+and update guidance for existing installations.
 
-Plain `pio run -e <env> -t uploadfs` uses the normal directory shown above. To use
-another image directory such as `data_local/`, `data_stopwatch_local/`, or
-`data_atoms3r_local/`, select it explicitly at build time:
+The firmware loads JPG frames from LittleFS. See [Face Renderer v2](docs/face_renderer_v2.md)
+for naming, profiles, and renderer selection, and the
+[Face Asset v2 Migration Guide](docs/face_asset_migration.md) for update behavior.
+
+| Device | Upload source | Size | JPG files | Center direction |
+| --- | --- | ---: | ---: | --- |
+| CoreS3 + Stack-chan | `data/` | 240x240 | 65 | `dir16` / `blink16` |
+| StopWatch | `data_stopwatch/` | 386x386 | 57 | `dir8` / `blink8` |
+| AtomS3R Chatbot | `data_atoms3r/` | 128x128 | 65 | `dir16` / `blink16` |
+
+Each directory contains 16 base frames, 16 petting frames, direction faces, one
+center blink, 15 dizzy frames, and `face_assets.json`. Base frames are named
+`base_m0_e0..base_m3_e3`, with mouth rows and eye columns.
+
+Plain `uploadfs` uses the release directory shown above. Put personal images in
+ignored `data_local*` directories and select one explicitly:
 
 ```sh
 STACKCHAN_FACE_DATA_DIR=data_local pio run -e m5stack-cores3 -t uploadfs
@@ -185,90 +207,19 @@ STACKCHAN_FACE_DATA_DIR=data_stopwatch_local pio run -e m5stack-stopwatch -t upl
 STACKCHAN_FACE_DATA_DIR=data_atoms3r_local pio run -e m5stack-atoms3r-chatbot -t uploadfs
 ```
 
-Runtime image files are standardized to `.jpg`. The paths in `src/config.h` keep
-the older `.png` names for compatibility, and the firmware resolves them to
-matching `.jpg` files.
-Each completed image directory contains 106 JPG files: the 48 base faces plus
-`dir0..dir16`, `blink0..blink16`, `pet_anim_0..pet_anim_8`, and
-`dizzy_01..dizzy_15`.
+To replace the character, create complete 4x4 base and petting sheets plus
+direction, center-blink, and dizzy sets. The
+[Face Image Builder](tools/face_image_builder/README.en.md) provides prompts for
+creating sprite sheets from a reference image, the splitter, bundled samples,
+and target-specific resize, naming, and manifest generation. Generate and
+validate under `face_assets_v2_work/` first, then move only a complete,
+device-tested set into `data_local*` or the release `data*` directories.
 
-To replace them with your own images, place JPG files with the matching stems in
-the target device's image directory.
+Affection, authentication, thermal, low-power, and camera state do not replace
+the base face. Their calculations and protective behavior remain active, with
+relevant information shown through overlays.
 
-To generate the face images from a 6x6 sprite sheet created with image generation AI,
-use [`tools/face_image_builder/`](tools/face_image_builder/). It includes the prompt,
-grid template, sprite sheet splitting CLI, and target image-directory installation workflow.
-
-Folders under `assets/` are only source/reference work areas and are not read
-directly by the firmware. Rename/export the runtime images to the filenames
-below, place them directly under the target device's image directory, then run
-`pio run -e <env> -t uploadfs` to write them to LittleFS.
-See `docs/face_image_inventory.ja.md` for the current image cleanup notes.
-
-| File | Expected image | Example source from Tsukuyomi-chan standing material |
-| --- | --- | --- |
-| `idle.png` | Default idle face, mouth closed. | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `listen.png` | Listening/ready face, mouth closed. | `01-02a 基本-目ぱっちり-口閉じ.png` |
-| `talk_0.png` | Normal speaking frame, mouth closed. | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `talk_1.png` | Normal speaking frame, mouth open. | `01-01b 基本-目ふんわり-口開け.png` |
-| `blink.png` | Normal blink frame. | `01-01c 基本-目ふんわり-目閉じ.png` |
-| `smile.png` | Idle smile frame used only in the normal affection tier. | `01-03ac 基本-にっこり-口閉じ.png` |
-| `good_0.png` | Positive/master-recognized face, mouth closed. | `02-04a 喜び・称賛-口閉じ.png` |
-| `good_1.png` | Positive/master-recognized face, mouth open. | `02-04b 喜び・称賛-口開け.png` |
-| `good_blink.png` | Positive/master-recognized blink frame. | `02-04c 喜び・称賛-目閉じ.png` |
-| `bad_0.png` | Negative/not-master face, mouth closed. | `10-03ac 覚悟-口閉じ.png` |
-| `bad_1.png` | Negative/not-master face, mouth open. | `10-03b 覚悟-口開け.png` |
-| `photo_0.png` | Camera/photo mode face, mouth closed. | `09-01a 祈り-口閉じ.png` |
-| `photo_1.png` | Camera/photo mode face, mouth open. | `09-01b 祈り-口開け.png` |
-| `photo_blink.png` | Camera/photo mode blink frame, mouth closed. | `09-01c 祈り-目閉じ・口閉じ.png` |
-| `photo_blink_talk.png` | Camera/photo mode blink frame, mouth open. | `09-01d 祈り-目閉じ・口開け.png` |
-| `photo_master_0.png` | Master-photo mode face, mouth closed. | `02-02ac ほんわか-手を組む-口閉じ.png` |
-| `photo_master_1.png` | Master-photo mode face, mouth open. | `02-02b ほんわか-手を組む-口開け.png` |
-| `nadenade_0.png` | Petting/nadenade face, mouth closed. | `02-01ac ほんわか-基本ポーズ-口閉じ.png` |
-| `nadenade_1.png` | Petting/nadenade face, mouth open. | `02-01b ほんわか-基本ポーズ-口開け.png` |
-| `furifuri_0.png` | Shake/furifuri face, mouth closed. | `07-01ac 大変です！-口閉じ.png` |
-| `furifuri_1.png` | Shake/furifuri face, mouth open. | `07-01b 大変です！-口開け.png` |
-
-Mouth-open files ending in `_1.png` are used during speaking animation. The
-matching `_0.png` files are used for the closed-mouth frame and for the base
-face in that mode.
-
-Additional optional face files can be added for richer visual states. The
-firmware falls back to the base faces above if these files are missing.
-`talk_guarded_0.png` and `talk_attached_0.png` are only needed when the
-closed-mouth speaking frame should differ from the idle face. If they are
-missing, the firmware uses `idle_guarded_0.png` / `idle_attached_0.png` as the
-closed-mouth speaking frame.
-
-| File group | Files |
-| --- | --- |
-| Guarded affection tier | `idle_guarded_0.png`, `blink_guarded_0.png`, `talk_guarded_0.png`, `talk_guarded_1.png` |
-| Attached affection tier | `idle_attached_0.png`, `blink_attached_0.png`, `talk_attached_0.png`, `talk_attached_1.png` |
-| Guarded petting | `pet_guarded_0.png`, `pet_guarded_1.png`, `pet_blink_guarded_0.png` |
-| Attached petting | `pet_attached_0.png`, `pet_attached_1.png`, `pet_blink_attached_0.png` |
-| Guarded shake | `shake_guarded_0.png`, `shake_guarded_1.png` |
-| Attached shake | `shake_attached_0.png`, `shake_attached_1.png` |
-| Thermal and low power | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
-
-This repository includes default JPG files generated from the local sprite-sheet
-workflow in
-`tools/face_image_builder/`. The "Example source from Tsukuyomi-chan standing
-material" column is only a reference for manually preparing replacement images.
-The original Tsukuyomi-chan material itself is not included in this repository.
-If you use it, download the original material from the official distribution
-page, follow its terms, export JPGs at the target device's recommended size, and
-place them in the target device's image directory.
-
-`data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/` are local
-replacement sets and are not included in GitHub Release assets. Credit when a
-local image set uses Tsukuyomi-chan material:
-
-```text
-フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
-https://tyc.rei-yumesaki.net/
-つくよみちゃん万能立ち絵素材（花兎*様）
-https://tyc.rei-yumesaki.net/material/illust/
-```
+See [`ASSET_LICENSE.md`](ASSET_LICENSE.md) for bundled image terms.
 
 ## Network Modes
 
@@ -327,12 +278,14 @@ The on-device Network screen can show QR codes for Wi-Fi setup.
 - Use Audio settings to adjust speaker volume. On AtomS3R Chatbot, double-click BtnA on the Audio screen to enter volume adjust mode, then short-press to increase volume or hold to decrease volume.
 - Use Servo settings to save the CoreS3 face reference position or return to the saved position.
 - Use Power settings to check thermal state, battery state, and low-power mode.
+- On StopWatch, use Steps settings to view today's count and stored daily history.
 - Low-power mode caps display brightness and reduces idle face updates and nodding motion.
   Audio playback and lip-sync during speech continue.
 - On CoreS3 / StopWatch, press the power button to toggle the display.
 - While the screen is off, petting and shake interactions are disabled.
-- On CoreS3, when a WebSocket or USB Serial client is connected, tap the microphone overlay
-  on the right side of the face screen to mute or unmute mic streaming.
+- Turning the display off ends the audio state and suspends Wi-Fi, HTTP, WebSocket, and USB Serial app communication. Turning it on starts Wi-Fi reconnection, so clients must reconnect as well. StreetPass BLE continues on a reduced schedule while the display is off.
+- On CoreS3 / StopWatch, when a WebSocket or USB Serial client is connected, tap the microphone
+  overlay (right side on CoreS3, lower-right rim on StopWatch) to mute or unmute mic streaming.
 - On AtomS3R Chatbot, double-click BtnA on the normal face screen to mute or unmute mic streaming.
 - On CoreS3, when a WebSocket or USB Serial client is connected, tap the camera overlay above the
   microphone overlay to send a `camera_button` event. The device does not send
@@ -384,16 +337,52 @@ Example `/status` response:
   "volume": 180,
   "micMuted": false,
   "micStreaming": true,
+  "mic": {
+    "enabled": true,
+    "captureActive": true,
+    "queuedPackets": 1,
+    "queueCapacity": 8,
+    "sentChunks": 120,
+    "droppedChunks": 0,
+    "captureUnderruns": 0,
+    "queueOverflows": 0,
+    "sendFails": 0,
+    "lastPeak": 820
+  },
+  "voicePerf": {
+    "active": false,
+    "sessionSeq": 3,
+    "loopCount": 0,
+    "maxLoopGapMs": 0,
+    "maxFaceFrameGapMs": 0
+  },
   "lowPowerMode": false,
   "thermalLevel": "Normal",
   "chipTempC": 48.5,
   "pmicTempC": 42.0,
   "batteryLevel": 87,
   "charging": false,
+  "streetpass": {
+    "enabled": true,
+    "bleReady": true,
+    "scanActive": false,
+    "advertising": true,
+    "exchangeInProgress": false,
+    "paused": false,
+    "pauseReason": ""
+  },
+  "currentState": "listening",
+  "audioState": "listening",
   "wifiConnected": true,
   "ip": "192.168.1.10"
 }
 ```
+
+This example shows representative fields. `mic` also includes per-transport
+counters, recent processing timestamps, and gain/filter settings; `voicePerf`
+includes maximum loop, rendering, audio, and transport timings during speech;
+and `streetpass` includes persistent state and BLE exchange details. Diagnostic
+clients should ignore unknown fields.
 
 ### WebSocket
 
@@ -494,7 +483,7 @@ Audio coexistence:
 
 - BLE scan, GATT, and advertisement stop while the device is listening with the microphone streaming, speaking, or draining playback.
 - If the microphone is turned off and `micStreaming=false`, StreetPass can run even while the high-level state is `Listening`.
-- Display-off mode keeps StreetPass and minimal communication tasks running while reducing display and touch work.
+- Display-off mode stops Wi-Fi, HTTP, WebSocket, and USB Serial app communication. Only StreetPass BLE continues with longer scan/exchange intervals, and Wi-Fi reconnection starts after display-on.
 
 Companion app APIs:
 
@@ -530,27 +519,32 @@ Set voice activity:
 { "type": "vad", "active": true }
 ```
 
-Set face mode:
+Set a semantic face mode:
 
 ```json
-{ "type": "face_mode", "value": "photo" }
+{ "type": "face_mode", "value": "normal" }
 ```
 
 Allowed values: `normal`, `photo`, `photo_master`, `nadenade`, `pet`,
 `furifuri`, `shake`.
 
-Show a specific face image:
+New integrations should use semantic values such as `normal`, `pet`, and
+`shake`. Under v2, `photo` and `photo_master` remain accepted only as
+compatibility inputs for old clients and do not select the old camera-specific
+images. `nadenade` / `pet` starts the
+petting animation, while `furifuri` / `shake` starts the dizzy animation.
+
+Legacy `face` command compatibility:
 
 ```json
 { "type": "face", "value": "idle" }
 ```
 
-Common values: `idle`, `listen`, `talk_0`, `talk_1`, `bad_0`, `bad_1`,
-`good_0`, `good_1`, `good_blink`, `photo_0`, `photo_1`, `photo_blink`,
-`photo_blink_talk`, `photo_master_0`, `photo_master_1`, `nadenade_0`,
-`nadenade_1`, `furifuri_0`, `furifuri_1`, `blink`, `smile`, and the optional
-guarded, attached, thermal, and low-power face names listed in the Face Images
-section.
+`face` is retained for old clients. In v2 it does not select an individual
+legacy image; it redraws the base animation for the active semantic state. The
+five-file legacy fallback accepts only `idle`, `listen`, `talk_0`, `talk_1`, and
+`blink` as direct names. New integrations should send semantic state through
+`state`, `vad`, `pet`, and `face_mode` instead.
 
 Set motion:
 
@@ -585,6 +579,16 @@ Set petting state:
 ```
 
 `nadenade` is accepted as an alias for `pet`.
+
+Inspect audio playback state:
+
+```json
+{ "type": "audio.playback_diag", "requestId": "playback-001" }
+```
+
+This is available over WebSocket and USB Serial. It reports buffering, PCM
+receive/drop counts, underflow, speaker queue, speech-bubble state, and speech
+processing timings. See [USB Serial Protocol](docs/usb_serial_protocol.md#audio-diagnostics).
 
 ## Affection Commands
 
@@ -727,5 +731,6 @@ Firmware source code in this repository is licensed under the MIT License. See
 
 Direct third-party library license notes are listed in `THIRD_PARTY_NOTICES.md`.
 
-This repository does not include third-party character image files. Prepare
-runtime images locally and follow the terms of the material you use.
+This repository does not include third-party character source material. Tracked
+runtime images and sprite-sheet samples are not licensed under MIT; see
+`ASSET_LICENSE.md`. Verify the rights and terms for any replacement images.

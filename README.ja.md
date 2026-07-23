@@ -1,6 +1,6 @@
 # Stack-chan Multi-Device Controller
 
-[日本語](README.md) | [English](README.en.md)
+[日本語](README.ja.md) | [English](README.en.md)
 
 M5Stack CoreS3 ベースのｽﾀｯｸﾁｬﾝ、M5Stack StopWatch、M5Stack AtomS3R Chatbot 向けの
 ファームウェアです。表情表示、マイク/スピーカー音声ストリーミング、なでなで/ふりふり反応、
@@ -28,7 +28,8 @@ README では、本体が公開する HTTP / WebSocket / USB Serial の口を記
 - 本体側のなでなで/ふりふり反応。反応方法はデバイスごとに異なります
 - WebSocket イベントによる好感度管理
 - なでなで、ふりふり、カメラボタン、接続開始、好感度レベル変化の本体側 interaction event
-- Network / Display / Audio / Power / StreetPass を切り替えられる本体設定画面
+- Network / Display / Audio / Power / StreetPass と、StopWatchのStepsを切り替えられる本体設定画面
+- StopWatch本体での歩数計測、午前4時区切りの30日履歴、クライアント同期
 - バッテリー、マイク、好感度、熱状態、低電力状態の画面オーバーレイ
 
 ## 必要なもの
@@ -44,11 +45,11 @@ README では、本体が公開する HTTP / WebSocket / USB Serial の口を記
 
 PlatformIO の環境名:
 
-| デバイス | env | LittleFS 画像ディレクトリ |
-| --- | --- | --- |
-| CoreS3 + ｽﾀｯｸﾁｬﾝ | `m5stack-cores3` | `data/` |
-| StopWatch | `m5stack-stopwatch` | `data_stopwatch/` |
-| AtomS3R Chatbot | `m5stack-atoms3r-chatbot` | `data_atoms3r/` |
+| デバイス | 画像顔 env | クラシック顔 env | LittleFS 画像ディレクトリ |
+| --- | --- | --- | --- |
+| CoreS3 + ｽﾀｯｸﾁｬﾝ | `m5stack-cores3` | `m5stack-cores3-classic` | `data/` |
+| StopWatch | `m5stack-stopwatch` | `m5stack-stopwatch-classic` | `data_stopwatch/` |
+| AtomS3R Chatbot | `m5stack-atoms3r-chatbot` | `m5stack-atoms3r-chatbot-classic` | `data_atoms3r/` |
 
 機種別のビルド方法、操作方法、非対応機能は
 [対応デバイス別ガイド](docs/devices.ja.md) を参照してください。
@@ -76,13 +77,18 @@ macOS で PlatformIO は入っているのに `pio` が見つからない場合�
 - `platformio.ini`: PlatformIO のビルド設定
 - `boards/`: PlatformIO に未収録のボード定義
 - `src/`: ファームウェア本体
+- `src/*Controller.{h,cpp}`: 表示、音声、通信、センサー処理を分離した機能コントローラ
+- `CONTRIBUTING.md`: 変更時のビルド確認とコミット方針
 - `data/`: CoreS3 用 LittleFS 表情画像。デフォルトの JPG を同梱しています
 - `data_stopwatch/`: StopWatch 用 LittleFS 表情画像
 - `data_atoms3r/`: AtomS3R Chatbot 用 LittleFS 表情画像
 - `docs/devices.ja.md`: デバイス別ビルド・操作ガイド
 - `docs/device_affection_api.ja.md`: 本体側の好感度 API 詳細
 - `docs/usb_serial_protocol.ja.md`: アプリ向け USB Serial frame protocol 詳細
+- `docs/step_counter_protocol.ja.md`: StopWatch歩数カウンター／同期JSON仕様
+- `docs/speech_bubble_protocol.ja.md`: TTS発話吹き出し protocol 詳細
 - `docs/streetpass_protocol.ja.md`: すれ違い通信 BLE / JSON API 詳細
+- `docs/release_notes_0.4.0.ja.md`: 0.4.0の更新・移行・ダウングレード案内
 
 任意:
 
@@ -92,9 +98,13 @@ macOS で PlatformIO は入っているのに `pio` が見つからない場合�
 GitHub に上げないもの:
 
 - `.pio/`: ビルド生成物とダウンロードされた依存ライブラリ
+- `dist/`: GitHub Releases向けの生成済みfirmware／factory image
 - `.DS_Store`: macOS のメタデータ
 - `src/config_private.h`: ローカル Wi-Fi 認証情報
 - `assets/`: ローカルの画像素材作業フォルダ
+- `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/`: 個人用の完成画像セット
+- `face_assets_v2_work/`: スプライトシートの分割・変換・確認用作業フォルダ
+- `legacy_face_assets_local/`: 旧画像の移行・fallback確認用フォルダ
 
 ## セットアップ手順
 
@@ -115,8 +125,9 @@ cp src/config_private.example.h src/config_private.h
 #define WIFI_PASSWORD_2 ""
 ```
 
-4. 後述の表情画像を `.jpg` で対象デバイスの画像ディレクトリに配置します。
-   CoreS3 は `data/`、StopWatch は `data_stopwatch/`、AtomS3R Chatbot は `data_atoms3r/` を使います。
+4. 通常は同梱済みの顔画像v2をそのまま使えます。自分のキャラクターへ差し替える場合だけ、
+   [顔画像ビルダー](tools/face_image_builder/README.md)で完全なv2画像セットと
+   `face_assets.json`を作り、Git管理外の`data_local*`へ配置してください。
 5. 対象デバイスを USB で接続します。
 6. 必要に応じて、ビルドだけ確認します。`<env>` は対象デバイスの環境名に置き換えてください。
 
@@ -159,19 +170,27 @@ bash scripts/build_release_bins.sh all
 
 ## 表情画像の配置
 
-ファームウェアは `src/config.h` に定義されたパスで LittleFS から画像を読みます。
-読み込むファイル名は全デバイス共通ですが、アップロード元ディレクトリと推奨サイズは
-デバイスごとに異なります。
+> [!IMPORTANT]
+> 通常配布画像は顔画像v2へ移行済みで、起動時に`animated`レンダラーを選びます。
+> 旧静止顔は配布物へ含めませんが、firmware-only更新では端末に残る旧基本5枚を
+> `legacy` fallbackとして利用できます。詳細は[顔画像v2移行ガイド](docs/face_asset_migration.ja.md)を参照してください。
 
-| デバイス | アップロード元 | 推奨サイズ |
-| --- | --- | --- |
-| CoreS3 + ｽﾀｯｸﾁｬﾝ | `data/` | 240 x 240 |
-| StopWatch | `data_stopwatch/` | 386 x 386 |
-| AtomS3R Chatbot | `data_atoms3r/` | 128 x 128 |
+更新内容と既存環境からの移行判断は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)にまとめています。
 
-通常の `pio run -e <env> -t uploadfs` は上表の通常フォルダを使います。
-`data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/` など別の画像フォルダを使う場合は、
-ビルド時に明示してください。
+ファームウェアはLittleFSからJPGを読みます。配布画像の構成、命名、レンダラー選択は
+[顔レンダラーv2](docs/face_renderer_v2.ja.md)にまとめています。
+
+| デバイス | アップロード元 | サイズ | JPG数 | 中央方向 |
+| --- | --- | ---: | ---: | --- |
+| CoreS3 + ｽﾀｯｸﾁｬﾝ | `data/` | 240×240 | 65 | `dir16` / `blink16` |
+| StopWatch | `data_stopwatch/` | 386×386 | 57 | `dir8` / `blink8` |
+| AtomS3R Chatbot | `data_atoms3r/` | 128×128 | 65 | `dir16` / `blink16` |
+
+各フォルダには、基本アニメーション16枚、なでなで16枚、方向顔、中央blink、混乱15枚と
+`face_assets.json`を置きます。基本顔は`base_m0_e0..base_m3_e3`で、行が口4段階、列が目4段階です。
+
+通常の`uploadfs`は上表のフォルダを使います。個人用画像はGit管理外の`data_local*`へ置き、
+ビルド時に明示します。
 
 ```sh
 STACKCHAN_FACE_DATA_DIR=data_local pio run -e m5stack-cores3 -t uploadfs
@@ -179,79 +198,17 @@ STACKCHAN_FACE_DATA_DIR=data_stopwatch_local pio run -e m5stack-stopwatch -t upl
 STACKCHAN_FACE_DATA_DIR=data_atoms3r_local pio run -e m5stack-atoms3r-chatbot -t uploadfs
 ```
 
-実機に置く画像ファイルは `.jpg` に統一しています。`src/config.h` の表情パスは後方互換で
-`.png` 名を使っていますが、ファームウェア側で同名の `.jpg` に解決します。
-完成ディレクトリは、基本顔48枚に加えて `dir0..dir16`、`blink0..blink16`、
-`pet_anim_0..pet_anim_8`、`dizzy_01..dizzy_15` を含む106 JPG構成です。
+自分のキャラクターへ差し替える場合は、4×4基本顔・4×4なでなで・方向・中央blink・混乱を
+セットで作成してください。[顔画像ビルダー](tools/face_image_builder/README.md)に、参考画像から
+スプライトシートを作るためのプロンプト、分割CLI、同梱サンプル、3機種向けのリサイズ・命名変換・
+manifest生成手順があります。まず`face_assets_v2_work/`で生成・検証し、実機確認済みの完全な
+セットだけを`data_local*`または配布用`data*`へ配置してください。
 
-自分の画像に差し替える場合は、次のファイル名で対象デバイスの画像ディレクトリに置いてください。
+好感度、認証、熱、低電力、撮影状態によって基本顔は切り替わりません。熱保護、低電力動作、
+好感度計算、撮影処理は継続し、必要な情報はoverlayで表示します。
 
-画像生成AIで 6x6 のスプライトシートを作って表情画像を生成する場合は、
-[`tools/face_image_builder/`](tools/face_image_builder/) を使えます。プロンプト、グリッドテンプレート、
-スプライトシート分割CLI、対象デバイスの画像ディレクトリへの配置手順をまとめています。
-
-`assets/` 配下のフォルダは素材作業用で、ファームウェアからは直接読みません。
-実機で使う画像は、下表のファイル名へリネームして対象デバイスの画像ディレクトリ直下に置き、
-`pio run -e <env> -t uploadfs` で LittleFS に書き込んでください。
-画像セットの整理方針は `docs/face_image_inventory.ja.md` にまとめています。
-
-| ファイル名 | 置いてほしい画像 | つくよみちゃん万能立ち絵素材を使う場合の例 |
-| --- | --- | --- |
-| `idle.png` | 通常待機顔。口閉じ。 | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `listen.png` | 聞き取り中/待ち受け顔。口閉じ。 | `01-02a 基本-目ぱっちり-口閉じ.png` |
-| `talk_0.png` | 通常発話の口閉じフレーム。 | `01-01a 基本-目ふんわり-口閉じ.png` |
-| `talk_1.png` | 通常発話の口開けフレーム。 | `01-01b 基本-目ふんわり-口開け.png` |
-| `blink.png` | 通常まばたきフレーム。 | `01-01c 基本-目ふんわり-目閉じ.png` |
-| `smile.png` | 通常好感度 tier の待機中にだけ出るにっこり顔。 | `01-03ac 基本-にっこり-口閉じ.png` |
-| `good_0.png` | ポジティブ/マスター認識時の口閉じ顔。 | `02-04a 喜び・称賛-口閉じ.png` |
-| `good_1.png` | ポジティブ/マスター認識時の口開け顔。 | `02-04b 喜び・称賛-口開け.png` |
-| `good_blink.png` | ポジティブ/マスター認識時のまばたき顔。 | `02-04c 喜び・称賛-目閉じ.png` |
-| `bad_0.png` | ネガティブ/not_master 時の口閉じ顔。 | `10-03ac 覚悟-口閉じ.png` |
-| `bad_1.png` | ネガティブ/not_master 時の口開け顔。 | `10-03b 覚悟-口開け.png` |
-| `photo_0.png` | 撮影/photo モードの口閉じ顔。 | `09-01a 祈り-口閉じ.png` |
-| `photo_1.png` | 撮影/photo モードの口開け顔。 | `09-01b 祈り-口開け.png` |
-| `photo_blink.png` | 撮影/photo モードの目閉じ・口閉じ顔。 | `09-01c 祈り-目閉じ・口閉じ.png` |
-| `photo_blink_talk.png` | 撮影/photo モードの目閉じ・口開け顔。 | `09-01d 祈り-目閉じ・口開け.png` |
-| `photo_master_0.png` | マスター撮影/photo_master モードの口閉じ顔。 | `02-02ac ほんわか-手を組む-口閉じ.png` |
-| `photo_master_1.png` | マスター撮影/photo_master モードの口開け顔。 | `02-02b ほんわか-手を組む-口開け.png` |
-| `nadenade_0.png` | なでなで/pet モードの口閉じ顔。 | `02-01ac ほんわか-基本ポーズ-口閉じ.png` |
-| `nadenade_1.png` | なでなで/pet モードの口開け顔。 | `02-01b ほんわか-基本ポーズ-口開け.png` |
-| `furifuri_0.png` | ふりふり/shake モードの口閉じ顔。 | `07-01ac 大変です！-口閉じ.png` |
-| `furifuri_1.png` | ふりふり/shake モードの口開け顔。 | `07-01b 大変です！-口開け.png` |
-
-`_1.png` で終わる口開け画像は発話アニメーションで使います。対応する `_0.png` は
-口閉じフレームで、そのモードの基本顔としても使います。
-
-より細かい状態表示を使う場合は、次の追加画像も配置できます。存在しない場合、
-ファームウェアは上記の基本表情へフォールバックします。
-`talk_guarded_0.png` と `talk_attached_0.png` は、口閉じ発話フレームを
-idle 顔と分けたい場合だけ用意してください。存在しない場合は、それぞれ
-`idle_guarded_0.png` / `idle_attached_0.png` を口閉じフレームとして使います。
-
-| グループ | ファイル名 |
-| --- | --- |
-| 警戒寄りの好感度 tier | `idle_guarded_0.png`, `blink_guarded_0.png`, `talk_guarded_0.png`, `talk_guarded_1.png` |
-| 親密寄りの好感度 tier | `idle_attached_0.png`, `blink_attached_0.png`, `talk_attached_0.png`, `talk_attached_1.png` |
-| 警戒寄りのなでなで | `pet_guarded_0.png`, `pet_guarded_1.png`, `pet_blink_guarded_0.png` |
-| 親密寄りのなでなで | `pet_attached_0.png`, `pet_attached_1.png`, `pet_blink_attached_0.png` |
-| 警戒寄りのふりふり | `shake_guarded_0.png`, `shake_guarded_1.png` |
-| 親密寄りのふりふり | `shake_attached_0.png`, `shake_attached_1.png` |
-| 熱状態と低電力 | `tired_0.png`, `tired_talk.png`, `tired_blink.png`, `exhausted_0.png`, `exhausted_talk.png`, `exhausted_blink.png`, `low_power_0.png`, `low_power_talk.png`, `low_power_blink.png` |
-
-このリポジトリには、`tools/face_image_builder/` のワークフローで生成したデフォルトJPGを同梱しています。
-上表の「つくよみちゃん万能立ち絵素材を使う場合の例」は、手動で画像を用意する場合の参考です。
-つくよみちゃん素材そのものはこのリポジトリには含めていません。利用する場合は公式配布ページから素材を入手し、
-利用規約に従って対象デバイスの推奨サイズで JPG を書き出し、対象デバイスの画像ディレクトリに配置してください。
-
-`data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/` はローカル差し替え用で、
-GitHub Releases の配布物には含めません。ローカル画像セットでつくよみちゃん素材を使う場合のクレジット:
-
-```text
-フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）
-https://tyc.rei-yumesaki.net/
-つくよみちゃん万能立ち絵素材（花兎*様）
-https://tyc.rei-yumesaki.net/material/illust/
-```
+同梱画像とサンプルの利用条件は[`ASSET_LICENSE.md`](ASSET_LICENSE.md)、ファイル一覧は
+[顔画像ファイル棚卸し](docs/face_image_inventory.ja.md)を参照してください。
 
 ## ネットワークモード
 
@@ -307,12 +264,14 @@ STA 接続済みの場合は、本体の Network 画面に表示される IP ア
 - Audio 設定では、スピーカー音量を操作できます。AtomS3R Chatbot は Audio 画面で BtnA ダブルクリックすると音量調整モードに入り、短押しで音量アップ、長押しで音量ダウンします。
 - Servo 設定では、CoreS3 の顔の基準位置を保存したり、保存済み位置へ戻したりできます。
 - Power 設定では、熱状態、バッテリー状態、低電力モードを確認/変更できます。
+- StopWatchのSteps設定では、当日歩数と保存済みの日別履歴を確認できます。
 - 低電力モードをオンにすると、画面の最大輝度を抑え、待機中の表情更新と首振り動作を減らします。
   発話中の音声再生と口パクは継続します。
 - CoreS3 / StopWatch では電源ボタンを押すと、画面のオン/オフを切り替えます。
 - 画面オフ中は、なでなでやフリフリの反応は発生しません。
-- CoreS3 では、WebSocket または USB Serial クライアント接続中に表情画面右側のマイク表示をタップすると
-  マイク送信のミュート/解除を切り替えます。
+- 画面をオフにすると、音声状態を終了してWi-Fi、HTTP、WebSocket、USB Serialのアプリ通信を停止します。画面をオンにするとWi-Fi再接続を開始するため、クライアント側も再接続してください。StreetPass BLEは画面オフ中も間隔を延ばして継続します。
+- CoreS3 / StopWatch では、WebSocket または USB Serial クライアント接続中に表情画面のマイク表示
+  （CoreS3 は右側、StopWatch は右下外周）をタップすると、マイク送信のミュート/解除を切り替えます。
 - AtomS3R Chatbot では、通常画面で BtnA ダブルクリックするとマイク送信のミュート/解除を切り替えます。
 - CoreS3 では、WebSocket または USB Serial クライアント接続中にマイク表示の上にあるカメラ表示をタップすると
   `camera_button` イベントを送ります。本体は WebSocket では画像を送らないため、
@@ -364,16 +323,50 @@ http://<stack-chan-ip>
   "volume": 180,
   "micMuted": false,
   "micStreaming": true,
+  "mic": {
+    "enabled": true,
+    "captureActive": true,
+    "queuedPackets": 1,
+    "queueCapacity": 8,
+    "sentChunks": 120,
+    "droppedChunks": 0,
+    "captureUnderruns": 0,
+    "queueOverflows": 0,
+    "sendFails": 0,
+    "lastPeak": 820
+  },
+  "voicePerf": {
+    "active": false,
+    "sessionSeq": 3,
+    "loopCount": 0,
+    "maxLoopGapMs": 0,
+    "maxFaceFrameGapMs": 0
+  },
   "lowPowerMode": false,
   "thermalLevel": "Normal",
   "chipTempC": 48.5,
   "pmicTempC": 42.0,
   "batteryLevel": 87,
   "charging": false,
+  "streetpass": {
+    "enabled": true,
+    "bleReady": true,
+    "scanActive": false,
+    "advertising": true,
+    "exchangeInProgress": false,
+    "paused": false,
+    "pauseReason": ""
+  },
+  "currentState": "listening",
+  "audioState": "listening",
   "wifiConnected": true,
   "ip": "192.168.1.10"
 }
 ```
+
+この例は代表フィールドです。`mic`には送信先別件数、直近処理時刻、ゲイン／フィルタ設定など、
+`voicePerf`には発話中のloop・描画・音声・通信の最大処理時間、`streetpass`には保存状態と
+BLE交換状態も追加されます。診断クライアントは未知フィールドを無視してください。
 
 ### WebSocket
 
@@ -470,7 +463,7 @@ StreetPass は BLE を使って、近くの Stack-chan と名前・メッセー�
 
 - `Listening` でマイクストリーミング中、`Speaking` 中、再生 drain 中は BLE scan / GATT / advertisement を停止します。
 - マイク OFF で `micStreaming=false` になった場合は、`Listening` 状態でも StreetPass を再開します。
-- 画面 OFF 時は、画面更新などを抑えつつ StreetPass と最低限の通信処理を継続します。
+- 画面 OFF 時はWi-Fi、HTTP、WebSocket、USB Serialのアプリ通信を停止します。StreetPass BLEだけはscan／交換間隔を延ばして継続し、画面 ON 後にWi-Fi再接続を開始します。
 
 外部アプリ向け API:
 
@@ -506,25 +499,28 @@ StreetPass は BLE を使って、近くの Stack-chan と名前・メッセー�
 { "type": "vad", "active": true }
 ```
 
-表情モードを切り替える:
+意味上の表情モードを切り替える:
 
 ```json
-{ "type": "face_mode", "value": "photo" }
+{ "type": "face_mode", "value": "normal" }
 ```
 
 `value`: `normal`, `photo`, `photo_master`, `nadenade`, `pet`, `furifuri`, `shake`
 
-特定の表情画像を表示する:
+新規連携では`normal`、`pet`、`shake`など意味ベースの値を使ってください。
+v2では`photo` / `photo_master`は旧クライアント向けの互換入力としてのみ受け付け、写真撮影専用の旧画像へは切り替えません。
+`nadenade` / `pet`はなでなでアニメーション、`furifuri` / `shake`は混乱アニメーションを開始します。
+
+旧`face`コマンド互換:
 
 ```json
 { "type": "face", "value": "idle" }
 ```
 
-主な `value`: `idle`, `listen`, `talk_0`, `talk_1`, `bad_0`, `bad_1`,
-`good_0`, `good_1`, `good_blink`, `photo_0`, `photo_1`, `photo_blink`,
-`photo_blink_talk`, `photo_master_0`, `photo_master_1`, `nadenade_0`,
-`nadenade_1`, `furifuri_0`, `furifuri_1`, `blink`, `smile`、および
-「表情画像の配置」にある guarded / attached / thermal / low-power 系の追加表情名
+`face`は旧クライアントとの互換用です。v2では個別の旧画像名を選ばず、現在の状態に対応する
+基本アニメーションを再描画します。旧5枚fallbackで直接指定できるのは`idle`、`listen`、
+`talk_0`、`talk_1`、`blink`だけです。新しい連携では`state`、`vad`、`pet`、
+`face_mode`を使って意味上の状態を送ってください。
 
 モーションを指定する:
 
@@ -557,6 +553,16 @@ tilt: 60..120
 ```
 
 `nadenade` も `pet` の別名として受け付けます。
+
+音声再生状態を診断する:
+
+```json
+{ "type": "audio.playback_diag", "requestId": "playback-001" }
+```
+
+WebSocket／USB Serialのどちらでも利用できます。バッファ、PCM受信・破棄、underflow、
+スピーカーqueue、吹き出し、発話中の処理時間を返します。詳細は
+[USB Serial Protocol](docs/usb_serial_protocol.ja.md#audio-diagnostics)を参照してください。
 
 ## 好感度コマンド
 
@@ -693,5 +699,7 @@ phase は `pressed`、クライアントから次の text/binary 応答を受け
 
 直接利用している外部ライブラリのライセンス概要は `THIRD_PARTY_NOTICES.md` にまとめています。
 
-このリポジトリには第三者のキャラクター画像ファイルを含めていません。実行時用画像は
-ローカルで準備し、使用する素材の利用規約に従ってください。
+このリポジトリには第三者のキャラクター素材を含めていません。同梱ランタイム画像と
+スプライトシートサンプルはMIT Licenseの対象外です。利用条件は
+[`ASSET_LICENSE.md`](ASSET_LICENSE.md)を参照してください。独自画像へ差し替える場合は、
+使用する素材の権利と利用規約を確認してください。

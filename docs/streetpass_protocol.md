@@ -113,6 +113,11 @@ The main loop processes WebSocket, HTTP, and USB Serial before StreetPass GATT
 work so audio interaction commands are not blocked by a new StreetPass exchange.
 GATT writes received while audio is busy are stored for later processing.
 
+While the display is off, Wi-Fi, HTTP, WebSocket, USB Serial, and NTP time sync
+are stopped. StreetPass BLE continues on a reduced schedule with shorter scans
+and longer idle intervals. Display-on restores the normal scan schedule and NTP
+sync resumes after Wi-Fi reconnects.
+
 ## Device Storage
 
 The device stores at most 30 records. When a new record exceeds capacity, it
