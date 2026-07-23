@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0](docs/release_notes_0.4.0.md) - Unreleased
+## [0.4.0](docs/release_notes_0.4.0.md) - 2026-07-23
 
 ### Added
 
