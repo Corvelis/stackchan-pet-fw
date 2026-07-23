@@ -77,4 +77,4 @@ face_image_builder/
       dizzy_4x4/
 ```
 
-サンプル画像はリポジトリ直下の[`CC0 1.0`](../../ASSET_LICENSE.md)で自由に利用できます。
+サンプル画像はリポジトリ直下の[`MIT License`](../../LICENSE)で利用できます。

@@ -14,7 +14,7 @@ GitHub Releases には、デバイスごとに次の firmware bin と factory im
 | StopWatch | `stackchan_stopwatch_firmware.bin` | `stackchan_stopwatch_factory.bin` |
 | AtomS3R Chatbot | `stackchan_atoms3r_firmware.bin` | `stackchan_atoms3r_factory.bin` |
 
-あわせて`SHA256SUMS`、`LICENSE`、`ASSET_LICENSE.md`、`THIRD_PARTY_NOTICES.md`を
+あわせて`SHA256SUMS`、`LICENSE`、`THIRD_PARTY_NOTICES.md`を
 ダウンロードしてください。バイナリと同じフォルダで次を実行すると、破損や取り違えを確認できます。
 
 ```sh
@@ -50,16 +50,10 @@ bash scripts/build_release_bins.sh all
 - ファームウェア単体では会話機能は動作しません。
 - 会話、音声認識、TTS、応答生成には、対応するスマホアプリ、WebSocket クライアント、または USB Serial クライアントが必要です。
 - StopWatch / AtomS3R Chatbot にはカメラとサーボがありません。`/capture`、`capture.request`、サーボ原点調整は使えません。
-- バイナリに含まれる同梱画像もCC0 1.0です。取り出して複製、改変、再配布、販売、商用利用できます。
-- スクリーンショット、キャプチャ動画、紹介動画を投稿する際のクレジット表記は任意です。
+- バイナリに含まれる同梱画像も、ファームウェアソースと同じMIT Licenseです。
+- 画像またはその実質的な部分を再配布する場合は、`LICENSE`の著作権表示と許諾表示を含めてください。
 
-任意の表記例:
-
-```text
-Stack-chan Multi-Device Controller 使用
-```
-
-## 画像とクレジット
+## 画像とライセンス
 
 GitHub Releases で配布する factory image には、リポジトリ通常フォルダの画像を含めます。
 通常フォルダは次の3つです。
@@ -77,9 +71,9 @@ data_atoms3r/
 プロンプト、分割CLI、サンプル、3機種向け生成手順で完全なv2画像セットを作成・検証してから、
 対象機種の`data_local*`をLittleFSへ書き込んでください。
 
-通常配布画像、スプライトシートサンプル、画像生成用参考画像は[`CC0 1.0`](../ASSET_LICENSE.md)で
-自由に利用できます。独自画像へ差し替える場合は、使用するキャラクターや素材の権利・利用規約を
-各自で確認してください。
+通常配布画像、スプライトシートサンプル、画像生成用参考画像は[`MIT License`](../LICENSE)で
+利用できます。独自画像へ差し替える場合は、使用するキャラクターや素材の権利・利用規約を各自で
+確認してください。
 
 ## Wi-Fi 設定
 

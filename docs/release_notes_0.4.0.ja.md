@@ -16,7 +16,7 @@ manifest付きの顔画像v2アニメーションへ移行しました。通常�
 
 - `firmware.bin`だけの更新では、Wi-Fi設定やLittleFS画像などを保持します。
 - `factory.bin`はfirmwareと顔画像v2をまとめて導入しますが、本体内の設定を初期化します。
-- `SHA256SUMS`でダウンロードを検証し、同梱の`LICENSE`、`ASSET_LICENSE.md`、`THIRD_PARTY_NOTICES.md`も保存してください。
+- `SHA256SUMS`でダウンロードを検証し、同梱の`LICENSE`、`THIRD_PARTY_NOTICES.md`も保存してください。
 - 詳しい書き込み方法は[バイナリ版インストール手順](install_binary.ja.md)を参照してください。
 
 ## 顔画像v2
@@ -94,5 +94,5 @@ firmware-only更新では端末のLittleFSを保持します。すでに顔画�
 - WebSocket／USB Serial共通の発話吹き出しプロトコルを追加しました。
 - StopWatch本体側の歩数カウンターと状態通知を追加しました。
 - 3機種の通常／classic、合計6環境の再現可能な配布ビルドを整備しました。
-- 同梱ランタイム画像、スプライトシートサンプル、画像生成用参考画像は
-  [CC0 1.0](../ASSET_LICENSE.md)で自由に利用できます。
+- 同梱ランタイム画像、スプライトシートサンプル、画像生成用参考画像は、
+  ファームウェアソースと同じ[MIT License](../LICENSE)で利用できます。

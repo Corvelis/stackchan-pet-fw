@@ -219,8 +219,8 @@ Affection, authentication, thermal, low-power, and camera state do not replace
 the base face. Their calculations and protective behavior remain active, with
 relevant information shown through overlays.
 
-Bundled images and samples are freely available under
-[`CC0 1.0`](ASSET_LICENSE.md).
+Bundled images and samples use the same [`MIT License`](LICENSE) as the
+firmware source.
 
 ## Network Modes
 
@@ -727,14 +727,14 @@ See `docs/device_affection_api.md` for the detailed device-side affection API.
 
 ## License Notes
 
-Firmware source code in this repository is licensed under the MIT License. See
-`LICENSE`.
+Firmware source code, bundled runtime images, sprite-sheet samples, and
+image-generation references in this repository are all licensed under the
+same MIT License. See `LICENSE`.
 
 Direct third-party library license notes are listed in `THIRD_PARTY_NOTICES.md`.
 
 The current source tree and v0.4.0 release assets do not include third-party
-character source material. Tracked runtime images, sprite-sheet samples, and
-image-generation references are released under
-[`CC0 1.0`](ASSET_LICENSE.md). They may be copied, modified, redistributed,
-sold, and used commercially without permission or attribution. Verify the
-rights and terms for any replacement images.
+character source material. The MIT License permits copying, modification,
+redistribution, sale, and commercial use. Redistributions of an image or a
+substantial portion of it must include the copyright and permission notices
+from `LICENSE`. Verify the rights and terms for any replacement images.

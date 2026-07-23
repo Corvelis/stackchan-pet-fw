@@ -18,8 +18,8 @@ and recovery now use complete target-validated animation sets.
 - A firmware-only update preserves Wi-Fi settings and LittleFS images.
 - A factory image installs firmware and face asset v2 together, but resets
   settings stored on the device.
-- Verify downloads with `SHA256SUMS`, and keep the bundled `LICENSE`,
-  `ASSET_LICENSE.md`, and `THIRD_PARTY_NOTICES.md`.
+- Verify downloads with `SHA256SUMS`, and keep the bundled `LICENSE` and
+  `THIRD_PARTY_NOTICES.md`.
 - See the [Binary Installation Guide](install_binary.md) for flashing steps.
 
 ## Face asset v2
@@ -109,4 +109,4 @@ through `data_local*`, and replace assets only as a complete validated v2 set.
 - StopWatch device-side step counter and status reporting.
 - Reproducible release builds for all three normal and three classic targets.
 - Bundled runtime images, sprite-sheet samples, and image-generation references
-  are freely available under [CC0 1.0](../ASSET_LICENSE.md).
+  use the same [MIT License](../LICENSE) as the firmware source.

@@ -14,8 +14,8 @@ device. Download the file that matches your device from the Release.
 | StopWatch | `stackchan_stopwatch_firmware.bin` | `stackchan_stopwatch_factory.bin` |
 | AtomS3R Chatbot | `stackchan_atoms3r_firmware.bin` | `stackchan_atoms3r_factory.bin` |
 
-Also download `SHA256SUMS`, `LICENSE`, `ASSET_LICENSE.md`, and
-`THIRD_PARTY_NOTICES.md`. Run this in the directory containing the binaries to
+Also download `SHA256SUMS`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. Run this
+in the directory containing the binaries to
 detect a damaged or mismatched download:
 
 ```sh
@@ -52,17 +52,12 @@ To generate one device, pass `cores3`, `stopwatch`, or `atoms3r`.
 - Conversation does not work with this firmware alone.
 - Conversation, speech recognition, TTS, and response generation require a compatible phone app, WebSocket client, or USB Serial client.
 - StopWatch and AtomS3R Chatbot have no camera or servo. `/capture`, `capture.request`, and servo home calibration are unavailable.
-- Bundled images embedded in the binaries are also CC0 1.0. They may be
-  extracted, copied, modified, redistributed, sold, and used commercially.
-- Attribution is optional for screenshots, capture videos, and demo videos.
+- Bundled images embedded in the binaries use the same MIT License as the
+  firmware source.
+- Redistributing an image or a substantial portion of it requires including
+  the copyright and permission notices from `LICENSE`.
 
-Optional attribution example:
-
-```text
-Used with Stack-chan Multi-Device Controller
-```
-
-## Images And Credits
+## Images And License
 
 Factory images distributed through GitHub Releases include the normal image
 directories from this repository:
@@ -83,8 +78,8 @@ Create and validate a complete v2 set, then upload the target device's
 `data_local*` directory to LittleFS.
 
 Bundled runtime images, sprite-sheet samples, and image-generation references
-are freely available under [`CC0 1.0`](../ASSET_LICENSE.md). When replacing
-them, verify the rights and terms for every character and source asset you use.
+are available under the [`MIT License`](../LICENSE). When replacing them,
+verify the rights and terms for every character and source asset you use.
 
 ## Wi-Fi Setup
 

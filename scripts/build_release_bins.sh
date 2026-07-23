@@ -19,7 +19,6 @@ RELEASE_ASSETS=(
 )
 RELEASE_DOCUMENTS=(
   LICENSE
-  ASSET_LICENSE.md
   THIRD_PARTY_NOTICES.md
 )
 
@@ -65,7 +64,6 @@ Outputs:
   dist/stackchan_atoms3r_firmware.bin
   dist/stackchan_atoms3r_factory.bin
   dist/LICENSE
-  dist/ASSET_LICENSE.md
   dist/THIRD_PARTY_NOTICES.md
   dist/SHA256SUMS
 EOF
@@ -189,6 +187,7 @@ write_checksums() {
 
 copy_release_documents() {
   local document
+  rm -f "${DIST_DIR}/ASSET_LICENSE.md"
   for document in "${RELEASE_DOCUMENTS[@]}"; do
     cp "${ROOT_DIR}/${document}" "${DIST_DIR}/${document}"
   done

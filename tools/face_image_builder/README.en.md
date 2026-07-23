@@ -77,5 +77,5 @@ face_image_builder/
       dizzy_4x4/
 ```
 
-Sample images are freely available under
-[`CC0 1.0`](../../ASSET_LICENSE.md).
+Sample images are available under the
+[`MIT License`](../../LICENSE).
