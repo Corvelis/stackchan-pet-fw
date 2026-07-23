@@ -70,11 +70,18 @@ Tracked runtime images, sprite-sheet samples, and image-generation references
 were created and provided by Ailog. They are dedicated to the public domain
 under CC0 1.0 Universal as described in `ASSET_LICENSE.md`.
 
-The current source tree and v0.4.0 release assets do not include the previously
-used third-party Tsukuyomi-chan standing illustration material. Historical
-tags `0.3.0` and `v0.3.1` contain the older image sets; those images are not
-covered by the v0.4.0 CC0 dedication. Users who install replacement images
-must follow the rights and terms for those images.
+The tracked face images introduced in tag `0.3.0`, the expanded image set in
+tag `v0.3.1`, and the current v0.4.0 face asset v2 set were created and
+provided by Ailog. These original image sets are covered by the CC0 dedication
+in `ASSET_LICENSE.md`.
+
+The current source tree and the tracked images in tags `0.3.0` and `v0.3.1`
+do not include the previously used third-party Tsukuyomi-chan standing
+illustration material. Documentation in older revisions may retain references
+to that material, and release binaries from v0.2.3 or earlier may contain
+locally prepared runtime images. Any third-party images are not covered by
+Ailog's CC0 dedication. Users who install replacement images must follow the
+rights and terms for those images.
 
 ## Firmware License
 
