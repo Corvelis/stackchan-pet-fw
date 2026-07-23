@@ -108,6 +108,5 @@ through `data_local*`, and replace assets only as a complete validated v2 set.
 - Shared WebSocket and USB Serial speech-bubble protocol.
 - StopWatch device-side step counter and status reporting.
 - Reproducible release builds for all three normal and three classic targets.
-- Bundled runtime images and sprite-sheet samples use the
-  [Image Asset License](../ASSET_LICENSE.md), separately from the source code's
-  MIT License.
+- Bundled runtime images, sprite-sheet samples, and image-generation references
+  are freely available under [CC0 1.0](../ASSET_LICENSE.md).

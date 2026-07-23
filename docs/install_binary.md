@@ -52,10 +52,11 @@ To generate one device, pass `cores3`, `stopwatch`, or `atoms3r`.
 - Conversation does not work with this firmware alone.
 - Conversation, speech recognition, TTS, and response generation require a compatible phone app, WebSocket client, or USB Serial client.
 - StopWatch and AtomS3R Chatbot have no camera or servo. `/capture`, `capture.request`, and servo home calibration are unavailable.
-- Images included in the binary must not be extracted and reused as material assets.
-- If users post screenshots, capture videos, or demo videos, they must identify this firmware/app in the post.
+- Bundled images embedded in the binaries are also CC0 1.0. They may be
+  extracted, copied, modified, redistributed, sold, and used commercially.
+- Attribution is optional for screenshots, capture videos, and demo videos.
 
-Example attribution for posts:
+Optional attribution example:
 
 ```text
 Used with Stack-chan Multi-Device Controller
@@ -81,10 +82,9 @@ workflow in the [Face Image Builder](../tools/face_image_builder/README.en.md).
 Create and validate a complete v2 set, then upload the target device's
 `data_local*` directory to LittleFS.
 
-See [`ASSET_LICENSE.md`](../ASSET_LICENSE.md) for the terms covering bundled
-runtime images, sprite-sheet samples, and image-generation references. When
-replacing them, verify the rights and terms for every character and source
-asset you use.
+Bundled runtime images, sprite-sheet samples, and image-generation references
+are freely available under [`CC0 1.0`](../ASSET_LICENSE.md). When replacing
+them, verify the rights and terms for every character and source asset you use.
 
 ## Wi-Fi Setup
 

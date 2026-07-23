@@ -84,4 +84,4 @@ python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sh
 | `samples/guruguru_blink_5x5/` | 閉じ目方向顔5×5 |
 | `samples/dizzy_4x4/` | 混乱4×4 |
 
-サンプル画像の利用条件は[`ASSET_LICENSE.md`](../../../ASSET_LICENSE.md)を参照してください。
+サンプル画像は[`CC0 1.0`](../../../ASSET_LICENSE.md)で自由に利用できます。

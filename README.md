@@ -60,4 +60,4 @@ python3 scripts/validate_face_assets.py
 bash scripts/build_release_bins.sh all
 ```
 
-変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[CHANGELOG.md](CHANGELOG.md)、画像の利用条件は[ASSET_LICENSE.md](ASSET_LICENSE.md)を参照してください。ファームウェアソースはMIT Licenseです。
+変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。同梱画像は[CC0 1.0](ASSET_LICENSE.md)、ファームウェアソースはMIT Licenseです。

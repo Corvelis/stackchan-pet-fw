@@ -84,4 +84,5 @@ Inspect face alignment and every image edge before accepting output. The splitte
 | `samples/guruguru_blink_5x5/` | 5x5 closed-eye directions |
 | `samples/dizzy_4x4/` | 4x4 dizzy animation |
 
-See [`ASSET_LICENSE.md`](../../../ASSET_LICENSE.md) for sample-image terms.
+Sample images are freely available under
+[`CC0 1.0`](../../../ASSET_LICENSE.md).

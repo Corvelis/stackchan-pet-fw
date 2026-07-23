@@ -66,12 +66,13 @@ license notice in `lib/qrcodegen/qrcodegen.h` and `lib/qrcodegen/qrcodegen.c`.
 
 ## Runtime Images
 
-Tracked runtime images, sprite-sheet samples, and image-generation references use the separate terms in
-`ASSET_LICENSE.md`; they are not covered by the firmware's MIT License.
+Tracked runtime images, sprite-sheet samples, and image-generation references
+were created and provided by Ailog. They are dedicated to the public domain
+under CC0 1.0 Universal as described in `ASSET_LICENSE.md`.
 
-This repository does not include the previously used third-party
-Tsukuyomi-chan standing illustration source material. Users who install their
-own replacement images must follow the rights and terms for those images.
+The current source tree and v0.4.0 release assets do not include the previously
+used third-party Tsukuyomi-chan standing illustration material. Users who
+install replacement images must follow the rights and terms for those images.
 
 ## Firmware License
 

@@ -219,7 +219,8 @@ Affection, authentication, thermal, low-power, and camera state do not replace
 the base face. Their calculations and protective behavior remain active, with
 relevant information shown through overlays.
 
-See [`ASSET_LICENSE.md`](ASSET_LICENSE.md) for bundled image terms.
+Bundled images and samples are freely available under
+[`CC0 1.0`](ASSET_LICENSE.md).
 
 ## Network Modes
 
@@ -731,6 +732,9 @@ Firmware source code in this repository is licensed under the MIT License. See
 
 Direct third-party library license notes are listed in `THIRD_PARTY_NOTICES.md`.
 
-This repository does not include third-party character source material. Tracked
-runtime images and sprite-sheet samples are not licensed under MIT; see
-`ASSET_LICENSE.md`. Verify the rights and terms for any replacement images.
+The current source tree and v0.4.0 release assets do not include third-party
+character source material. Tracked runtime images, sprite-sheet samples, and
+image-generation references are released under
+[`CC0 1.0`](ASSET_LICENSE.md). They may be copied, modified, redistributed,
+sold, and used commercially without permission or attribution. Verify the
+rights and terms for any replacement images.
