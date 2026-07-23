@@ -6,6 +6,8 @@ SPDX-License-Identifier: CC0-1.0
 
 作者のあいろぐは、次の画像に関して保有する著作権および関連する権利を、法令で認められる最大限の範囲でCC0 1.0 Universalにより放棄し、パブリックドメインへ提供します。
 
+このCC0の対象は、v0.4.0で導入された作者の自作画像セットです。Git履歴や旧タグ`0.3.0`、`v0.3.1`に存在する以前の画像には適用されません。
+
 - `data/`、`data_stopwatch/`、`data_atoms3r/`内のランタイム画像
 - `tools/face_image_builder/build_faces_from_sprite_sheet/samples/`内のスプライトシートサンプル
 - `tools/face_image_builder/generate_sprite_sheet/references/`内の画像生成用参考画像
@@ -22,6 +24,8 @@ CC0の概要と正式な法的文書:
 ## English
 
 To the greatest extent permitted by law, Ailog waives all copyright and related rights held in the following images and dedicates them to the public domain under CC0 1.0 Universal:
+
+This CC0 dedication covers Ailog's original image set introduced in v0.4.0. It does not apply retroactively to earlier images in Git history or old tags such as `0.3.0` and `v0.3.1`.
 
 - Runtime images under `data/`, `data_stopwatch/`, and `data_atoms3r/`.
 - Sprite-sheet samples under `tools/face_image_builder/build_faces_from_sprite_sheet/samples/`.

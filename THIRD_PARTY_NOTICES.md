@@ -71,8 +71,10 @@ were created and provided by Ailog. They are dedicated to the public domain
 under CC0 1.0 Universal as described in `ASSET_LICENSE.md`.
 
 The current source tree and v0.4.0 release assets do not include the previously
-used third-party Tsukuyomi-chan standing illustration material. Users who
-install replacement images must follow the rights and terms for those images.
+used third-party Tsukuyomi-chan standing illustration material. Historical
+tags `0.3.0` and `v0.3.1` contain the older image sets; those images are not
+covered by the v0.4.0 CC0 dedication. Users who install replacement images
+must follow the rights and terms for those images.
 
 ## Firmware License
 
