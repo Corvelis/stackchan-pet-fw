@@ -18,8 +18,8 @@ if str(TOOL_ROOT) not in sys.path:
 from prepare_firmware_assets import OUTPUT_SUFFIXES, TARGET_SIZES, parse_matte, parse_size, save_image
 
 
-# Sprite detection and 5x5 direction mapping are adapted from:
-# /Users/yuma/Documents/PlatformIO/Projects/stopwatch_guruguru/M5-guruguru/tools/split_guruguru_sheet.py
+# Sprite detection and 5x5 direction mapping are adapted from the
+# `split_guruguru_sheet.py` tool in the M5-guruguru project.
 #
 # MIT License
 # Copyright (c) 2026 NANANA
@@ -128,6 +128,20 @@ def parse_crop_size(value: str) -> int | None:
     if size <= 0:
         raise argparse.ArgumentTypeError("crop size must be a positive integer or auto")
     return size
+
+
+def parse_column_x_offsets(value: str) -> tuple[int, ...]:
+    parts = value.split(",")
+    if not parts or any(not part.strip() for part in parts):
+        raise argparse.ArgumentTypeError(
+            "column x offsets must be comma-separated integers, for example -11,-11,-9,0"
+        )
+    try:
+        return tuple(int(part.strip()) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "column x offsets must be comma-separated integers, for example -11,-11,-9,0"
+        ) from exc
 
 
 def find_runs(counts: list[int], threshold: int) -> list[tuple[int, int]]:
@@ -266,14 +280,30 @@ def build_output_map(grid: GridSpec, output_count: int) -> list[tuple[tuple[int,
     )
 
 
-def clean_prefix_outputs(out_dir: Path, prefix: str) -> None:
-    pattern = re.compile(rf"^{re.escape(prefix)}\d+\.(?:jpg|jpeg|png)$", re.IGNORECASE)
+def clean_prefix_outputs(out_dir: Path, prefix: str, output_naming: str) -> None:
+    if output_naming == "base-mouth-eye":
+        pattern = re.compile(
+            rf"^{re.escape(prefix)}m\d+_e\d+\.(?:jpg|jpeg|png)$",
+            re.IGNORECASE,
+        )
+    else:
+        pattern = re.compile(rf"^{re.escape(prefix)}\d+\.(?:jpg|jpeg|png)$", re.IGNORECASE)
     for path in out_dir.iterdir():
         if path.is_file() and pattern.match(path.name):
             path.unlink()
 
 
-def output_name(prefix: str, index: int, pad: int, suffix: str) -> str:
+def output_name(
+    prefix: str,
+    index: int,
+    pad: int,
+    suffix: str,
+    row: int,
+    col: int,
+    output_naming: str,
+) -> str:
+    if output_naming == "base-mouth-eye":
+        return f"{prefix}m{row}_e{col}{suffix}"
     number = str(index).zfill(pad) if pad > 0 else str(index)
     return f"{prefix}{number}{suffix}"
 
@@ -282,6 +312,29 @@ def image_with_matte(image: Image.Image, matte: tuple[int, int, int]) -> Image.I
     image = image.convert("RGBA")
     background = Image.new("RGBA", image.size, (*matte, 255))
     return Image.alpha_composite(background, image).convert("RGB")
+
+
+def translate_x(
+    image: Image.Image,
+    offset: int,
+    matte: tuple[int, int, int],
+) -> Image.Image:
+    if offset == 0:
+        return image
+    if abs(offset) >= image.width:
+        raise RuntimeError(
+            f"column x offset {offset} must be smaller than the cropped tile width {image.width}"
+        )
+
+    source_left = max(0, -offset)
+    source_right = min(image.width, image.width - offset)
+    destination_left = max(0, offset)
+    shifted = Image.new("RGBA", image.size, (*matte, 255))
+    shifted.alpha_composite(
+        image.crop((source_left, 0, source_right, image.height)),
+        (destination_left, 0),
+    )
+    return shifted
 
 
 def split_sheet(
@@ -299,8 +352,12 @@ def split_sheet(
     min_run_length: int,
     layout: str,
     cell_inset: int,
+    row_top_mask: int,
+    column_side_mask: int,
+    column_x_offsets: tuple[int, ...] | None,
     start_index: int,
     pad: int,
+    output_naming: str,
     clean: bool,
     dry_run: bool,
 ) -> list[Path]:
@@ -327,7 +384,7 @@ def split_sheet(
     suffix = OUTPUT_SUFFIXES[output_format]
 
     if clean and not dry_run:
-        clean_prefix_outputs(out_dir, spec.prefix)
+        clean_prefix_outputs(out_dir, spec.prefix, output_naming)
 
     outputs: list[Path] = []
     for (row, col), mapped_index in output_map:
@@ -340,7 +397,15 @@ def split_sheet(
             max_y - cell_inset,
         )
         output_index = start_index + mapped_index
-        out_path = out_dir / output_name(spec.prefix, output_index, pad, suffix)
+        out_path = out_dir / output_name(
+            spec.prefix,
+            output_index,
+            pad,
+            suffix,
+            row,
+            col,
+            output_naming,
+        )
         if dry_run:
             print(f"split {spec.path} [{row},{col}] -> {out_path}")
         else:
@@ -351,6 +416,20 @@ def split_sheet(
                 source_crop_size,
                 bounds,
             )
+            if row > 0 and row_top_mask > 0:
+                mask_height = min(row_top_mask, tile.height)
+                tile.paste((*matte, 255), (0, 0, tile.width, mask_height))
+            if column_side_mask > 0:
+                mask_width = min(column_side_mask, tile.width)
+                if col > 0:
+                    tile.paste((*matte, 255), (0, 0, mask_width, tile.height))
+                if col < grid.cols - 1:
+                    tile.paste(
+                        (*matte, 255),
+                        (tile.width - mask_width, 0, tile.width, tile.height),
+                    )
+            if column_x_offsets is not None:
+                tile = translate_x(tile, column_x_offsets[col], matte)
             tile = tile.resize(target_size, Image.Resampling.LANCZOS)
             save_image(image_with_matte(tile, matte), out_path, output_format, quality)
         outputs.append(out_path)
@@ -399,7 +478,7 @@ def default_sheet_specs() -> list[SheetSpec]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Split guruguru/petting/dizzy sheets into firmware-ready JPG or PNG assets.",
+        description="Split face animation sheets into firmware-ready JPG or PNG assets.",
     )
     parser.add_argument(
         "--sheet",
@@ -451,8 +530,46 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Inset each detected cell boundary by this many source pixels before cropping.",
     )
+    parser.add_argument(
+        "--row-top-mask",
+        type=int,
+        default=0,
+        help=(
+            "Cover this many source pixels at the top of every row after the first "
+            "with the matte color. Use this for fragments left by the previous row "
+            "without zooming or shifting the frame."
+        ),
+    )
+    parser.add_argument(
+        "--column-side-mask",
+        type=int,
+        default=0,
+        help=(
+            "Cover this many source pixels along internal left/right cell boundaries "
+            "with the matte color. This removes fragments crossing between columns "
+            "without zooming or shifting the frame."
+        ),
+    )
+    parser.add_argument(
+        "--column-x-offsets",
+        type=parse_column_x_offsets,
+        help=(
+            "Comma-separated horizontal translations in source pixels, one per grid "
+            "column. Negative values move frames left. For example: "
+            "--column-x-offsets=-11,-11,-9,0"
+        ),
+    )
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--pad", type=int, default=0, help="Zero-pad output numbers, for example 2 for 01.")
+    parser.add_argument(
+        "--output-naming",
+        choices=("indexed", "base-mouth-eye"),
+        default="indexed",
+        help=(
+            "Output naming scheme. 'base-mouth-eye' maps 4x4 rows to mouth "
+            "indices and columns to eye indices, for example base_m0_e0."
+        ),
+    )
     parser.add_argument("--preview-dir", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -471,10 +588,24 @@ def main() -> None:
         raise SystemExit("--directions must be 1 or greater")
     if args.cell_inset < 0:
         raise SystemExit("--cell-inset must be 0 or greater")
+    if args.row_top_mask < 0:
+        raise SystemExit("--row-top-mask must be 0 or greater")
+    if args.column_side_mask < 0:
+        raise SystemExit("--column-side-mask must be 0 or greater")
+    if args.column_x_offsets is not None and len(args.column_x_offsets) != args.grid.cols:
+        raise SystemExit(
+            f"--column-x-offsets requires {args.grid.cols} values for a "
+            f"{args.grid.rows}x{args.grid.cols} grid"
+        )
     if args.min_run_length < 1:
         raise SystemExit("--min-run-length must be 1 or greater")
     if args.pad < 0:
         raise SystemExit("--pad must be 0 or greater")
+    if args.output_naming == "base-mouth-eye":
+        if args.grid != GridSpec(4, 4) or args.directions != 16:
+            raise SystemExit("base-mouth-eye naming requires --grid 4x4 --directions 16")
+        if args.start_index != 0 or args.pad != 0:
+            raise SystemExit("base-mouth-eye naming does not use --start-index or --pad")
 
     specs = args.sheet or default_sheet_specs()
     target_size = args.size or TARGET_SIZES[args.target]
@@ -499,8 +630,12 @@ def main() -> None:
             min_run_length=args.min_run_length,
             layout=args.layout,
             cell_inset=args.cell_inset,
+            row_top_mask=args.row_top_mask,
+            column_side_mask=args.column_side_mask,
+            column_x_offsets=args.column_x_offsets,
             start_index=args.start_index,
             pad=args.pad,
+            output_naming=args.output_naming,
             clean=not args.no_clean,
             dry_run=args.dry_run,
         )

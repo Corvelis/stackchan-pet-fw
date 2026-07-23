@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stack-chan animated face assets v2",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "renderer",
+    "target",
+    "canvas",
+    "assetCount",
+    "groups"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "renderer": {
+      "const": "animated"
+    },
+    "target": {
+      "enum": [
+        "cores3",
+        "stopwatch",
+        "atoms3r"
+      ]
+    },
+    "canvas": {
+      "type": "object",
+      "required": [
+        "width",
+        "height"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "assetCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "groups": {
+      "type": "object",
+      "required": [
+        "base",
+        "pet",
+        "direction",
+        "blink",
+        "dizzy"
+      ],
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/baseGroup"
+        },
+        "pet": {
+          "$ref": "#/$defs/indexedGroup"
+        },
+        "direction": {
+          "$ref": "#/$defs/directionGroup"
+        },
+        "blink": {
+          "$ref": "#/$defs/fileGroup"
+        },
+        "dizzy": {
+          "$ref": "#/$defs/indexedGroup"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "baseGroup": {
+      "type": "object",
+      "required": [
+        "pattern",
+        "mouthFrames",
+        "eyeFrames"
+      ],
+      "properties": {
+        "pattern": {
+          "const": "base_m{mouth}_e{eye}.jpg"
+        },
+        "mouthFrames": {
+          "const": 4
+        },
+        "eyeFrames": {
+          "const": 4
+        }
+      },
+      "additionalProperties": false
+    },
+    "indexedGroup": {
+      "type": "object",
+      "required": [
+        "pattern",
+        "startIndex",
+        "frameCount"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frameCount": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "directionGroup": {
+      "type": "object",
+      "required": [
+        "pattern",
+        "startIndex",
+        "frameCount",
+        "centerIndex"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frameCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "centerIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "fileGroup": {
+      "type": "object",
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^/]+\\.jpg$"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

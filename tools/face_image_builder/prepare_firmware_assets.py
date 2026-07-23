@@ -37,65 +37,15 @@ SOURCE_PRIORITY = {
     ".jpeg": 3,
 }
 
-FACE_STEMS = {
-    "idle",
-    "listen",
-    "talk_0",
-    "talk_1",
-    "blink",
-    "smile",
-    "good_0",
-    "good_1",
-    "good_blink",
-    "bad_0",
-    "bad_1",
-    "photo_0",
-    "photo_1",
-    "photo_blink",
-    "photo_blink_talk",
-    "photo_master_0",
-    "photo_master_1",
-    "nadenade_0",
-    "nadenade_1",
-    "furifuri_0",
-    "furifuri_1",
-    "idle_guarded_0",
-    "blink_guarded_0",
-    "talk_guarded_0",
-    "talk_guarded_1",
-    "idle_attached_0",
-    "blink_attached_0",
-    "talk_attached_0",
-    "talk_attached_1",
-    "pet_guarded_0",
-    "pet_guarded_1",
-    "pet_blink_guarded_0",
-    "pet_attached_0",
-    "pet_attached_1",
-    "pet_blink_attached_0",
-    "shake_guarded_0",
-    "shake_guarded_1",
-    "shake_attached_0",
-    "shake_attached_1",
-    "tired_0",
-    "tired_talk",
-    "tired_blink",
-    "exhausted_0",
-    "exhausted_talk",
-    "exhausted_blink",
-    "low_power_0",
-    "low_power_talk",
-    "low_power_blink",
-}
-
 FIRMWARE_STEM_PATTERNS = (
-    re.compile(r"^pet_anim_\d+$"),
+    re.compile(r"^base_m[0-3]_e[0-3]$"),
+    re.compile(r"^pet_anim_(?:[0-9]|1[0-5])$"),
     re.compile(r"^dir\d+$"),
     re.compile(r"^blink\d+$"),
     re.compile(r"^dizzy_\d+$"),
-    re.compile(r"^dizzy_cw_\d+$"),
-    re.compile(r"^dizzy_ccw_\d+$"),
 )
+
+DERIVED_ASSET_SOURCES: dict[str, str] = {}
 
 
 def parse_size(text: str) -> tuple[int, int]:
@@ -189,7 +139,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def is_firmware_stem(stem: str) -> bool:
-    return stem in FACE_STEMS or any(pattern.match(stem) for pattern in FIRMWARE_STEM_PATTERNS)
+    return any(pattern.match(stem) for pattern in FIRMWARE_STEM_PATTERNS)
 
 
 def is_metadata_file(path: Path) -> bool:
@@ -223,6 +173,13 @@ def collect_assets(
             metadata.append(path)
 
     return selected, variants, metadata, ignored_images, obsolete_files
+
+
+def add_derived_assets(selected: dict[str, Path]) -> None:
+    for output_stem, source_stem in DERIVED_ASSET_SOURCES.items():
+        source_path = selected.get(source_stem)
+        if source_path is not None:
+            selected.setdefault(output_stem, source_path)
 
 
 def prepare_image(source_path: Path, size: tuple[int, int], matte: tuple[int, int, int]) -> Image.Image:
@@ -351,6 +308,7 @@ def main() -> None:
 
     size = args.size or TARGET_SIZES[args.target]
     selected, variants, metadata, ignored_images, obsolete_files = collect_assets(source_dir)
+    add_derived_assets(selected)
     if not selected:
         raise SystemExit(f"no recognized firmware image assets found in {source_dir}")
 
