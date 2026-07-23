@@ -17,6 +17,11 @@ RELEASE_ASSETS=(
   stackchan_atoms3r_firmware.bin
   stackchan_atoms3r_factory.bin
 )
+RELEASE_DOCUMENTS=(
+  LICENSE
+  ASSET_LICENSE.md
+  THIRD_PARTY_NOTICES.md
+)
 
 if [[ -z "${PIO_BIN}" ]]; then
   if command -v pio >/dev/null 2>&1; then
@@ -39,6 +44,9 @@ if [[ ! -f "${BOOT_APP0_BIN}" ]]; then
   exit 1
 fi
 
+echo "==> Validating runtime face assets"
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/validate_face_assets.py"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -56,6 +64,9 @@ Outputs:
   dist/stackchan_stopwatch_factory.bin
   dist/stackchan_atoms3r_firmware.bin
   dist/stackchan_atoms3r_factory.bin
+  dist/LICENSE
+  dist/ASSET_LICENSE.md
+  dist/THIRD_PARTY_NOTICES.md
   dist/SHA256SUMS
 EOF
 }
@@ -67,18 +78,21 @@ set_target_config() {
       ENV_NAME="m5stack-cores3-release"
       ASSET_PREFIX="stackchan_cores3"
       LITTLEFS_OFFSET="0x810000"
+      BUILD_DATA_DIR="${ROOT_DIR}/.pio/generated_data_cores3"
       ;;
     stopwatch|m5stack-stopwatch|m5stack-stopwatch-release)
       TARGET_NAME="stopwatch"
       ENV_NAME="m5stack-stopwatch-release"
       ASSET_PREFIX="stackchan_stopwatch"
       LITTLEFS_OFFSET="0x290000"
+      BUILD_DATA_DIR="${ROOT_DIR}/data_stopwatch"
       ;;
     atoms3r|atoms3r-chatbot|m5stack-atoms3r-chatbot|m5stack-atoms3r-chatbot-release)
       TARGET_NAME="atoms3r"
       ENV_NAME="m5stack-atoms3r-chatbot-release"
       ASSET_PREFIX="stackchan_atoms3r"
       LITTLEFS_OFFSET="0x410000"
+      BUILD_DATA_DIR="${ROOT_DIR}/.pio/generated_data_atoms3r"
       ;;
     -h|--help|help)
       usage
@@ -121,6 +135,8 @@ build_target() {
   echo "==> Building ${TARGET_NAME} (${ENV_NAME})"
   "${PIO_BIN}" run -e "${ENV_NAME}"
   "${PIO_BIN}" run -e "${ENV_NAME}" -t buildfs
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/validate_face_assets.py" \
+    "${BUILD_DATA_DIR}" --target "${TARGET_NAME}"
 
   local firmware_bin="${build_dir}/firmware.bin"
   local bootloader_bin="${build_dir}/bootloader.bin"
@@ -156,7 +172,7 @@ write_checksums() {
   local checksum_inputs=()
   local asset
 
-  for asset in "${RELEASE_ASSETS[@]}"; do
+  for asset in "${RELEASE_ASSETS[@]}" "${RELEASE_DOCUMENTS[@]}"; do
     if [[ -f "${DIST_DIR}/${asset}" ]]; then
       checksum_inputs+=("${asset}")
     fi
@@ -171,6 +187,13 @@ write_checksums() {
   echo "Wrote ${DIST_DIR}/SHA256SUMS"
 }
 
+copy_release_documents() {
+  local document
+  for document in "${RELEASE_DOCUMENTS[@]}"; do
+    cp "${ROOT_DIR}/${document}" "${DIST_DIR}/${document}"
+  done
+}
+
 mkdir -p "${DIST_DIR}"
 
 targets=()
@@ -182,6 +205,7 @@ for target in "${targets[@]}"; do
   build_target "${target}"
 done
 
+copy_release_documents
 write_checksums
 
 echo "Release assets in ${DIST_DIR}:"
@@ -190,5 +214,8 @@ for asset in "${RELEASE_ASSETS[@]}"; do
   if [[ -f "${DIST_DIR}/${asset}" ]]; then
     existing_assets+=("${DIST_DIR}/${asset}")
   fi
+done
+for asset in "${RELEASE_DOCUMENTS[@]}"; do
+  existing_assets+=("${DIST_DIR}/${asset}")
 done
 ls -lh "${existing_assets[@]}" "${DIST_DIR}/SHA256SUMS"

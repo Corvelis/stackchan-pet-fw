@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "renderer": "animated",
+  "target": "stopwatch",
+  "canvas": {
+    "width": 386,
+    "height": 386
+  },
+  "assetCount": 57,
+  "groups": {
+    "base": {
+      "pattern": "base_m{mouth}_e{eye}.jpg",
+      "mouthFrames": 4,
+      "eyeFrames": 4
+    },
+    "pet": {
+      "pattern": "pet_anim_{index}.jpg",
+      "startIndex": 0,
+      "frameCount": 16
+    },
+    "direction": {
+      "pattern": "dir{index}.jpg",
+      "startIndex": 0,
+      "frameCount": 9,
+      "centerIndex": 8
+    },
+    "blink": {
+      "files": [
+        "blink8.jpg"
+      ]
+    },
+    "dizzy": {
+      "pattern": "dizzy_{index:02d}.jpg",
+      "startIndex": 1,
+      "frameCount": 15
+    }
+  },
+  "generatedBy": "scripts/promote_transition_face_assets.py"
+}
