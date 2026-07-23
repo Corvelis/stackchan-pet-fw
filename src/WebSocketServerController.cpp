@@ -36,10 +36,29 @@ void WebSocketServerController::begin(uint16_t port) {
   Serial.printf("[ws] server started on port %u\n", port);
 }
 
+void WebSocketServerController::stop() {
+  if (server_ == nullptr) {
+    return;
+  }
+
+  if (hasClient_) {
+    handleDisconnect();
+  }
+  httpd_stop(server_);
+  server_ = nullptr;
+  activeClientFd_ = -1;
+  hasClient_ = false;
+  Serial.println("[ws] server stopped");
+}
+
 void WebSocketServerController::loop() {
   if (hasClient_ && !clientIsConnected()) {
     handleDisconnect();
   }
+}
+
+bool WebSocketServerController::isStarted() const {
+  return server_ != nullptr;
 }
 
 void WebSocketServerController::onText(WebSocketTextHandler handler) {

@@ -10,10 +10,14 @@
 #if STACKCHAN_HAS_STACKCHAN_BSP
 #include <M5StackChan.h>
 #endif
+#if STACKCHAN_DEVICE_STOPWATCH
+#include <M5PM1.h>
+#endif
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <math.h>
 #include <qrcodegen.h>
 #include <time.h>
@@ -24,17 +28,25 @@
 #include "CameraManager.h"
 #include "FaceController.h"
 #include "MotionController.h"
+#include "SpeechBubbleController.h"
+#include "StepCounterController.h"
 #include "StreetPassController.h"
 #include "StreetPassProtocol.h"
+#include "UsbSerialProtocol.h"
+#include "Utf8Utils.h"
 #include "WebSocketServerController.h"
+
+namespace Usb = UsbSerialProtocol;
 
 FaceController faceController;
 MotionController motionController;
 WebSocketServerController wsServer;
 AudioController audioController;
+SpeechBubbleController speechBubbleController;
 CameraManager cameraManager;
 AffectionController affectionController;
 StreetPassController streetPassController;
+StepCounterController stepCounterController;
 WebServer httpServer(HTTP_PORT);
 Preferences preferences;
 String deviceId;
@@ -51,6 +63,7 @@ enum class SettingsPage : uint8_t {
   Servo = 3,
   Power = 4,
   StreetPass = 5,
+  Steps = 6,
 };
 
 enum class NetworkQrType : uint8_t {
@@ -82,25 +95,58 @@ struct ThermalStatus {
   bool suggestLowPower = false;
 };
 
+struct VoicePerfStats {
+  bool active = false;
+  uint32_t sessionSeq = 0;
+  uint32_t loopCount = 0;
+  uint32_t faceUpdateCount = 0;
+  uint32_t audioUpdateCount = 0;
+  uint32_t wsBinaryFrames = 0;
+  uint32_t maxLoopGapMs = 0;
+  uint32_t maxLoopDurationMs = 0;
+  uint32_t maxFaceUpdateMs = 0;
+  uint32_t maxAudioUpdateMs = 0;
+  uint32_t maxWsLoopMs = 0;
+  uint32_t maxHttpLoopMs = 0;
+  uint32_t maxWsBinaryMs = 0;
+  uint32_t maxWsBinaryBytes = 0;
+  uint32_t maxFaceFrameGapMs = 0;
+  uint64_t wsBinaryBytes = 0;
+  unsigned long firstMs = 0;
+  unsigned long lastMs = 0;
+  unsigned long lastLoopMs = 0;
+  unsigned long lastFaceUpdateMs = 0;
+};
+
 ChanState currentState = ChanState::Idle;
 AuthFaceMode currentAuthFaceMode = AuthFaceMode::Unknown;
 NetworkMode networkMode = NetworkMode::Sta;
 SettingsPage settingsPage = SettingsPage::Network;
 DeviceSettings deviceSettings;
 ThermalStatus thermalStatus;
+VoicePerfStats voicePerfStats;
+portMUX_TYPE voicePerfMux = portMUX_INITIALIZER_UNLOCKED;
 bool vadActive = false;
 bool infoScreenVisible = false;
 bool streetPassProfileVisible = false;
 uint8_t streetPassHistoryPage = 0;
+uint8_t stepHistoryPage = 0;
 bool displayOn = true;
 bool wsStarted = false;
 bool httpStarted = false;
+bool httpRoutesRegistered = false;
 bool wsClientConnected = false;
 bool usbSerialClientConnected = false;
+bool appCommsSuspendedForDisplayOff = false;
+bool displayOffCpuFrequencyReduced = false;
 NetworkQrType activeNetworkQr = NetworkQrType::None;
 unsigned long lastWifiCheckMs = 0;
 unsigned long wifiConnectStartedMs = 0;
 wl_status_t lastWifiStatus = WL_IDLE_STATUS;
+volatile bool wifiReconnectEventPending = false;
+volatile bool wifiDisconnectExpected = false;
+volatile uint8_t wifiReconnectEventReason = 0;
+volatile bool wifiGotIpReady = false;
 unsigned long lastInfoDrawMs = 0;
 bool pendingStateAfterPlayback = false;
 ChanState deferredStateAfterPlayback = ChanState::Idle;
@@ -122,10 +168,14 @@ bool pettingActive = false;
 unsigned long pettingEndMs = 0;
 unsigned long pettingStartedMs = 0;
 bool pettingFaceAnimated = false;
+bool voicePettingFaceActive = false;
+bool voicePettingSessionActive = false;
 unsigned long nextPetMoveMs = 0;
 unsigned long lastPettingRepeatEventMs = 0;
 Pose pettingBasePose = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
 bool shakeActive = false;
+bool interactionMicPaused = false;
+unsigned long servoMicQuietUntilMs = 0;
 unsigned long shakeEndMs = 0;
 unsigned long nextShakeCheckMs = 0;
 unsigned long lastShakeTriggerMs = 0;
@@ -249,6 +299,8 @@ unsigned long nextStreetPassScanMs = 0;
 unsigned long nextStreetPassExchangeMs = 0;
 unsigned long nextStreetPassNtpSyncMs = 0;
 unsigned long streetPassBleSettleUntilMs = 0;
+unsigned long streetPassResumeAfterCameraMs = 0;
+bool streetPassAppWasConnected = false;
 bool streetPassNtpConfigured = false;
 uint32_t streetPassAdvertisedCardSeq = 0;
 uint32_t streetPassAdvertisedPeerToken = 0;
@@ -275,6 +327,14 @@ constexpr size_t kMaxWifiCredentials = 5;
 constexpr uint8_t kStreetPassCandidateCount = 8;
 constexpr unsigned long STREETPASS_SCAN_DURATION_MS = 5000;
 constexpr unsigned long STREETPASS_SCAN_IDLE_INTERVAL_MS = 12500;
+constexpr unsigned long STREETPASS_DISPLAY_OFF_SCAN_DURATION_MS = 3000;
+constexpr unsigned long STREETPASS_DISPLAY_OFF_SCAN_PERIOD_MS = 120000;
+constexpr unsigned long STREETPASS_DISPLAY_OFF_SCAN_IDLE_INTERVAL_MS =
+  STREETPASS_DISPLAY_OFF_SCAN_PERIOD_MS > STREETPASS_DISPLAY_OFF_SCAN_DURATION_MS
+    ? STREETPASS_DISPLAY_OFF_SCAN_PERIOD_MS - STREETPASS_DISPLAY_OFF_SCAN_DURATION_MS
+    : 0;
+constexpr unsigned long STREETPASS_DISPLAY_OFF_INITIAL_SCAN_DELAY_MS = 10000;
+constexpr unsigned long STREETPASS_DISPLAY_OFF_EXCHANGE_DELAY_MS = 5000;
 constexpr unsigned long STREETPASS_SCAN_BUSY_INTERVAL_MS = 60000;
 constexpr unsigned long STREETPASS_OBSERVE_MIN_MS = 1500;
 constexpr uint8_t STREETPASS_OBSERVE_MIN_COUNT = 2;
@@ -299,6 +359,27 @@ uint8_t wifiConnectAttempts = 0;
 uint8_t qrCodeBuffer[qrcodegen_BUFFER_LEN_MAX];
 uint8_t qrTempBuffer[qrcodegen_BUFFER_LEN_MAX];
 unsigned long lastClockOverlayUpdateMs = 0;
+uint32_t displayOnCpuFrequencyMhz = 0;
+#if STEP_AFFECTION_REWARD_ENABLED
+uint32_t stepAffectionRewardDay = 0;
+uint32_t stepAffectionRewardMilestones = 0;
+uint32_t pendingStepAffectionMilestones = 0;
+#endif
+#if STEP_COUNTER_ENABLED
+uint32_t stepSyncSequence = 0;
+uint32_t lastStepSyncActivityDay = 0;
+uint32_t lastStepSyncSteps = 0;
+unsigned long lastStepSyncUpdateMs = 0;
+#endif
+struct SharedImuSample {
+  m5::imu_data_t data;
+  bool valid = false;
+  bool updated = false;
+  unsigned long sampleMs = 0;
+};
+
+SharedImuSample sharedImuSample;
+unsigned long nextSharedImuSampleMs = 0;
 
 struct StreetPassBleCandidate {
   bool active = false;
@@ -325,12 +406,22 @@ bool sendCameraButtonEvent(unsigned long now);
 bool appClientConnected();
 void updateUsbSerial(unsigned long now);
 void updateWiFi(unsigned long now);
+void stopServers(const char* reason);
 void beginStreetPassBle();
+bool suspendStreetPassBleForCamera();
+void resumeStreetPassBleAfterCamera(bool wasSuspended);
 void updateStreetPassBle(unsigned long now);
 void updateStreetPassInboundEvents(unsigned long now, bool processWrites);
 void restoreStreetPassTimeFromRtc(unsigned long now);
 void writeStreetPassRtcTime(uint32_t unixTime);
 void updateClockOverlay(unsigned long now);
+void updateSharedImuSample(unsigned long now);
+void updateStepCounter(unsigned long now);
+void loadStepAffectionRewardState();
+void updateStepAffectionReward(unsigned long now);
+void sendStepsSnapshot(const char* requestId = nullptr);
+void updateStepSync(unsigned long now);
+void handleStepsGetCommand(JsonDocument& doc);
 void clearStreetPassBleCandidates();
 void resetStreetPassBleAttemptCooldowns();
 bool updateDisplayOffStreetPassMode(unsigned long now);
@@ -369,8 +460,13 @@ void updateCameraButtonPending(unsigned long now);
 void clearCameraButtonPending(const char* reason);
 bool interactionsReady(unsigned long now);
 void applyListeningPresentation(unsigned long now);
+void cancelListeningNod(bool recenter);
 void updateDeferredFaceState();
 void updateSpeakingFaceStateAfterPlayback();
+uint8_t voiceMouthLevelFromPlaybackPeak(unsigned long now);
+#if STACKCHAN_CLASSIC_FACE_ENABLED
+uint8_t classicMouthLevelFromPlaybackEnvelope(unsigned long now);
+#endif
 void updateDeferredFaceMode();
 AuthFaceMode displayAuthFaceMode(AuthFaceMode mode);
 bool audioBusyForUiEffects();
@@ -379,6 +475,13 @@ void drawInfoScreen();
 void drawNetworkQrScreen();
 bool streetPassPageVisible();
 void applyDisplayBrightness();
+bool streetPassDisplayOffRadioWindowOpen(unsigned long now);
+bool streetPassDisplayOffRadioBusy();
+void sleepDisplayOffLowPower(unsigned long now);
+void applyDisplayOffCpuFrequency();
+void restoreDisplayOnCpuFrequency();
+void suspendAppCommsForDisplayOff(unsigned long now);
+void resumeAppCommsAfterDisplayOn(unsigned long now);
 void applyLowPowerMode(bool enabled, bool persist);
 void connectWiFi();
 bool audioBusyForServoCalibration();
@@ -386,6 +489,7 @@ void drawStreetPassNotificationOverlay();
 void beginDevice();
 void updateDevice();
 void logDeviceAudioConfig();
+void applyStopwatchStatusLedSetting();
 void pulseHaptic(uint8_t level, unsigned long durationMs, unsigned long now);
 void updateHaptic(unsigned long now);
 void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch);
@@ -417,18 +521,6 @@ void redrawNetworkSettingsIfVisible();
 void adjustSmallDisplayVolume(int delta);
 #endif
 
-constexpr uint8_t kUsbSerialMagic[4] = {'S', 'C', 'U', '1'};
-constexpr uint8_t kUsbSerialVersion = 0x01;
-constexpr uint8_t kUsbSerialTypeJson = 0x01;
-constexpr uint8_t kUsbSerialTypeTtsPcm = 0x02;
-constexpr uint8_t kUsbSerialTypeMicPcm = 0x03;
-constexpr uint8_t kUsbSerialTypeCaptureRequest = 0x04;
-constexpr uint8_t kUsbSerialTypeCaptureImageChunk = 0x05;
-constexpr uint8_t kUsbSerialTypeAck = 0x06;
-constexpr uint8_t kUsbSerialTypeError = 0x07;
-constexpr uint8_t kUsbSerialTypePing = 0x08;
-constexpr uint8_t kUsbSerialTypePong = 0x09;
-
 const char* chanStateName(ChanState state) {
   switch (state) {
     case ChanState::Idle:
@@ -455,6 +547,9 @@ void beginDevice() {
   cfg.external_speaker.atomic_echo = true;
 #endif
   M5.begin(cfg);
+#if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
+  M5.Display.setRotation(1);
+#endif
   logDeviceAudioConfig();
 #endif
 }
@@ -514,6 +609,28 @@ void logDeviceAudioConfig() {
 #endif
 }
 
+void applyStopwatchStatusLedSetting() {
+#if STACKCHAN_DEVICE_STOPWATCH
+  M5PM1 pm1;
+  const m5pm1_err_t beginErr = pm1.begin(&M5.In_I2C);
+  if (beginErr != M5PM1_OK) {
+    Serial.printf("[power] stopwatch pm1 init failed for status led err=%d\n", static_cast<int>(beginErr));
+    return;
+  }
+
+#if STOPWATCH_STATUS_LED_ENABLED
+  const m5pm1_err_t levelErr = pm1.setLedEnLevel(true);
+  Serial.printf("[power] stopwatch status led enabled led_en=%d\n", static_cast<int>(levelErr));
+#else
+  const m5pm1_err_t disableErr = pm1.disableLeds();
+  const m5pm1_err_t levelErr = pm1.setLedEnLevel(false);
+  Serial.printf("[power] stopwatch status led disabled disable=%d led_en=%d\n",
+                static_cast<int>(disableErr),
+                static_cast<int>(levelErr));
+#endif
+#endif
+}
+
 class StreetPassScanCallbacks : public NimBLEScanCallbacks {
 public:
   void onDiscovered(const NimBLEAdvertisedDevice* advertisedDevice) override {
@@ -564,30 +681,6 @@ public:
 
 StreetPassServerCallbacks streetPassServerCallbacks;
 StreetPassEncounterWriteCallbacks streetPassEncounterWriteCallbacks;
-
-uint32_t readLe32(const uint8_t* data) {
-  return static_cast<uint32_t>(data[0]) |
-         (static_cast<uint32_t>(data[1]) << 8) |
-         (static_cast<uint32_t>(data[2]) << 16) |
-         (static_cast<uint32_t>(data[3]) << 24);
-}
-
-void writeLe32(uint8_t* data, uint32_t value) {
-  data[0] = static_cast<uint8_t>(value & 0xff);
-  data[1] = static_cast<uint8_t>((value >> 8) & 0xff);
-  data[2] = static_cast<uint8_t>((value >> 16) & 0xff);
-  data[3] = static_cast<uint8_t>((value >> 24) & 0xff);
-}
-
-uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t length) {
-  for (size_t i = 0; i < length; ++i) {
-    crc ^= data[i];
-    for (uint8_t bit = 0; bit < 8; ++bit) {
-      crc = (crc >> 1) ^ (0xEDB88320UL & (0UL - (crc & 1UL)));
-    }
-  }
-  return crc;
-}
 
 void printHexBytes(const uint8_t* data, size_t length) {
   for (size_t i = 0; i < length; ++i) {
@@ -704,6 +797,9 @@ bool streetPassBusyForExchange() {
 }
 
 const char* streetPassBusyReason() {
+  if (appClientConnected()) {
+    return "app_client";
+  }
   const bool activelyListening = (currentState == ChanState::Listening ||
                                   audioController.state() == ChanState::Listening) &&
                                  audioController.isMicStreaming();
@@ -735,6 +831,76 @@ uint32_t unixFromUtcParts(int year, int month, int day, int hour, int minute, in
 
 bool validStreetPassUnix(uint32_t unixTime) {
   return unixTime >= STREETPASS_VALID_UNIX_MIN;
+}
+
+unsigned long streetPassScanDurationMs() {
+  return displayOn ? STREETPASS_SCAN_DURATION_MS : STREETPASS_DISPLAY_OFF_SCAN_DURATION_MS;
+}
+
+unsigned long streetPassScanIdleIntervalMs() {
+  return displayOn ? STREETPASS_SCAN_IDLE_INTERVAL_MS : STREETPASS_DISPLAY_OFF_SCAN_IDLE_INTERVAL_MS;
+}
+
+unsigned long streetPassInitialScanDelayMs() {
+  return displayOn ? 2000UL : STREETPASS_DISPLAY_OFF_INITIAL_SCAN_DELAY_MS;
+}
+
+unsigned long streetPassExchangeDelayMs() {
+  return displayOn ? 1000UL : STREETPASS_DISPLAY_OFF_EXCHANGE_DELAY_MS;
+}
+
+bool streetPassDisplayOffRadioWindowOpen(unsigned long now) {
+  if (displayOn) {
+    return true;
+  }
+  if (!streetPassController.enabled()) {
+    return false;
+  }
+  if (streetPassScanActive || streetPassGattServerConnected || streetPassExchangeInProgress) {
+    return true;
+  }
+  if (streetPassBleSettleUntilMs != 0 && now < streetPassBleSettleUntilMs) {
+    return false;
+  }
+  if (static_cast<long>(now - nextStreetPassScanMs) < 0) {
+    return false;
+  }
+  return now - nextStreetPassScanMs < STREETPASS_DISPLAY_OFF_SCAN_DURATION_MS;
+}
+
+bool streetPassDisplayOffRadioBusy() {
+  if (displayOn || !streetPassController.enabled()) {
+    return false;
+  }
+  if (streetPassScanActive || streetPassAdvertising || streetPassGattServerConnected ||
+      streetPassExchangeInProgress) {
+    return true;
+  }
+  return streetPassGattClient != nullptr && streetPassGattClient->isConnected();
+}
+
+void slowStreetPassBleForDisplayOff(unsigned long now) {
+  if (!streetPassController.enabled()) {
+    return;
+  }
+  if (!streetPassScanActive && nextStreetPassScanMs < now + STREETPASS_DISPLAY_OFF_INITIAL_SCAN_DELAY_MS) {
+    nextStreetPassScanMs = now + STREETPASS_DISPLAY_OFF_INITIAL_SCAN_DELAY_MS;
+  }
+  if (nextStreetPassExchangeMs < now + STREETPASS_DISPLAY_OFF_EXCHANGE_DELAY_MS) {
+    nextStreetPassExchangeMs = now + STREETPASS_DISPLAY_OFF_EXCHANGE_DELAY_MS;
+  }
+}
+
+void resumeStreetPassBleAfterDisplayOn(unsigned long now) {
+  if (!streetPassController.enabled()) {
+    return;
+  }
+  if (!streetPassScanActive && nextStreetPassScanMs > now + 2000UL) {
+    nextStreetPassScanMs = now + 2000UL;
+  }
+  if (nextStreetPassExchangeMs > now + 1000UL) {
+    nextStreetPassExchangeMs = now + 1000UL;
+  }
 }
 
 String makeStreetPassInfoJson() {
@@ -897,6 +1063,12 @@ void updateStreetPassAdvertising() {
     }
     return;
   }
+  if (!streetPassDisplayOffRadioWindowOpen(millis())) {
+    if (streetPassAdvertising) {
+      stopStreetPassAdvertising("display_off_idle");
+    }
+    return;
+  }
   if (!needsRefresh) {
     return;
   }
@@ -1054,23 +1226,378 @@ void updateClockOverlay(unsigned long now) {
 #endif
 }
 
+void updateSharedImuSample(unsigned long now) {
+  sharedImuSample.updated = false;
+  if (now < nextSharedImuSampleMs) {
+    return;
+  }
+
+  nextSharedImuSampleMs = now + SHAKE_UPDATE_INTERVAL_MS;
+  if (M5.Imu.update()) {
+    M5.Imu.getImuData(&sharedImuSample.data);
+    sharedImuSample.valid = true;
+    sharedImuSample.updated = true;
+    sharedImuSample.sampleMs = now;
+  }
+}
+
+void updateStepCounter(unsigned long now) {
+#if STEP_COUNTER_ENABLED
+  uint32_t localUnix = 0;
+  bool timeValid = false;
+  const uint32_t unixTime = streetPassController.estimatedUnix(now);
+  if (validStreetPassUnix(unixTime)) {
+    const int64_t adjustedUnix = static_cast<int64_t>(unixTime) +
+                                 static_cast<int64_t>(CLOCK_DISPLAY_UTC_OFFSET_MINUTES) * 60LL;
+    if (adjustedUnix > 0 && adjustedUnix <= 0xFFFFFFFFLL) {
+      localUnix = static_cast<uint32_t>(adjustedUnix);
+      timeValid = true;
+    }
+  }
+
+  stepCounterController.update(now,
+                               sharedImuSample.data,
+                               sharedImuSample.updated,
+                               localUnix,
+                               timeValid);
+  if (displayOn) {
+    faceController.setStepCount(stepCounterController.todaySteps(),
+                                stepCounterController.todayValid());
+  }
+#else
+  (void)now;
+#endif
+}
+
+#if STEP_COUNTER_ENABLED
+uint32_t nextStepSyncSequence() {
+  ++stepSyncSequence;
+  if (stepSyncSequence == 0) {
+    stepSyncSequence = 1;
+  }
+  return stepSyncSequence;
+}
+
+uint32_t stepSyncGeneratedAtUnix(unsigned long now) {
+  const uint32_t unixTime = streetPassController.estimatedUnix(now);
+  return validStreetPassUnix(unixTime) ? unixTime : 0;
+}
+
+uint32_t stepDayStartUnix(uint32_t activityDay) {
+  if (activityDay == 0) {
+    return 0;
+  }
+  constexpr uint32_t kSecondsPerDay = 24UL * 60UL * 60UL;
+  const int64_t localDayStart =
+    static_cast<int64_t>(activityDay) * static_cast<int64_t>(kSecondsPerDay) +
+    static_cast<int64_t>(STEP_COUNTER_DAY_START_HOUR) * 60LL * 60LL;
+  const int64_t utcDayStart =
+    localDayStart - static_cast<int64_t>(CLOCK_DISPLAY_UTC_OFFSET_MINUTES) * 60LL;
+  if (utcDayStart <= 0 || utcDayStart > 0xFFFFFFFFLL) {
+    return 0;
+  }
+  return static_cast<uint32_t>(utcDayStart);
+}
+
+String stepLocalDateString(uint32_t activityDay) {
+  if (activityDay == 0) {
+    return "";
+  }
+  constexpr uint32_t kSecondsPerDay = 24UL * 60UL * 60UL;
+  time_t raw = static_cast<time_t>(activityDay * kSecondsPerDay);
+  tm date = {};
+  gmtime_r(&raw, &date);
+  char text[11] = {};
+  snprintf(text,
+           sizeof(text),
+           "%04d-%02d-%02d",
+           date.tm_year + 1900,
+           date.tm_mon + 1,
+           date.tm_mday);
+  return String(text);
+}
+
+const StepDayRecord* newestStepSyncRecordBefore(uint32_t beforeActivityDay) {
+  const StepDayRecord* best = nullptr;
+  const uint8_t count = stepCounterController.historyCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    const StepDayRecord* record = stepCounterController.recordAt(i);
+    if (record == nullptr || record->activityDay == 0 ||
+        record->activityDay >= beforeActivityDay) {
+      continue;
+    }
+    if (best == nullptr || record->activityDay > best->activityDay) {
+      best = record;
+    }
+  }
+  return best;
+}
+
+void writeStepRecordJson(JsonObject target, const StepDayRecord& record) {
+  target["activityDay"] = record.activityDay;
+  target["localDate"] = stepLocalDateString(record.activityDay);
+  target["dayStartUnix"] = stepDayStartUnix(record.activityDay);
+  target["steps"] = record.steps;
+}
+
+void writeStepsEnvelope(JsonDocument& doc, const char* type, const char* requestId, unsigned long now) {
+  ensureDeviceId();
+  doc["type"] = type;
+  doc["schemaVersion"] = STEP_SYNC_SCHEMA_VERSION;
+  if (requestId != nullptr && requestId[0] != '\0') {
+    doc["requestId"] = requestId;
+  }
+  doc["deviceId"] = deviceId;
+  doc["sequence"] = nextStepSyncSequence();
+  doc["generatedAt"] = stepSyncGeneratedAtUnix(now);
+}
+
+void writeStepsSnapshot(JsonDocument& doc, const char* requestId, unsigned long now) {
+  writeStepsEnvelope(doc, "steps.snapshot", requestId, now);
+  doc["resetHour"] = STEP_COUNTER_DAY_START_HOUR;
+  doc["timezoneOffsetMinutes"] = CLOCK_DISPLAY_UTC_OFFSET_MINUTES;
+  doc["currentActivityDay"] = stepCounterController.todayValid()
+                                ? stepCounterController.currentActivityDay()
+                                : 0;
+  doc["todaySteps"] = stepCounterController.todaySteps();
+
+  JsonArray history = doc["history"].to<JsonArray>();
+  uint32_t beforeActivityDay = UINT32_MAX;
+  while (true) {
+    const StepDayRecord* record = newestStepSyncRecordBefore(beforeActivityDay);
+    if (record == nullptr) {
+      break;
+    }
+    beforeActivityDay = record->activityDay;
+    JsonObject item = history.add<JsonObject>();
+    writeStepRecordJson(item, *record);
+  }
+}
+
+void sendStepsSnapshot(const char* requestId) {
+  if (!appClientConnected()) {
+    return;
+  }
+  const unsigned long now = millis();
+  JsonDocument doc;
+  writeStepsSnapshot(doc, requestId, now);
+  sendJsonDocument(doc);
+
+  if (stepCounterController.todayValid()) {
+    lastStepSyncActivityDay = stepCounterController.currentActivityDay();
+    lastStepSyncSteps = stepCounterController.todaySteps();
+    lastStepSyncUpdateMs = now;
+  }
+}
+
+void sendStepsUpdate(unsigned long now) {
+  if (!appClientConnected() || !stepCounterController.todayValid()) {
+    return;
+  }
+  const uint32_t activityDay = stepCounterController.currentActivityDay();
+  StepDayRecord record = {activityDay, stepCounterController.todaySteps()};
+
+  JsonDocument doc;
+  writeStepsEnvelope(doc, "steps.update", nullptr, now);
+  JsonObject root = doc.as<JsonObject>();
+  writeStepRecordJson(root, record);
+  sendJsonDocument(doc);
+
+  lastStepSyncActivityDay = activityDay;
+  lastStepSyncSteps = record.steps;
+  lastStepSyncUpdateMs = now;
+}
+
+void updateStepSync(unsigned long now) {
+  if (!displayOn) {
+    return;
+  }
+  if (!appClientConnected() || !stepCounterController.todayValid()) {
+    return;
+  }
+
+  const uint32_t activityDay = stepCounterController.currentActivityDay();
+  const uint32_t steps = stepCounterController.todaySteps();
+  if (lastStepSyncActivityDay == 0 || lastStepSyncActivityDay != activityDay) {
+    sendStepsSnapshot();
+    return;
+  }
+  if (steps == lastStepSyncSteps) {
+    return;
+  }
+
+  const uint32_t diff = steps > lastStepSyncSteps ? steps - lastStepSyncSteps : 0;
+  if (diff >= STEP_SYNC_UPDATE_STEP_DELTA ||
+      now - lastStepSyncUpdateMs >= STEP_SYNC_UPDATE_INTERVAL_MS ||
+      steps < lastStepSyncSteps) {
+    sendStepsUpdate(now);
+  }
+}
+
+void handleStepsGetCommand(JsonDocument& doc) {
+  sendStepsSnapshot(doc["requestId"] | "");
+}
+#else
+void sendStepsSnapshot(const char* requestId) {
+  (void)requestId;
+}
+void updateStepSync(unsigned long now) {
+  (void)now;
+}
+void handleStepsGetCommand(JsonDocument& doc) {
+  JsonDocument response;
+  response["type"] = "steps.error";
+  response["schemaVersion"] = STEP_SYNC_SCHEMA_VERSION;
+  const char* requestId = doc["requestId"] | "";
+  if (requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  response["error"] = "steps_not_supported";
+  sendJsonDocument(response);
+}
+#endif
+
+#if STEP_AFFECTION_REWARD_ENABLED
+namespace {
+constexpr const char* kStepAffectionPrefsNamespace = "step_aff";
+constexpr const char* kStepAffectionDayKey = "day";
+constexpr const char* kStepAffectionMilestonesKey = "mile";
+constexpr const char* kStepAffectionPendingKey = "pend";
+constexpr uint32_t kStepAffectionPendingMax = 100000;
+}
+
+void saveStepAffectionRewardState() {
+  preferences.begin(kStepAffectionPrefsNamespace, false);
+  preferences.putUInt(kStepAffectionDayKey, stepAffectionRewardDay);
+  preferences.putUInt(kStepAffectionMilestonesKey, stepAffectionRewardMilestones);
+  preferences.putUInt(kStepAffectionPendingKey, pendingStepAffectionMilestones);
+  preferences.end();
+}
+
+void loadStepAffectionRewardState() {
+  preferences.begin(kStepAffectionPrefsNamespace, true);
+  stepAffectionRewardDay = preferences.getUInt(kStepAffectionDayKey, 0);
+  stepAffectionRewardMilestones = preferences.getUInt(kStepAffectionMilestonesKey, 0);
+  pendingStepAffectionMilestones = preferences.getUInt(kStepAffectionPendingKey, 0);
+  preferences.end();
+  if (pendingStepAffectionMilestones > kStepAffectionPendingMax) {
+    pendingStepAffectionMilestones = kStepAffectionPendingMax;
+  }
+  Serial.printf("[steps] affection reward loaded day=%lu milestones=%lu pending=%lu\n",
+                static_cast<unsigned long>(stepAffectionRewardDay),
+                static_cast<unsigned long>(stepAffectionRewardMilestones),
+                static_cast<unsigned long>(pendingStepAffectionMilestones));
+}
+
+void applyStepAffectionMilestones(uint32_t milestones, unsigned long now) {
+  if (milestones == 0) {
+    return;
+  }
+  const uint32_t cappedMilestones = min<uint32_t>(milestones, 333);
+  const int delta = static_cast<int>(cappedMilestones) * STEP_AFFECTION_DELTA_PER_REWARD;
+  applyAffectionResult(affectionController.debugAdjust(delta), now, true);
+  Serial.printf("[steps] affection reward milestones=%lu delta=%d steps=%lu\n",
+                static_cast<unsigned long>(milestones),
+                delta,
+                static_cast<unsigned long>(stepCounterController.todaySteps()));
+}
+
+void updateStepAffectionReward(unsigned long now) {
+  if (!displayOn) {
+    return;
+  }
+
+  bool dirty = false;
+  uint32_t milestonesToApply = 0;
+
+  if (displayOn && pendingStepAffectionMilestones > 0) {
+    milestonesToApply += pendingStepAffectionMilestones;
+    pendingStepAffectionMilestones = 0;
+    dirty = true;
+  }
+
+  if (!stepCounterController.todayValid()) {
+    if (milestonesToApply > 0) {
+      applyStepAffectionMilestones(milestonesToApply, now);
+    }
+    if (dirty) {
+      saveStepAffectionRewardState();
+    }
+    return;
+  }
+
+  const uint32_t activityDay = stepCounterController.currentActivityDay();
+  if (activityDay == 0) {
+    if (milestonesToApply > 0) {
+      applyStepAffectionMilestones(milestonesToApply, now);
+    }
+    if (dirty) {
+      saveStepAffectionRewardState();
+    }
+    return;
+  }
+
+  if (stepAffectionRewardDay != activityDay) {
+    stepAffectionRewardDay = activityDay;
+    stepAffectionRewardMilestones = 0;
+    dirty = true;
+  }
+
+  const uint32_t eligibleMilestones =
+    stepCounterController.todaySteps() / STEP_AFFECTION_STEPS_PER_REWARD;
+
+  if (eligibleMilestones > stepAffectionRewardMilestones) {
+    const uint32_t newMilestones = eligibleMilestones - stepAffectionRewardMilestones;
+    stepAffectionRewardMilestones = eligibleMilestones;
+    dirty = true;
+    if (displayOn) {
+      milestonesToApply += newMilestones;
+    } else {
+      pendingStepAffectionMilestones =
+        min<uint32_t>(kStepAffectionPendingMax, pendingStepAffectionMilestones + newMilestones);
+      Serial.printf("[steps] affection reward deferred new=%lu pending=%lu steps=%lu\n",
+                    static_cast<unsigned long>(newMilestones),
+                    static_cast<unsigned long>(pendingStepAffectionMilestones),
+                    static_cast<unsigned long>(stepCounterController.todaySteps()));
+    }
+  }
+
+  if (milestonesToApply > 0) {
+    applyStepAffectionMilestones(milestonesToApply, now);
+  }
+
+  if (dirty) {
+    saveStepAffectionRewardState();
+  }
+}
+#else
+void loadStepAffectionRewardState() {}
+void updateStepAffectionReward(unsigned long now) {
+  (void)now;
+}
+#endif
+
 void beginStreetPassBle() {
   if (streetPassBleReady) {
     return;
   }
 
+  Serial.println("[streetpass] BLE init begin");
   NimBLEDevice::init(STREETPASS_BLE_DEVICE_NAME);
+  Serial.println("[streetpass] BLE device initialized");
   NimBLEDevice::setPower(ESP_PWR_LVL_P3);
 
   streetPassGattServer = NimBLEDevice::createServer();
-  streetPassGattServer->setCallbacks(&streetPassServerCallbacks);
+  // The callback object has static storage. NimBLE defaults to taking ownership
+  // and deleting server callbacks during deinit(true), which attempts to free
+  // this global object when an app connection suspends StreetPass BLE.
+  streetPassGattServer->setCallbacks(&streetPassServerCallbacks, false);
   NimBLEService* service = streetPassGattServer->createService(STREETPASS_SERVICE_UUID);
   streetPassInfoCharacteristic = service->createCharacteristic(STREETPASS_INFO_UUID, NIMBLE_PROPERTY::READ);
   streetPassPublicCardCharacteristic = service->createCharacteristic(STREETPASS_PUBLIC_CARD_UUID, NIMBLE_PROPERTY::READ);
   streetPassEncounterWriteCharacteristic = service->createCharacteristic(STREETPASS_ENCOUNTER_WRITE_UUID, NIMBLE_PROPERTY::WRITE);
   streetPassEncounterWriteCharacteristic->setCallbacks(&streetPassEncounterWriteCallbacks);
   updateStreetPassGattCharacteristics();
-  service->start();
   streetPassGattServer->start();
 
   NimBLEScan* scan = NimBLEDevice::getScan();
@@ -1079,9 +1606,74 @@ void beginStreetPassBle() {
   scan->setInterval(80);
   scan->setWindow(80);
   streetPassBleReady = true;
-  nextStreetPassScanMs = millis() + 2000;
-  updateStreetPassAdvertising();
+  nextStreetPassScanMs = millis() + streetPassInitialScanDelayMs();
+  if (streetPassBusyReason()[0] == '\0') {
+    updateStreetPassAdvertising();
+  } else {
+    streetPassBlePaused = true;
+  }
   Serial.println("[streetpass] BLE scan ready");
+}
+
+bool deinitStreetPassBle(const char* reason) {
+  if (!streetPassBleReady) {
+    return false;
+  }
+
+  Serial.printf("[streetpass] BLE deinit reason=%s largestDMA=%u\n",
+                reason != nullptr ? reason : "unknown",
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+  if (streetPassScanActive) {
+    NimBLEDevice::getScan()->stop();
+  }
+  streetPassScanActive = false;
+  stopStreetPassAdvertising(reason != nullptr ? reason : "deinit");
+  if (streetPassGattClient != nullptr && streetPassGattClient->isConnected()) {
+    streetPassGattClient->disconnect();
+  }
+  streetPassGattServerConnected = false;
+  streetPassExchangeInProgress = false;
+
+  const bool stopped = NimBLEDevice::deinit(true);
+  streetPassBleReady = false;
+  streetPassAdvertising = false;
+  streetPassBlePaused = true;
+  streetPassGattServer = nullptr;
+  streetPassGattClient = nullptr;
+  streetPassInfoCharacteristic = nullptr;
+  streetPassPublicCardCharacteristic = nullptr;
+  streetPassEncounterWriteCharacteristic = nullptr;
+  delay(80);
+  Serial.printf("[streetpass] BLE deinit=%s largestDMA=%u\n",
+                stopped ? "ready" : "failed",
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+  return true;
+}
+
+bool suspendStreetPassBleForCamera() {
+#if STACKCHAN_HAS_CAMERA
+  const size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+  if (largestBefore >= CAMERA_BLE_SUSPEND_DMA_THRESHOLD_BYTES || !streetPassBleReady) {
+    return false;
+  }
+
+  Serial.printf("[camera] DMA memory low largest=%u; suspending StreetPass BLE\n",
+                static_cast<unsigned>(largestBefore));
+  return deinitStreetPassBle("camera_memory");
+#else
+  return false;
+#endif
+}
+
+void resumeStreetPassBleAfterCamera(bool wasSuspended) {
+  if (!wasSuspended) {
+    return;
+  }
+  constexpr unsigned long kStreetPassResumeDelayMs = 3000;
+  streetPassResumeAfterCameraMs = millis() + kStreetPassResumeDelayMs;
+  Serial.printf("[camera] StreetPass BLE resume deferred %lums largestDMA=%u\n",
+                kStreetPassResumeDelayMs,
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 }
 
 void clearStreetPassBleCandidates() {
@@ -1154,26 +1746,47 @@ bool updateDisplayOffStreetPassMode(unsigned long now) {
     return false;
   }
 
-  updateUsbSerial(now);
-  updateUsbSerialDeferredIdle(now);
-  updateWiFi(now);
-  updateStreetPassNetworkTime(now);
-  updateClockOverlay(now);
   streetPassController.update(now);
   updateStreetPassBle(now);
-
-  if (wsStarted) {
-    wsServer.loop();
-  }
-  if (httpStarted && (now % 200) < 20) {
-    httpServer.handleClient();
-  }
-  updateCameraButtonPending(now);
-  audioController.update(now);
-  updateDeferredFaceState();
-  updateDeferredFaceMode();
+#if STEP_COUNTER_ENABLED
+  sleepDisplayOffLowPower(now);
+#else
   delay(30);
+#endif
   return true;
+}
+
+void sleepDisplayOffLowPower(unsigned long now) {
+#if STEP_COUNTER_ENABLED
+#if DISPLAY_OFF_LIGHT_SLEEP_ENABLED
+  (void)now;
+  if (streetPassDisplayOffRadioBusy()) {
+    delay(SHAKE_UPDATE_INTERVAL_MS > 10 ? 10 : SHAKE_UPDATE_INTERVAL_MS);
+    return;
+  }
+
+  const unsigned long currentMs = millis();
+  const unsigned long wakeMarginMs = DISPLAY_OFF_LIGHT_SLEEP_WAKE_MARGIN_MS;
+  if (static_cast<long>(nextSharedImuSampleMs - currentMs) <= static_cast<long>(wakeMarginMs)) {
+    delay(1);
+    return;
+  }
+
+  const unsigned long availableMs = nextSharedImuSampleMs - currentMs - wakeMarginMs;
+  if (availableMs < DISPLAY_OFF_LIGHT_SLEEP_MIN_MS) {
+    delay(1);
+    return;
+  }
+
+  M5.Power.lightSleep(static_cast<uint64_t>(availableMs) * 1000ULL, false);
+#else
+  (void)now;
+  delay(SHAKE_UPDATE_INTERVAL_MS > 10 ? 10 : SHAKE_UPDATE_INTERVAL_MS);
+#endif
+#else
+  (void)now;
+  delay(30);
+#endif
 }
 
 void rememberStreetPassAdvertisedDevice(const NimBLEAdvertisedDevice* device, unsigned long now) {
@@ -1266,7 +1879,7 @@ void rememberStreetPassAdvertisedDevice(const NimBLEAdvertisedDevice* device, un
                      (candidate->lastAttemptMs == 0 || now - candidate->lastAttemptMs >= STREETPASS_CONNECT_RETRY_MS);
   if (ready && !candidate->exchangeQueued) {
     candidate->exchangeQueued = true;
-    nextStreetPassExchangeMs = now;
+    nextStreetPassExchangeMs = now + streetPassExchangeDelayMs();
     Serial.printf("[streetpass] candidate ready addr=%s seen=%u rssi=%d\n",
                   candidate->address.c_str(),
                   static_cast<unsigned>(candidate->seenCount),
@@ -1280,7 +1893,7 @@ bool exchangeStreetPassCandidate(StreetPassBleCandidate& candidate, unsigned lon
   }
   if (streetPassGattServerConnected) {
     candidate.exchangeQueued = false;
-    nextStreetPassExchangeMs = now + 1000;
+    nextStreetPassExchangeMs = now + streetPassExchangeDelayMs();
     Serial.printf("[streetpass] exchange deferred inbound addr=%s\n", candidate.address.c_str());
     return false;
   }
@@ -1408,7 +2021,29 @@ void updateStreetPassBle(unsigned long now) {
     return;
   }
 
+#if STACKCHAN_DEVICE_CORES3
+  if (appClientConnected()) {
+    streetPassAppWasConnected = true;
+    if (streetPassBleReady) {
+      deinitStreetPassBle("app_client");
+    }
+    return;
+  }
+  if (streetPassAppWasConnected) {
+    constexpr unsigned long kStreetPassAppDisconnectGraceMs = 120000;
+    streetPassAppWasConnected = false;
+    streetPassResumeAfterCameraMs = now + kStreetPassAppDisconnectGraceMs;
+    Serial.printf("[streetpass] app disconnected; BLE resume deferred %lums\n",
+                  kStreetPassAppDisconnectGraceMs);
+  }
+#endif
+
   if (!streetPassBleReady) {
+    if (streetPassResumeAfterCameraMs != 0 &&
+        static_cast<int32_t>(now - streetPassResumeAfterCameraMs) < 0) {
+      return;
+    }
+    streetPassResumeAfterCameraMs = 0;
     beginStreetPassBle();
     return;
   }
@@ -1471,12 +2106,16 @@ void updateStreetPassBle(unsigned long now) {
 
   updateStreetPassAdvertising();
 
-  if (streetPassScanActive && now - streetPassScanStartedMs >= STREETPASS_SCAN_DURATION_MS) {
+  if (streetPassScanActive && now - streetPassScanStartedMs >= streetPassScanDurationMs()) {
     scan->stop();
     streetPassScanActive = false;
-    restartStreetPassAdvertising();
-    const unsigned long interval = STREETPASS_SCAN_IDLE_INTERVAL_MS;
+    const unsigned long interval = streetPassScanIdleIntervalMs();
     nextStreetPassScanMs = now + interval;
+    if (displayOn) {
+      restartStreetPassAdvertising();
+    } else {
+      stopStreetPassAdvertising("display_off_scan_done");
+    }
     Serial.printf("[streetpass] scan stop next=%lums\n", interval);
   }
 
@@ -1487,7 +2126,10 @@ void updateStreetPassBle(unsigned long now) {
       streetPassScanActive = true;
       Serial.println("[streetpass] scan start");
     } else {
-      nextStreetPassScanMs = now + STREETPASS_SCAN_IDLE_INTERVAL_MS;
+      nextStreetPassScanMs = now + streetPassScanIdleIntervalMs();
+      if (!displayOn) {
+        stopStreetPassAdvertising("display_off_scan_start_failed");
+      }
       Serial.println("[streetpass] scan start failed");
     }
   }
@@ -1505,13 +2147,17 @@ void updateStreetPassBle(unsigned long now) {
     if (streetPassScanActive) {
       scan->stop();
       streetPassScanActive = false;
-      restartStreetPassAdvertising();
-      nextStreetPassScanMs = now + STREETPASS_SCAN_IDLE_INTERVAL_MS;
+      nextStreetPassScanMs = now + streetPassScanIdleIntervalMs();
+      if (displayOn) {
+        restartStreetPassAdvertising();
+      } else {
+        stopStreetPassAdvertising("display_off_exchange");
+      }
       delay(STREETPASS_CONNECT_PREPARE_MS);
     }
     exchangeStreetPassCandidate(candidate, now);
     streetPassExchangeInProgress = false;
-    nextStreetPassExchangeMs = now + 1000;
+    nextStreetPassExchangeMs = now + streetPassExchangeDelayMs();
     return;
   }
 }
@@ -1774,15 +2420,10 @@ uint8_t effectiveBrightness() {
   if (deviceSettings.lowPowerMode) {
     return min<uint8_t>(deviceSettings.brightness, DISPLAY_LOW_POWER_BRIGHTNESS_MAX);
   }
-  if (!infoScreenVisible && appClientConnected() &&
-      (currentState == ChanState::Listening || currentState == ChanState::Speaking ||
-       audioController.state() == ChanState::Listening || audioController.state() == ChanState::Speaking)) {
-    const uint16_t dimmed = static_cast<uint16_t>(deviceSettings.brightness) * DISPLAY_CONVERSATION_BRIGHTNESS_PERCENT / 100;
-    return max<uint8_t>(DISPLAY_BRIGHTNESS_MIN, static_cast<uint8_t>(dimmed));
-  }
   return deviceSettings.brightness;
 }
 
+#if THERMAL_FACE_EXPRESSION_ENABLED
 ThermalFaceMode thermalFaceModeForLevel(ThermalLevel level) {
   if (level == ThermalLevel::Hot) {
     return ThermalFaceMode::Hot;
@@ -1794,11 +2435,16 @@ ThermalFaceMode thermalFaceModeForLevel(ThermalLevel level) {
 #endif
   return ThermalFaceMode::Normal;
 }
+#endif
 
 void applyThermalFaceMode() {
+#if THERMAL_FACE_EXPRESSION_ENABLED
   faceController.setThermalFaceMode(deviceSettings.lowPowerMode
                                       ? ThermalFaceMode::LowPower
                                       : thermalFaceModeForLevel(thermalStatus.level));
+#else
+  faceController.setThermalFaceMode(ThermalFaceMode::Normal);
+#endif
 }
 
 uint8_t steppedSettingValue(uint8_t value, int delta, uint8_t minValue, uint8_t maxValue) {
@@ -1823,6 +2469,160 @@ void applyDisplayBrightness() {
   M5.Display.setBrightness(effectiveBrightness());
 }
 
+void resetUsbSerialParserForDisplayOff() {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  usbSerialRxState = UsbSerialRxState::Line;
+  usbSerialLineLength = 0;
+  usbSerialLineOverflow = false;
+  usbSerialHeaderIndex = 0;
+  usbSerialPayloadIndex = 0;
+  usbSerialCrcIndex = 0;
+  usbSerialMagicIndex = 0;
+  usbSerialFrameLength = 0;
+#endif
+}
+
+void disconnectUsbSerialForDisplayOff() {
+#if USB_SERIAL_PROTOCOL_ENABLED
+  if (usbSerialClientConnected || usbSerialFramedMode) {
+    Serial.println("[usb] suspended for display off");
+  }
+  usbSerialClientConnected = false;
+  usbSerialFramedMode = false;
+  usbSerialLastRxMs = 0;
+#if STACKCHAN_DEVICE_STOPWATCH
+  usbSerialDeferredIdlePending = false;
+  usbSerialDeferredIdleRequestedMs = 0;
+#endif
+  audioController.setUsbSerialClientConnected(false);
+  resetUsbSerialParserForDisplayOff();
+#endif
+}
+
+void resetInteractionStateForDisplayOff(unsigned long now) {
+  const bool hadPetting = pettingActive || pettingFaceAnimated ||
+                          voicePettingFaceActive || voicePettingSessionActive;
+  const bool hadShake = shakeActive;
+
+  pettingActive = false;
+  pettingEndMs = 0;
+  pettingStartedMs = 0;
+  pettingFaceAnimated = false;
+  voicePettingFaceActive = false;
+  voicePettingSessionActive = false;
+  nextPetMoveMs = 0;
+  lastPettingRepeatEventMs = 0;
+
+  shakeActive = false;
+  shakeEndMs = 0;
+  nextShakeMotionMs = 0;
+  lastShakeRepeatEventMs = 0;
+  shakeStrongSamples = 0;
+
+  if (hadPetting) {
+    faceController.setVoicePettingActive(false, now);
+#if STACKCHAN_PET_ANIMATION_ENABLED
+    faceController.setPetFaceMode(false, now, false, false);
+#else
+    faceController.setPetFaceMode(false);
+#endif
+  }
+  if (hadShake) {
+    faceController.setShakeFaceMode(false);
+  }
+  if (hadPetting || hadShake) {
+    motionController.setMotion("center");
+  }
+}
+
+void applyDisplayOffCpuFrequency() {
+#if DISPLAY_OFF_LIGHT_SLEEP_ENABLED && DISPLAY_OFF_CPU_FREQ_MHZ > 0
+  if (displayOffCpuFrequencyReduced) {
+    return;
+  }
+  displayOnCpuFrequencyMhz = getCpuFrequencyMhz();
+  if (displayOnCpuFrequencyMhz <= DISPLAY_OFF_CPU_FREQ_MHZ) {
+    return;
+  }
+  displayOffCpuFrequencyReduced = setCpuFrequencyMhz(DISPLAY_OFF_CPU_FREQ_MHZ);
+  Serial.printf("[power] display off cpu freq %lu -> %u MHz ok=%d\n",
+                static_cast<unsigned long>(displayOnCpuFrequencyMhz),
+                static_cast<unsigned>(DISPLAY_OFF_CPU_FREQ_MHZ),
+                displayOffCpuFrequencyReduced ? 1 : 0);
+#endif
+}
+
+void restoreDisplayOnCpuFrequency() {
+#if DISPLAY_OFF_LIGHT_SLEEP_ENABLED && DISPLAY_OFF_CPU_FREQ_MHZ > 0
+  if (!displayOffCpuFrequencyReduced) {
+    return;
+  }
+  const uint32_t targetMhz = displayOnCpuFrequencyMhz != 0 ? displayOnCpuFrequencyMhz : 240;
+  const bool ok = setCpuFrequencyMhz(targetMhz);
+  Serial.printf("[power] display on cpu freq restore %lu MHz ok=%d\n",
+                static_cast<unsigned long>(targetMhz),
+                ok ? 1 : 0);
+  displayOffCpuFrequencyReduced = false;
+  displayOnCpuFrequencyMhz = 0;
+#endif
+}
+
+void suspendAppCommsForDisplayOff(unsigned long now) {
+  if (appCommsSuspendedForDisplayOff) {
+    return;
+  }
+  appCommsSuspendedForDisplayOff = true;
+
+  pendingStateAfterPlayback = false;
+  deferredStateReadyMs = 0;
+  pendingSpeakingFaceState = false;
+  pendingFaceModeNormalAfterPlayback = false;
+  deferredFaceModeReadyMs = 0;
+  wsAudioSettleUntilMs = 0;
+  vadActive = false;
+  currentState = ChanState::Idle;
+  audioController.setRemoteVadActive(false);
+  audioController.stopForDisplayOff();
+  speechBubbleController.reset("display_off");
+  interactionMicPaused = false;
+  servoMicQuietUntilMs = 0;
+  motionController.setMovementPaused(false);
+  faceController.setState(ChanState::Idle);
+  resetInteractionStateForDisplayOff(now);
+  cancelListeningNod(true);
+  clearCameraButtonPending("display_off");
+  slowStreetPassBleForDisplayOff(now);
+
+  disconnectUsbSerialForDisplayOff();
+  stopServers("display_off");
+
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_OFF);
+  wifiConnectStartedMs = 0;
+  wifiConnectAttempts = 0;
+  lastWifiStatus = WL_IDLE_STATUS;
+  lastWifiCheckMs = now;
+  streetPassNtpConfigured = false;
+  applyDisplayOffCpuFrequency();
+  Serial.println("[power] app comms suspended for display off");
+}
+
+void resumeAppCommsAfterDisplayOn(unsigned long now) {
+  if (!appCommsSuspendedForDisplayOff) {
+    return;
+  }
+  appCommsSuspendedForDisplayOff = false;
+  wifiConnectStartedMs = 0;
+  wifiConnectAttempts = 0;
+  lastWifiCheckMs = 0;
+  nextStreetPassNtpSyncMs = now;
+  streetPassNtpConfigured = false;
+  restoreDisplayOnCpuFrequency();
+  resumeStreetPassBleAfterDisplayOn(now);
+  connectWiFi();
+  Serial.println("[power] app comms resume requested after display on");
+}
+
 void setDisplayOn(bool on) {
   if (displayOn == on) {
     return;
@@ -1838,7 +2638,14 @@ void setDisplayOn(bool on) {
     if (infoScreenVisible) {
       drawInfoScreen();
     }
+    updateStepAffectionReward(millis());
+    resumeAppCommsAfterDisplayOn(millis());
   } else {
+    suspendAppCommsForDisplayOff(millis());
+#if STACKCHAN_HAS_HAPTIC
+    M5.Power.setVibration(0);
+    hapticOffMs = 0;
+#endif
     M5.Display.setBrightness(0);
     M5.Display.sleep();
   }
@@ -1924,13 +2731,25 @@ Pose makePettingPoseFromBase(const Pose& base, bool bigMove) {
                           ? random(PET_BIG_PAN_MIN, PET_BIG_PAN_MAX + 1)
                           : random(PET_SMALL_PAN_MIN, PET_SMALL_PAN_MAX + 1);
   const int direction = random(100) < 50 ? -1 : 1;
-  const int panJitter = random(-4, 5);
-  const int tiltLift = bigMove
-                         ? random(14, 27)
-                         : random(8, 18);
+  const int panJitter = random(-2, 3);
+  const int tiltTarget = bigMove
+                           ? random(PET_BIG_TILT_MIN, PET_BIG_TILT_MAX + 1)
+                           : random(PET_SMALL_TILT_MIN, PET_SMALL_TILT_MAX + 1);
+  const int tiltLift = tiltTarget - SERVO_TILT_CENTER;
+  // StackChan pitch uses a 0..900 range. Limit petting to a small lift from
+  // the calibrated home pose instead of allowing the current base pose to
+  // accumulate into a large upward look.
+  const int pettingTiltMax = constrain(
+    SERVO_TILT_CENTER + static_cast<int>(map(PET_MAX_PITCH_LIFT,
+                                             0,
+                                             900,
+                                             0,
+                                             SERVO_TILT_MAX - SERVO_TILT_MIN)),
+    SERVO_TILT_MIN,
+    SERVO_TILT_MAX);
   return {
     constrain(base.pan + direction * amplitude + panJitter, SERVO_PAN_MIN, SERVO_PAN_MAX),
-    constrain(base.tilt + tiltLift, SERVO_TILT_MIN, SERVO_TILT_MAX)
+    constrain(base.tilt + tiltLift, SERVO_TILT_MIN, pettingTiltMax)
   };
 }
 
@@ -1969,23 +2788,37 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
       pettingActive = true;
       pettingStartedMs = now;
       pettingFaceAnimated = shouldAnimatePettingFace();
+      voicePettingSessionActive = appClientConnected();
+      voicePettingFaceActive = voicePettingSessionActive;
       nextPetMoveMs = 0;
       pettingBasePose = motionController.currentPose();
       cancelListeningNod(false);
 #if STACKCHAN_PET_ANIMATION_ENABLED
-      faceController.setPetFaceMode(true, now, pettingFaceAnimated);
+      if (voicePettingFaceActive) {
+        faceController.setVoicePettingActive(true, now);
+      } else {
+        faceController.setPetFaceMode(true, now, pettingFaceAnimated);
+      }
 #else
       faceController.setPetFaceMode(true);
 #endif
+      if (voicePettingSessionActive) {
+        const AffectionApplyResult result = affectionController.debugAdjust(VOICE_PETTING_AFFECTION_DELTA);
+        applyAffectionResult(result, now, true);
+      }
       const Pose pose = makePettingPoseFromBase(pettingBasePose, false);
       motionController.setTargetPose(pose.pan, pose.tilt);
       sendInteractionEvent("petting", "start", now);
       pulseHaptic(HAPTIC_PETTING_START_LEVEL, HAPTIC_PETTING_START_MS, now);
+      motionController.deferOutputUntil(now + INTERACTION_SERVO_START_DELAY_MS);
       lastPettingRepeatEventMs = now;
       Serial.println("[pet] start");
     } else if (now - lastPettingRepeatEventMs >= 800) {
 #if STACKCHAN_PET_ANIMATION_ENABLED
-      if (pettingFaceAnimated && !shouldAnimatePettingFace()) {
+      if (voicePettingFaceActive && !appClientConnected()) {
+        voicePettingFaceActive = false;
+        faceController.setVoicePettingActive(false, now);
+      } else if (pettingFaceAnimated && !shouldAnimatePettingFace()) {
         pettingFaceAnimated = false;
         faceController.setPetFaceMode(true);
       }
@@ -2000,8 +2833,9 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
     return;
   }
 
+  const bool finishVoicePettingSession = voicePettingSessionActive;
 #if STACKCHAN_DEVICE_STOPWATCH
-  if (audioBusyForUiEffects() && displayOn) {
+  if (!finishVoicePettingSession && audioBusyForUiEffects() && displayOn) {
     pettingEndMs = now + SCREEN_PETTING_RELEASE_MS;
     return;
   }
@@ -2011,18 +2845,27 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
   const bool longPetting = pettingStartedMs != 0 &&
                            now - pettingStartedMs >= PET_ANIMATION_LONG_THRESHOLD_MS;
   const bool animateEnd = pettingFaceAnimated && displayOn && !appClientConnected();
-  if (longPetting) {
-    applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
-  } else {
-    applyAffectionResult(affectionController.debugAdjust(PETTING_SHORT_AFFECTION_DELTA), now, true);
+  const bool wasVoicePettingFace = voicePettingFaceActive;
+  if (!finishVoicePettingSession) {
+    if (longPetting) {
+      applyAffectionResult(affectionController.applyEvent("petting", 1.0f, 1.0f, nullptr, now), now, true);
+    } else {
+      applyAffectionResult(affectionController.debugAdjust(PETTING_SHORT_AFFECTION_DELTA), now, true);
+    }
   }
   pettingStartedMs = 0;
   pettingFaceAnimated = false;
+  voicePettingFaceActive = false;
+  voicePettingSessionActive = false;
   pettingEndMs = 0;
   nextPetMoveMs = 0;
   lastPettingRepeatEventMs = 0;
 #if STACKCHAN_PET_ANIMATION_ENABLED
-  faceController.setPetFaceMode(false, now, animateEnd, longPetting);
+  if (wasVoicePettingFace) {
+    faceController.setVoicePettingActive(false, now);
+  } else {
+    faceController.setPetFaceMode(false, now, animateEnd, longPetting);
+  }
 #else
   faceController.setPetFaceMode(false);
 #endif
@@ -2072,10 +2915,52 @@ void updatePetting(unsigned long now) {
     return;
   }
 
+  if (!motionController.readyForInteractionTarget(now)) {
+    return;
+  }
+
   nextPetMoveMs = now + random(PET_MOVE_MIN_INTERVAL_MS, PET_MOVE_MAX_INTERVAL_MS + 1);
   const bool bigMove = random(100) < PET_BIG_MOVE_CHANCE_PERCENT;
   const Pose pose = makePettingPoseFromBase(pettingBasePose, bigMove);
   motionController.setTargetPose(pose.pan, pose.tilt);
+}
+
+bool interactionMicShouldPause(unsigned long now) {
+  if (motionController.servoMotionActive(now)) {
+    // Keep mechanical settling noise out of the microphone after the BSP has
+    // reported that the final servo movement itself has completed.
+    servoMicQuietUntilMs = now + SERVO_MIC_QUIET_AFTER_MS;
+  }
+  const bool servoNoiseExpected = servoMicQuietUntilMs != 0 &&
+                                  static_cast<int32_t>(now - servoMicQuietUntilMs) < 0;
+  if (!servoNoiseExpected) {
+    servoMicQuietUntilMs = 0;
+  }
+  if (pettingActive || shakeActive) {
+    return true;
+  }
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (faceController.guruguruDizzyAnimationActive()) {
+    return true;
+  }
+#endif
+  return servoNoiseExpected;
+}
+
+void updateInteractionMicPause() {
+  if (interactionMicShouldPause(millis())) {
+    if (!interactionMicPaused) {
+      interactionMicPaused = audioController.pauseMicForInteraction("servo/interaction noise");
+    }
+    return;
+  }
+
+  if (!interactionMicPaused) {
+    return;
+  }
+
+  audioController.resumeMicAfterInteraction(true, "servo/interaction noise");
+  interactionMicPaused = false;
 }
 
 bool isGestureMotionStrong(const m5::imu_data_t& data, float* shakeAccOut, float* gyroMagOut) {
@@ -2126,6 +3011,7 @@ void setShakeActive(bool active, unsigned long now) {
       applyAffectionResult(affectionController.applyEvent("shake", 1.0f, 1.0f, nullptr, now), now, true);
       sendInteractionEvent("shake", "start", now);
       pulseHaptic(HAPTIC_SHAKE_LEVEL, HAPTIC_SHAKE_MS, now);
+      motionController.deferOutputUntil(now + INTERACTION_SERVO_START_DELAY_MS);
       lastShakeRepeatEventMs = now;
       Serial.println("[shake] start");
     } else if (now - lastShakeRepeatEventMs >= 800) {
@@ -2154,6 +3040,10 @@ void setShakeActive(bool active, unsigned long now) {
 
 void updateShakeMotion(const m5::imu_data_t& data, unsigned long now) {
   if (now < nextShakeMotionMs) {
+    return;
+  }
+
+  if (!motionController.readyForInteractionTarget(now)) {
     return;
   }
 
@@ -2186,11 +3076,8 @@ void updateShake(unsigned long now) {
   }
   nextShakeCheckMs = now + SHAKE_UPDATE_INTERVAL_MS;
 
-  m5::imu_data_t data;
-  const bool imuUpdated = M5.Imu.update();
-  if (imuUpdated) {
-    M5.Imu.getImuData(&data);
-  }
+  const bool imuUpdated = sharedImuSample.updated;
+  const m5::imu_data_t& data = sharedImuSample.data;
 
 #if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
   if (guruguruFaceMode) {
@@ -2712,42 +3599,246 @@ void handleWifiRestartRequest() {
   ESP.restart();
 }
 
+#if CAMERA_DIAG_LOG_ENABLED
+void logCameraRequestPhase(const char* phase, size_t bytes = 0) {
+  Serial.printf("[camera.http] phase=%s bytes=%u heap=%u psram=%u largest_dma=%u wifi=%d http=%d ws=%d t=%lu\n",
+                phase != nullptr ? phase : "unknown",
+                static_cast<unsigned>(bytes),
+                static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getFreePsram()),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+                static_cast<int>(WiFi.status()),
+                httpStarted ? 1 : 0,
+                wsStarted ? 1 : 0,
+                millis());
+}
+#endif
+
 void handleCaptureRequest() {
-  faceController.setPhotoFaceMode(true);
-  faceController.showFace("photo_0");
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("begin");
+#endif
+  faceController.setCameraCaptureActive(true);
   const bool micPausedForCapture = CAMERA_PAUSE_MIC_DURING_CAPTURE
                                      ? audioController.pauseMicForCapture()
                                      : false;
+  const bool streetPassSuspendedForCapture = suspendStreetPassBleForCamera();
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase(streetPassSuspendedForCapture ? "ble_suspended" : "ble_unchanged");
+#endif
   if (VERBOSE_LOG_ENABLED && !CAMERA_PAUSE_MIC_DURING_CAPTURE && audioController.isMicStreaming()) {
     Serial.println("[camera] capture while mic streaming");
   }
 
   if (!cameraManager.isReady() && !cameraManager.init()) {
+#if CAMERA_DIAG_LOG_ENABLED
+    logCameraRequestPhase("init_failed");
+#endif
+    faceController.setCameraCaptureActive(false);
     audioController.resumeMicAfterCapture(micPausedForCapture);
+    resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     sendJson(503, "{\"error\":\"camera_not_ready\"}");
     return;
   }
 
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("camera_ready");
+#endif
+
   uint8_t* jpg = nullptr;
   size_t jpgLen = 0;
   if (!cameraManager.captureJpeg(&jpg, &jpgLen)) {
+#if CAMERA_DIAG_LOG_ENABLED
+    logCameraRequestPhase("capture_failed");
+#endif
+    faceController.setCameraCaptureActive(false);
     cameraManager.deinit();
     audioController.resumeMicAfterCapture(micPausedForCapture);
+    resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     sendJson(500, "{\"error\":\"capture_failed\"}");
     return;
   }
 
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("captured", jpgLen);
+#endif
+  // The RGB565 VGA frame occupies both PSRAM and scarce internal DMA memory.
+  // The JPEG buffer is independent, so release the camera before asking the
+  // Wi-Fi stack to allocate TCP buffers for the response.
+  cameraManager.deinit();
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("camera_released", jpgLen);
+#endif
   addCorsHeaders();
   httpServer.sendHeader("Cache-Control", "no-store");
   httpServer.setContentLength(jpgLen);
   httpServer.send(200, "image/jpeg", "");
   WiFiClient client = httpServer.client();
-  client.write(jpg, jpgLen);
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("send_begin", jpgLen);
+#endif
+  size_t written = 0;
+  while (written < jpgLen && client.connected()) {
+    const size_t chunk = min(static_cast<size_t>(CAMERA_HTTP_WRITE_CHUNK_BYTES),
+                             jpgLen - written);
+    const size_t chunkWritten = client.write(jpg + written, chunk);
+    if (chunkWritten == 0) {
+      break;
+    }
+    written += chunkWritten;
+  }
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("send_end", written);
+#endif
+  if (written != jpgLen) {
+    Serial.printf("[camera] HTTP JPEG send incomplete: %u/%u bytes\n",
+                  static_cast<unsigned>(written),
+                  static_cast<unsigned>(jpgLen));
+  }
   cameraManager.releaseBuffer(jpg);
-  cameraManager.deinit();
+  faceController.setCameraCaptureActive(false);
   delay(80);
   audioController.resumeMicAfterCapture(micPausedForCapture);
+  resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
   audioController.deferNextSpeakerStartUntil(millis() + AUDIO_AFTER_CAPTURE_SPEAKER_DELAY_MS);
+#if CAMERA_DIAG_LOG_ENABLED
+  logCameraRequestPhase("complete", written);
+#endif
+}
+
+void resetVoicePerfStatsLocked(unsigned long now) {
+  ++voicePerfStats.sessionSeq;
+  voicePerfStats.active = true;
+  voicePerfStats.loopCount = 0;
+  voicePerfStats.faceUpdateCount = 0;
+  voicePerfStats.audioUpdateCount = 0;
+  voicePerfStats.wsBinaryFrames = 0;
+  voicePerfStats.maxLoopGapMs = 0;
+  voicePerfStats.maxLoopDurationMs = 0;
+  voicePerfStats.maxFaceUpdateMs = 0;
+  voicePerfStats.maxAudioUpdateMs = 0;
+  voicePerfStats.maxWsLoopMs = 0;
+  voicePerfStats.maxHttpLoopMs = 0;
+  voicePerfStats.maxWsBinaryMs = 0;
+  voicePerfStats.maxWsBinaryBytes = 0;
+  voicePerfStats.maxFaceFrameGapMs = 0;
+  voicePerfStats.wsBinaryBytes = 0;
+  voicePerfStats.firstMs = now;
+  voicePerfStats.lastMs = now;
+  voicePerfStats.lastLoopMs = 0;
+  voicePerfStats.lastFaceUpdateMs = 0;
+}
+
+void noteVoicePerfLoop(bool speaking, unsigned long now) {
+  portENTER_CRITICAL(&voicePerfMux);
+  if (speaking) {
+    if (!voicePerfStats.active) {
+      resetVoicePerfStatsLocked(now);
+    }
+    if (voicePerfStats.lastLoopMs != 0) {
+      const uint32_t gapMs = static_cast<uint32_t>(now - voicePerfStats.lastLoopMs);
+      voicePerfStats.maxLoopGapMs = max(voicePerfStats.maxLoopGapMs, gapMs);
+    }
+    voicePerfStats.lastLoopMs = now;
+    voicePerfStats.lastMs = now;
+    ++voicePerfStats.loopCount;
+  } else if (voicePerfStats.active) {
+    voicePerfStats.active = false;
+    voicePerfStats.lastMs = now;
+  }
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfLoopDuration(bool speaking, uint32_t elapsedMs) {
+  if (!speaking) {
+    return;
+  }
+  portENTER_CRITICAL(&voicePerfMux);
+  voicePerfStats.maxLoopDurationMs = max(voicePerfStats.maxLoopDurationMs, elapsedMs);
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfAudioUpdate(bool speaking, uint32_t elapsedMs) {
+  if (!speaking) {
+    return;
+  }
+  portENTER_CRITICAL(&voicePerfMux);
+  ++voicePerfStats.audioUpdateCount;
+  voicePerfStats.maxAudioUpdateMs = max(voicePerfStats.maxAudioUpdateMs, elapsedMs);
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfFaceUpdate(bool speaking, uint32_t elapsedMs, unsigned long now) {
+  if (!speaking) {
+    return;
+  }
+  portENTER_CRITICAL(&voicePerfMux);
+  ++voicePerfStats.faceUpdateCount;
+  voicePerfStats.maxFaceUpdateMs = max(voicePerfStats.maxFaceUpdateMs, elapsedMs);
+  if (voicePerfStats.lastFaceUpdateMs != 0) {
+    const uint32_t gapMs = static_cast<uint32_t>(now - voicePerfStats.lastFaceUpdateMs);
+    voicePerfStats.maxFaceFrameGapMs = max(voicePerfStats.maxFaceFrameGapMs, gapMs);
+  }
+  voicePerfStats.lastFaceUpdateMs = now;
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfWsLoop(bool speaking, uint32_t elapsedMs) {
+  if (!speaking) {
+    return;
+  }
+  portENTER_CRITICAL(&voicePerfMux);
+  voicePerfStats.maxWsLoopMs = max(voicePerfStats.maxWsLoopMs, elapsedMs);
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfHttpLoop(bool speaking, uint32_t elapsedMs) {
+  if (!speaking) {
+    return;
+  }
+  portENTER_CRITICAL(&voicePerfMux);
+  voicePerfStats.maxHttpLoopMs = max(voicePerfStats.maxHttpLoopMs, elapsedMs);
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+void noteVoicePerfWsBinary(size_t length, uint32_t elapsedMs) {
+  portENTER_CRITICAL(&voicePerfMux);
+  ++voicePerfStats.wsBinaryFrames;
+  voicePerfStats.wsBinaryBytes += length;
+  voicePerfStats.maxWsBinaryBytes =
+    max(voicePerfStats.maxWsBinaryBytes,
+        static_cast<uint32_t>(length > UINT32_MAX ? UINT32_MAX : length));
+  voicePerfStats.maxWsBinaryMs = max(voicePerfStats.maxWsBinaryMs, elapsedMs);
+  portEXIT_CRITICAL(&voicePerfMux);
+}
+
+VoicePerfStats snapshotVoicePerfStats() {
+  portENTER_CRITICAL(&voicePerfMux);
+  const VoicePerfStats snapshot = voicePerfStats;
+  portEXIT_CRITICAL(&voicePerfMux);
+  return snapshot;
+}
+
+void writeVoicePerfStatus(JsonObject target) {
+  const VoicePerfStats stats = snapshotVoicePerfStats();
+  target["active"] = stats.active;
+  target["sessionSeq"] = stats.sessionSeq;
+  target["durationMs"] = static_cast<uint32_t>(stats.lastMs - stats.firstMs);
+  target["loopCount"] = stats.loopCount;
+  target["faceUpdateCount"] = stats.faceUpdateCount;
+  target["audioUpdateCount"] = stats.audioUpdateCount;
+  target["wsBinaryFrames"] = stats.wsBinaryFrames;
+  target["wsBinaryBytes"] =
+    static_cast<uint32_t>(stats.wsBinaryBytes > UINT32_MAX ? UINT32_MAX : stats.wsBinaryBytes);
+  target["maxLoopGapMs"] = stats.maxLoopGapMs;
+  target["maxLoopDurationMs"] = stats.maxLoopDurationMs;
+  target["maxFaceUpdateMs"] = stats.maxFaceUpdateMs;
+  target["maxAudioUpdateMs"] = stats.maxAudioUpdateMs;
+  target["maxWsLoopMs"] = stats.maxWsLoopMs;
+  target["maxHttpLoopMs"] = stats.maxHttpLoopMs;
+  target["maxWsBinaryMs"] = stats.maxWsBinaryMs;
+  target["maxWsBinaryBytes"] = stats.maxWsBinaryBytes;
+  target["maxFaceFrameGapMs"] = stats.maxFaceFrameGapMs;
 }
 
 void handleStatusRequest() {
@@ -2812,6 +3903,8 @@ void handleStatusRequest() {
   mic["noiseFilterLevel"] = AUDIO_MIC_NOISE_FILTER_LEVEL;
   mic["overSampling"] = AUDIO_MIC_OVERSAMPLING;
   mic["gateEnabled"] = AUDIO_MIC_GATE_ENABLED;
+  JsonObject voicePerf = doc["voicePerf"].to<JsonObject>();
+  writeVoicePerfStatus(voicePerf);
 #if STACKCHAN_DEVICE_STOPWATCH
   doc["board"] = static_cast<int>(M5.getBoard());
   JsonObject speaker = doc["speaker"].to<JsonObject>();
@@ -2949,6 +4042,14 @@ void writePlaybackDiagnosticResponse(JsonDocument& doc, const AudioPlaybackDiagn
   doc["finishQueuedChunks"] = diag.finishQueuedChunks;
   doc["lastPcmMs"] = static_cast<uint32_t>(diag.lastPcmMs);
   doc["lastFinishMs"] = static_cast<uint32_t>(diag.lastFinishMs);
+  doc["playbackStreamId"] = audioController.playbackStreamId();
+  doc["playbackPcmReceivedCursor"] = audioController.playbackPcmReceivedBytes();
+  doc["playbackPcmAcceptedCursor"] = audioController.playbackPcmAcceptedBytes();
+  doc["playbackPcmDequeuedCursor"] = audioController.playbackPcmDequeuedBytes();
+  doc["speechBubbleActive"] = speechBubbleController.active();
+  doc["speechBubbleVisible"] = faceController.speechBubbleVisible();
+  JsonObject voicePerf = doc["voicePerf"].to<JsonObject>();
+  writeVoicePerfStatus(voicePerf);
 }
 
 MicDiagnosticChannelMode parseMicDiagnosticChannelMode(const String& value) {
@@ -3034,51 +4135,68 @@ void startHttpServer() {
     return;
   }
 
-  httpServer.on("/capture", HTTP_OPTIONS, []() {
-    addCorsHeaders();
-    httpServer.send(204);
-  });
-  httpServer.on("/capture", HTTP_POST, handleCaptureRequest);
-  httpServer.on("/status", HTTP_OPTIONS, []() {
-    addCorsHeaders();
-    httpServer.send(204);
-  });
-  httpServer.on("/status", HTTP_GET, handleStatusRequest);
-  httpServer.on("/speaker-test", HTTP_OPTIONS, []() {
-    addCorsHeaders();
-    httpServer.send(204);
-  });
-  httpServer.on("/speaker-test", HTTP_GET, handleSpeakerTestRequest);
-  httpServer.on("/speaker-test", HTTP_POST, handleSpeakerTestRequest);
-  httpServer.on("/mic-test", HTTP_OPTIONS, []() {
-    addCorsHeaders();
-    httpServer.send(204);
-  });
-  httpServer.on("/mic-test", HTTP_GET, handleMicTestRequest);
-  httpServer.on("/mic-test", HTTP_POST, handleMicTestRequest);
-  httpServer.on("/wifi", HTTP_GET, []() {
-    sendWifiPage();
-  });
-  httpServer.on("/setup", HTTP_GET, []() {
-    sendWifiPage();
-  });
-  httpServer.on("/wifi/scan", HTTP_GET, handleWifiScanRequest);
-  httpServer.on("/wifi/save", HTTP_POST, handleWifiSaveRequest);
-  httpServer.on("/wifi/delete", HTTP_POST, handleWifiDeleteRequest);
-  httpServer.on("/wifi/move", HTTP_POST, handleWifiMoveRequest);
-  httpServer.on("/wifi/restart", HTTP_POST, handleWifiRestartRequest);
-  httpServer.onNotFound([]() {
-    sendJson(404, "{\"error\":\"not_found\"}");
-  });
+  if (!httpRoutesRegistered) {
+    httpServer.on("/capture", HTTP_OPTIONS, []() {
+      addCorsHeaders();
+      httpServer.send(204);
+    });
+    httpServer.on("/capture", HTTP_POST, handleCaptureRequest);
+    httpServer.on("/status", HTTP_OPTIONS, []() {
+      addCorsHeaders();
+      httpServer.send(204);
+    });
+    httpServer.on("/status", HTTP_GET, handleStatusRequest);
+    httpServer.on("/speaker-test", HTTP_OPTIONS, []() {
+      addCorsHeaders();
+      httpServer.send(204);
+    });
+    httpServer.on("/speaker-test", HTTP_GET, handleSpeakerTestRequest);
+    httpServer.on("/speaker-test", HTTP_POST, handleSpeakerTestRequest);
+    httpServer.on("/mic-test", HTTP_OPTIONS, []() {
+      addCorsHeaders();
+      httpServer.send(204);
+    });
+    httpServer.on("/mic-test", HTTP_GET, handleMicTestRequest);
+    httpServer.on("/mic-test", HTTP_POST, handleMicTestRequest);
+    httpServer.on("/wifi", HTTP_GET, []() {
+      sendWifiPage();
+    });
+    httpServer.on("/setup", HTTP_GET, []() {
+      sendWifiPage();
+    });
+    httpServer.on("/wifi/scan", HTTP_GET, handleWifiScanRequest);
+    httpServer.on("/wifi/save", HTTP_POST, handleWifiSaveRequest);
+    httpServer.on("/wifi/delete", HTTP_POST, handleWifiDeleteRequest);
+    httpServer.on("/wifi/move", HTTP_POST, handleWifiMoveRequest);
+    httpServer.on("/wifi/restart", HTTP_POST, handleWifiRestartRequest);
+    httpServer.onNotFound([]() {
+      sendJson(404, "{\"error\":\"not_found\"}");
+    });
+    httpRoutesRegistered = true;
+  }
   httpServer.begin();
   httpStarted = true;
   Serial.printf("[http] server started on port %u\n", HTTP_PORT);
 }
 
+void stopServers(const char* reason) {
+  if (wsStarted) {
+    wsServer.stop();
+    wsStarted = false;
+  }
+  wsClientConnected = false;
+  if (httpStarted) {
+    httpServer.stop();
+    httpStarted = false;
+  }
+  Serial.printf("[network] servers stopped reason=%s\n",
+                reason != nullptr ? reason : "unknown");
+}
+
 void startServers() {
   if (!wsStarted) {
     wsServer.begin(WS_PORT);
-    wsStarted = true;
+    wsStarted = wsServer.isStarted();
   }
   startHttpServer();
 }
@@ -3095,6 +4213,8 @@ const char* settingsPageName(SettingsPage page) {
       return "Power";
     case SettingsPage::StreetPass:
       return "StreetPass";
+    case SettingsPage::Steps:
+      return "Steps";
     case SettingsPage::Network:
     default:
       return "Network";
@@ -3112,15 +4232,24 @@ bool settingsPageAvailable(SettingsPage page) {
     return false;
   }
 #endif
+#if !STEP_COUNTER_ENABLED
+  if (page == SettingsPage::Steps) {
+    return false;
+  }
+#endif
   return true;
 }
 
 uint8_t settingsPageCount() {
 #if STACKCHAN_SMALL_DISPLAY
-  return 4;
+  uint8_t count = 4;
 #else
-  return STACKCHAN_HAS_SERVO ? 6 : 5;
+  uint8_t count = STACKCHAN_HAS_SERVO ? 6 : 5;
 #endif
+#if STEP_COUNTER_ENABLED
+  ++count;
+#endif
+  return count;
 }
 
 SettingsPage settingsPageAt(uint8_t index) {
@@ -3130,6 +4259,9 @@ SettingsPage settingsPageAt(uint8_t index) {
     SettingsPage::StreetPass,
     SettingsPage::Audio,
     SettingsPage::Power,
+#if STEP_COUNTER_ENABLED
+    SettingsPage::Steps,
+#endif
   };
 #elif STACKCHAN_HAS_SERVO
   static const SettingsPage kPages[] = {
@@ -3138,6 +4270,9 @@ SettingsPage settingsPageAt(uint8_t index) {
     SettingsPage::Audio,
     SettingsPage::Servo,
     SettingsPage::Power,
+#if STEP_COUNTER_ENABLED
+    SettingsPage::Steps,
+#endif
     SettingsPage::StreetPass,
   };
 #else
@@ -3146,6 +4281,9 @@ SettingsPage settingsPageAt(uint8_t index) {
     SettingsPage::Display,
     SettingsPage::Audio,
     SettingsPage::Power,
+#if STEP_COUNTER_ENABLED
+    SettingsPage::Steps,
+#endif
     SettingsPage::StreetPass,
   };
 #endif
@@ -3179,6 +4317,11 @@ void selectSettingsPage(SettingsPage page) {
     smallStreetPassView = 0;
 #endif
   }
+#if STEP_COUNTER_ENABLED
+  if (settingsPage != SettingsPage::Steps) {
+    stepHistoryPage = 0;
+  }
+#endif
   if (settingsPage == SettingsPage::StreetPass) {
 #if STACKCHAN_SMALL_DISPLAY
     if (!wasStreetPass) {
@@ -3210,131 +4353,9 @@ void drawButton(int32_t x, int32_t y, int32_t w, int32_t h, const char* label, b
   M5.Display.setTextDatum(top_left);
 }
 
-void appendUtf8Codepoint(String& out, uint32_t cp) {
-  if (cp <= 0x7f) {
-    out += static_cast<char>(cp);
-  } else if (cp <= 0x7ff) {
-    out += static_cast<char>(0xc0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  } else if (cp <= 0xffff) {
-    out += static_cast<char>(0xe0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  } else {
-    out += static_cast<char>(0xf0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
-    out += static_cast<char>(0x80 | (cp & 0x3f));
-  }
-}
-
-uint32_t readUtf8Codepoint(const String& text, size_t& index) {
-  const uint8_t b0 = static_cast<uint8_t>(text[index++]);
-  if ((b0 & 0x80) == 0) {
-    return b0;
-  }
-  if ((b0 & 0xe0) == 0xc0 && index < text.length()) {
-    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
-    return ((b0 & 0x1f) << 6) | (b1 & 0x3f);
-  }
-  if ((b0 & 0xf0) == 0xe0 && index + 1 < text.length()) {
-    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
-    const uint8_t b2 = static_cast<uint8_t>(text[index++]);
-    return ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
-  }
-  if ((b0 & 0xf8) == 0xf0 && index + 2 < text.length()) {
-    const uint8_t b1 = static_cast<uint8_t>(text[index++]);
-    const uint8_t b2 = static_cast<uint8_t>(text[index++]);
-    const uint8_t b3 = static_cast<uint8_t>(text[index++]);
-    return ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f);
-  }
-  return 0xfffd;
-}
-
-uint32_t halfwidthKanaToFullwidth(uint32_t cp) {
-  static const uint16_t map[] = {
-    0x3002, 0x300c, 0x300d, 0x3001, 0x30fb, 0x30f2, 0x30a1, 0x30a3,
-    0x30a5, 0x30a7, 0x30a9, 0x30e3, 0x30e5, 0x30e7, 0x30c3, 0x30fc,
-    0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ab, 0x30ad, 0x30af,
-    0x30b1, 0x30b3, 0x30b5, 0x30b7, 0x30b9, 0x30bb, 0x30bd, 0x30bf,
-    0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ca, 0x30cb, 0x30cc, 0x30cd,
-    0x30ce, 0x30cf, 0x30d2, 0x30d5, 0x30d8, 0x30db, 0x30de, 0x30df,
-    0x30e0, 0x30e1, 0x30e2, 0x30e4, 0x30e6, 0x30e8, 0x30e9, 0x30ea,
-    0x30eb, 0x30ec, 0x30ed, 0x30ef, 0x30f3, 0x3099, 0x309a
-  };
-  if (cp < 0xff61 || cp > 0xff9f) {
-    return cp;
-  }
-  return map[cp - 0xff61];
-}
-
-uint32_t voicedKatakana(uint32_t base, uint32_t mark) {
-  if (mark == 0xff9e) {
-    switch (base) {
-      case 0x30a6: return 0x30f4;
-      case 0x30ab: return 0x30ac;
-      case 0x30ad: return 0x30ae;
-      case 0x30af: return 0x30b0;
-      case 0x30b1: return 0x30b2;
-      case 0x30b3: return 0x30b4;
-      case 0x30b5: return 0x30b6;
-      case 0x30b7: return 0x30b8;
-      case 0x30b9: return 0x30ba;
-      case 0x30bb: return 0x30bc;
-      case 0x30bd: return 0x30be;
-      case 0x30bf: return 0x30c0;
-      case 0x30c1: return 0x30c2;
-      case 0x30c4: return 0x30c5;
-      case 0x30c6: return 0x30c7;
-      case 0x30c8: return 0x30c9;
-      case 0x30cf: return 0x30d0;
-      case 0x30d2: return 0x30d3;
-      case 0x30d5: return 0x30d6;
-      case 0x30d8: return 0x30d9;
-      case 0x30db: return 0x30dc;
-      default: return base;
-    }
-  }
-  if (mark == 0xff9f) {
-    switch (base) {
-      case 0x30cf: return 0x30d1;
-      case 0x30d2: return 0x30d4;
-      case 0x30d5: return 0x30d7;
-      case 0x30d8: return 0x30da;
-      case 0x30db: return 0x30dd;
-      default: return base;
-    }
-  }
-  return base;
-}
-
-String normalizeHalfwidthKanaForDisplay(const String& text) {
-  String out;
-  out.reserve(text.length());
-  for (size_t i = 0; i < text.length();) {
-    const uint32_t cp = readUtf8Codepoint(text, i);
-    if (cp >= 0xff61 && cp <= 0xff9f) {
-      const uint32_t base = halfwidthKanaToFullwidth(cp);
-      if (i < text.length()) {
-        size_t markIndex = i;
-        const uint32_t mark = readUtf8Codepoint(text, markIndex);
-        if (mark == 0xff9e || mark == 0xff9f) {
-          appendUtf8Codepoint(out, voicedKatakana(base, mark));
-          i = markIndex;
-          continue;
-        }
-      }
-      appendUtf8Codepoint(out, base);
-    } else {
-      appendUtf8Codepoint(out, cp);
-    }
-  }
-  return out;
-}
-
 void drawUtf8Clipped(int32_t x, int32_t y, int32_t w, int32_t h, const String& text,
                      uint16_t color = TFT_WHITE, uint16_t background = TFT_BLACK) {
-  String displayText = normalizeHalfwidthKanaForDisplay(text);
+  String displayText = Utf8Utils::normalizeHalfwidthKana(text);
   displayText.replace("\r", " ");
   displayText.replace("\n", " ");
   displayText.replace("\t", " ");
@@ -3349,9 +4370,9 @@ void drawUtf8Clipped(int32_t x, int32_t y, int32_t w, int32_t h, const String& t
     shortened.reserve(displayText.length());
     for (size_t i = 0; i < displayText.length();) {
       const size_t before = i;
-      const uint32_t cp = readUtf8Codepoint(displayText, i);
+      const uint32_t cp = Utf8Utils::readCodepoint(displayText, i);
       String candidate = shortened;
-      appendUtf8Codepoint(candidate, cp);
+      Utf8Utils::appendCodepoint(candidate, cp);
       candidate += suffix;
       if (before > 0 && M5.Display.textWidth(candidate) > w) {
         break;
@@ -3360,7 +4381,7 @@ void drawUtf8Clipped(int32_t x, int32_t y, int32_t w, int32_t h, const String& t
         shortened = suffixWidth <= w ? suffix : "";
         break;
       }
-      appendUtf8Codepoint(shortened, cp);
+      Utf8Utils::appendCodepoint(shortened, cp);
     }
     if (shortened.length() > 0 && shortened != suffix) {
       shortened += suffix;
@@ -3432,6 +4453,12 @@ bool touchInRoundBounds(const m5::touch_detail_t& touch, const RoundBounds& boun
 bool touchInCircle(const m5::touch_detail_t& touch, int32_t cx, int32_t cy, int32_t radius) {
   const int32_t dx = touch.x - cx;
   const int32_t dy = touch.y - cy;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+bool touchStartedInCircle(const m5::touch_detail_t& touch, int32_t cx, int32_t cy, int32_t radius) {
+  const int32_t dx = touch.base_x - cx;
+  const int32_t dy = touch.base_y - cy;
   return dx * dx + dy * dy <= radius * radius;
 }
 
@@ -3569,6 +4596,171 @@ void drawRoundPowerSettingsPage() {
                      deviceSettings.lowPowerMode, 290);
 }
 
+#if STEP_COUNTER_ENABLED
+String stepActivityDayLabel(uint32_t activityDay) {
+  if (activityDay == 0) {
+    return "--/--";
+  }
+
+  constexpr uint32_t kSecondsPerDay = 24UL * 60UL * 60UL;
+  time_t raw = static_cast<time_t>(activityDay * kSecondsPerDay);
+  tm date = {};
+  gmtime_r(&raw, &date);
+
+  char text[6] = {};
+  snprintf(text, sizeof(text), "%02d/%02d", date.tm_mon + 1, date.tm_mday);
+  return String(text);
+}
+
+constexpr uint8_t kStepHistoryRowsPerPage = 7;
+
+bool stepHistoryRecordVisible(const StepDayRecord& record) {
+  if (record.activityDay == 0) {
+    return false;
+  }
+  return !stepCounterController.todayValid() ||
+         record.activityDay != stepCounterController.currentActivityDay();
+}
+
+uint8_t stepHistoryVisibleCount() {
+  uint8_t visible = 0;
+  const uint8_t count = stepCounterController.historyCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    const StepDayRecord* record = stepCounterController.recordAt(i);
+    if (record != nullptr && stepHistoryRecordVisible(*record)) {
+      ++visible;
+    }
+  }
+  return visible;
+}
+
+uint8_t stepHistoryPageCount() {
+  const uint8_t visible = stepHistoryVisibleCount();
+  if (visible == 0) {
+    return 1;
+  }
+  return (visible + kStepHistoryRowsPerPage - 1) / kStepHistoryRowsPerPage;
+}
+
+void clampStepHistoryPage() {
+  const uint8_t pageCount = stepHistoryPageCount();
+  if (stepHistoryPage >= pageCount) {
+    stepHistoryPage = pageCount - 1;
+  }
+}
+
+const StepDayRecord* newestStepRecordBefore(uint32_t beforeActivityDay) {
+  const StepDayRecord* best = nullptr;
+  const uint8_t count = stepCounterController.historyCount();
+  for (uint8_t i = 0; i < count; ++i) {
+    const StepDayRecord* record = stepCounterController.recordAt(i);
+    if (record == nullptr || !stepHistoryRecordVisible(*record) ||
+        record->activityDay >= beforeActivityDay) {
+      continue;
+    }
+    if (best == nullptr || record->activityDay > best->activityDay) {
+      best = record;
+    }
+  }
+  return best;
+}
+
+const StepDayRecord* stepHistoryRecordAtVisibleOffset(uint8_t offset) {
+  uint32_t beforeActivityDay = UINT32_MAX;
+  const StepDayRecord* record = nullptr;
+  for (uint8_t i = 0; i <= offset; ++i) {
+    record = newestStepRecordBefore(beforeActivityDay);
+    if (record == nullptr) {
+      return nullptr;
+    }
+    beforeActivityDay = record->activityDay;
+  }
+  return record;
+}
+
+String stepHistoryLine(const StepDayRecord& record) {
+  String line = stepActivityDayLabel(record.activityDay);
+  line += "  ";
+  line += String(record.steps);
+  return line;
+}
+
+String stepResetSummary() {
+  char text[32] = {};
+  snprintf(text,
+           sizeof(text),
+           "Reset %02d:00  Saved %u/%u",
+           STEP_COUNTER_DAY_START_HOUR,
+           static_cast<unsigned>(stepCounterController.historyCount()),
+           static_cast<unsigned>(StepCounterController::kHistoryDays));
+  return String(text);
+}
+
+String stepHistoryHeading() {
+  const uint8_t visible = stepHistoryVisibleCount();
+  const uint8_t pageCount = stepHistoryPageCount();
+  if (visible <= kStepHistoryRowsPerPage) {
+    return "Past days";
+  }
+  return String("Past days ") + String(stepHistoryPage + 1) + "/" + String(pageCount);
+}
+
+bool advanceStepHistoryPage(int delta) {
+  clampStepHistoryPage();
+  const uint8_t pageCount = stepHistoryPageCount();
+  if (pageCount <= 1) {
+    return false;
+  }
+
+  int next = static_cast<int>(stepHistoryPage) + delta;
+  if (next < 0) {
+    next = 0;
+  } else if (next >= pageCount) {
+    next = pageCount - 1;
+  }
+  if (next == stepHistoryPage) {
+    return true;
+  }
+  stepHistoryPage = static_cast<uint8_t>(next);
+  drawInfoScreen();
+  return true;
+}
+
+void drawRoundStepsSettingsPage() {
+  const uint16_t accent = M5.Display.color565(126, 226, 248);
+  const uint16_t muted = M5.Display.color565(178, 188, 196);
+  const uint16_t warning = M5.Display.color565(255, 205, 90);
+
+  clampStepHistoryPage();
+  drawRoundTextLine(108, String("Today: ") + String(stepCounterController.todaySteps()), accent);
+  drawRoundTextLine(132, stepResetSummary(), muted);
+  const int32_t headingY = stepCounterController.todayValid() ? 166 : 156;
+  if (!stepCounterController.todayValid()) {
+    drawRoundTextLine(156, "Waiting for clock", warning);
+  }
+  drawRoundTextLine(headingY + 28, stepHistoryHeading(), M5.Display.color565(255, 220, 90));
+
+  const uint8_t visible = stepHistoryVisibleCount();
+  const uint8_t startOffset = stepHistoryPage * kStepHistoryRowsPerPage;
+  for (uint8_t row = 0; row < kStepHistoryRowsPerPage; ++row) {
+    if (startOffset + row >= visible) {
+      break;
+    }
+    const StepDayRecord* record = stepHistoryRecordAtVisibleOffset(startOffset + row);
+    if (record == nullptr) {
+      break;
+    }
+    drawRoundTextLine(headingY + 54 + static_cast<int32_t>(row) * 24,
+                      stepHistoryLine(*record),
+                      record->steps > 0 ? TFT_WHITE : muted);
+  }
+
+  if (visible == 0) {
+    drawRoundTextLine(headingY + 54, "No past history yet", muted);
+  }
+}
+#endif
+
 void drawRoundStreetPassSettingsPage() {
   drawRoundTextLine(108, String("StreetPass: ") + (streetPassController.enabled() ? "On" : "Off"));
   drawRoundTextLine(132, String("Stored: ") + String(streetPassController.storedCount()) +
@@ -3618,6 +4810,11 @@ void drawRoundInfoScreen() {
     case SettingsPage::Power:
       drawRoundPowerSettingsPage();
       break;
+#if STEP_COUNTER_ENABLED
+    case SettingsPage::Steps:
+      drawRoundStepsSettingsPage();
+      break;
+#endif
     case SettingsPage::StreetPass:
       drawRoundStreetPassSettingsPage();
       break;
@@ -3816,6 +5013,41 @@ void drawPowerSettingsPage() {
   drawButton(150, 144, 150, 28, deviceSettings.lowPowerMode ? "Low Power On" : "Low Power Off", deviceSettings.lowPowerMode);
 }
 
+#if STEP_COUNTER_ENABLED
+void drawStepsSettingsPage() {
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextSize(1);
+  M5.Display.setCursor(20, 56);
+  M5.Display.printf("Today: %lu\n", static_cast<unsigned long>(stepCounterController.todaySteps()));
+  M5.Display.printf("Reset: %02d:00\n", STEP_COUNTER_DAY_START_HOUR);
+  M5.Display.printf("Saved: %u/%u\n\n",
+                    static_cast<unsigned>(stepCounterController.historyCount()),
+                    static_cast<unsigned>(StepCounterController::kHistoryDays));
+  if (!stepCounterController.todayValid()) {
+    M5.Display.println("Waiting for clock");
+  }
+  M5.Display.println("Past");
+
+  uint32_t beforeActivityDay = UINT32_MAX;
+  bool anyRecord = false;
+  for (uint8_t row = 0; row < 5; ++row) {
+    const StepDayRecord* record = newestStepRecordBefore(beforeActivityDay);
+    if (record == nullptr) {
+      break;
+    }
+    beforeActivityDay = record->activityDay;
+    anyRecord = true;
+    M5.Display.printf("%s  %lu\n",
+                      stepActivityDayLabel(record->activityDay).c_str(),
+                      static_cast<unsigned long>(record->steps));
+  }
+  if (!anyRecord) {
+    M5.Display.println("No past history yet");
+  }
+}
+#endif
+
 void drawStreetPassSettingsPage() {
   M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -3916,6 +5148,35 @@ void drawSmallPageIndicator() {
 void drawSmallTextLine(int32_t y, const String& text, uint16_t color = TFT_WHITE) {
   drawUtf8Clipped(6, y, M5.Display.width() - 12, 13, text, color);
 }
+
+#if STEP_COUNTER_ENABLED
+void drawSmallStepsSettingsPage() {
+  drawSmallPageHeader("Steps", M5.Display.color565(126, 226, 248));
+  drawSmallTextLine(31, String("Today: ") + String(stepCounterController.todaySteps()));
+  drawSmallTextLine(47, stepResetSummary(), M5.Display.color565(178, 188, 196));
+  if (!stepCounterController.todayValid()) {
+    drawSmallTextLine(63, "Waiting for clock", M5.Display.color565(255, 205, 90));
+  }
+
+  uint32_t beforeActivityDay = UINT32_MAX;
+  bool anyRecord = false;
+  for (uint8_t row = 0; row < 3; ++row) {
+    const StepDayRecord* record = newestStepRecordBefore(beforeActivityDay);
+    if (record == nullptr) {
+      break;
+    }
+    beforeActivityDay = record->activityDay;
+    anyRecord = true;
+    drawSmallTextLine(83 + static_cast<int32_t>(row) * 16,
+                      stepHistoryLine(*record),
+                      record->steps > 0 ? TFT_WHITE : M5.Display.color565(178, 188, 196));
+  }
+  if (!anyRecord) {
+    drawSmallTextLine(83, "No past history yet", M5.Display.color565(178, 188, 196));
+  }
+  drawSmallPageIndicator();
+}
+#endif
 
 #if STACKCHAN_SMALL_DISPLAY
 constexpr uint8_t kSmallStreetPassViewCount = 3;
@@ -4077,6 +5338,11 @@ void drawSmallInfoScreen() {
     case SettingsPage::Power:
       drawSmallPowerSettingsPage();
       break;
+#if STEP_COUNTER_ENABLED
+    case SettingsPage::Steps:
+      drawSmallStepsSettingsPage();
+      break;
+#endif
     case SettingsPage::Audio:
       drawSmallAudioSettingsPage();
       break;
@@ -4122,6 +5388,11 @@ void drawInfoScreen() {
     case SettingsPage::Power:
       drawPowerSettingsPage();
       break;
+#if STEP_COUNTER_ENABLED
+    case SettingsPage::Steps:
+      drawStepsSettingsPage();
+      break;
+#endif
     case SettingsPage::StreetPass:
       drawStreetPassSettingsPage();
       break;
@@ -4135,6 +5406,11 @@ void drawInfoScreen() {
 }
 
 bool settingsPageNeedsPeriodicRefresh() {
+#if STEP_COUNTER_ENABLED
+  if (settingsPage == SettingsPage::Steps) {
+    return true;
+  }
+#endif
 #if STACKCHAN_SMALL_DISPLAY
   return settingsPage == SettingsPage::Network ||
          settingsPage == SettingsPage::StreetPass ||
@@ -4329,6 +5605,13 @@ bool handleRoundSettingsTouch(const m5::touch_detail_t& touch) {
   }
 
   if (touch.wasFlicked()) {
+#if STEP_COUNTER_ENABLED
+    if (settingsPage == SettingsPage::Steps &&
+        abs(touch.distanceY()) > abs(touch.distanceX()) &&
+        abs(touch.distanceY()) > 24) {
+      return advanceStepHistoryPage(touch.distanceY() < 0 ? 1 : -1);
+    }
+#endif
     if (abs(touch.distanceX()) > abs(touch.distanceY()) && abs(touch.distanceX()) > 24) {
       selectAdjacentSettingsPage(touch.distanceX() < 0 ? 1 : -1);
       return true;
@@ -4619,17 +5902,26 @@ void drawStreetPassNotificationOverlay() {
 
 void setState(ChanState state) {
   if (currentState == state) {
-    if (state == ChanState::Speaking && audioController.state() != ChanState::Speaking) {
-      pendingStateAfterPlayback = false;
-      deferredStateReadyMs = 0;
-      pendingSpeakingFaceState = true;
-      wsAudioSettleUntilMs = 0;
+    if (state == ChanState::Speaking) {
+      motionController.setMovementPaused(true);
+      const bool wasDraining = audioController.isPlaybackDraining();
+      const bool wasOutOfSync = audioController.state() != ChanState::Speaking;
+      if (wasDraining || wasOutOfSync) {
+        pendingStateAfterPlayback = false;
+        deferredStateReadyMs = 0;
+        pendingSpeakingFaceState = true;
+        wsAudioSettleUntilMs = 0;
 #if STACKCHAN_ROUND_DISPLAY
-      faceController.prepareSpeakingCache(displayAuthFaceMode(currentAuthFaceMode));
+        if (wasOutOfSync) {
+          faceController.prepareSpeakingCache(displayAuthFaceMode(currentAuthFaceMode));
+        }
 #endif
-      audioController.setState(ChanState::Speaking);
-      applyDisplayBrightness();
-      Serial.println("[state] speaking resynced");
+        audioController.setState(ChanState::Speaking);
+        applyDisplayBrightness();
+        Serial.printf("[state] speaking resynced draining=%d audio=%d\n",
+                      wasDraining ? 1 : 0,
+                      static_cast<int>(audioController.state()));
+      }
     }
     return;
   }
@@ -4647,6 +5939,7 @@ void setState(ChanState state) {
   }
 
   currentState = state;
+  motionController.setMovementPaused(state == ChanState::Speaking);
   pendingStateAfterPlayback = false;
   deferredStateReadyMs = 0;
   if (state == ChanState::Speaking && wsAudioSettleUntilMs != 0 &&
@@ -4690,7 +5983,6 @@ void setState(ChanState state) {
     vadActive = false;
     audioController.setRemoteVadActive(false);
     cancelListeningNod(false);
-    motionController.holdCurrentPose();
   }
 
   Serial.printf("[state] changed to %d\n", static_cast<int>(state));
@@ -4712,6 +6004,85 @@ void updateSpeakingFaceStateAfterPlayback() {
   faceController.startSpeaking(displayAuthFaceMode(currentAuthFaceMode));
 }
 
+uint8_t voiceMouthLevelFromPlaybackPeak(unsigned long now) {
+  const unsigned long peakMs = audioController.playbackPeakMs();
+  if (peakMs == 0) {
+    return 0;
+  }
+  const unsigned long peakAgeMs = now >= peakMs ? now - peakMs : 0;
+  if (peakAgeMs > VOICE_SPRITE_MOUTH_HOLD_MS) {
+    return 0;
+  }
+
+  const int32_t peak = audioController.playbackPeak();
+  if (peak <= VOICE_SPRITE_PEAK_SILENCE) {
+    return 0;
+  }
+  if (peak >= VOICE_SPRITE_PEAK_FULL_OPEN) {
+    return static_cast<uint8_t>(VOICE_SPRITE_MOUTH_FRAME_COUNT - 1);
+  }
+
+  const int32_t range = VOICE_SPRITE_PEAK_FULL_OPEN - VOICE_SPRITE_PEAK_SILENCE;
+  if (range <= 0) {
+    return peak > VOICE_SPRITE_PEAK_SILENCE ? 1 : 0;
+  }
+
+  const int32_t scaled =
+    ((peak - VOICE_SPRITE_PEAK_SILENCE) * (VOICE_SPRITE_MOUTH_FRAME_COUNT - 2)) / range;
+  const int32_t level = constrain(1 + scaled,
+                                  1,
+                                  VOICE_SPRITE_MOUTH_FRAME_COUNT - 1);
+  return static_cast<uint8_t>(level);
+}
+
+#if STACKCHAN_CLASSIC_FACE_ENABLED
+uint8_t classicMouthLevelFromPlaybackEnvelope(unsigned long now) {
+  const unsigned long envelopeMs = audioController.playbackEnvelopeMs();
+  const int32_t envelope = audioController.playbackEnvelope();
+  const unsigned long envelopeAgeMs = envelopeMs == 0
+                                        ? ULONG_MAX
+                                        : (now >= envelopeMs ? now - envelopeMs : 0);
+  uint8_t level = 0;
+  if (envelopeAgeMs <= CLASSIC_FACE_MOUTH_HOLD_MS &&
+      envelope > CLASSIC_FACE_MOUTH_ENVELOPE_SILENCE) {
+    if (envelope >= CLASSIC_FACE_MOUTH_ENVELOPE_FULL_OPEN) {
+      level = static_cast<uint8_t>(CLASSIC_FACE_MOUTH_LEVEL_COUNT - 1);
+    } else {
+      const int32_t range = CLASSIC_FACE_MOUTH_ENVELOPE_FULL_OPEN -
+                            CLASSIC_FACE_MOUTH_ENVELOPE_SILENCE;
+      const float normalized = static_cast<float>(envelope - CLASSIC_FACE_MOUTH_ENVELOPE_SILENCE) /
+                               static_cast<float>(range);
+      const int32_t scaled = static_cast<int32_t>(
+        sqrtf(constrain(normalized, 0.0f, 1.0f)) *
+          (CLASSIC_FACE_MOUTH_LEVEL_COUNT - 1 - CLASSIC_FACE_MOUTH_MIN_ACTIVE_LEVEL) +
+        0.5f);
+      level = static_cast<uint8_t>(constrain(CLASSIC_FACE_MOUTH_MIN_ACTIVE_LEVEL + scaled,
+                                             CLASSIC_FACE_MOUTH_MIN_ACTIVE_LEVEL,
+                                             CLASSIC_FACE_MOUTH_LEVEL_COUNT - 1));
+    }
+  }
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  static unsigned long lastLoggedEnvelopeMs = ULONG_MAX;
+  static uint8_t lastLoggedLevel = 0xff;
+  const bool stale = envelopeAgeMs > CLASSIC_FACE_MOUTH_HOLD_MS;
+  static bool lastLoggedStale = false;
+  if (envelopeMs != lastLoggedEnvelopeMs || level != lastLoggedLevel || stale != lastLoggedStale) {
+    Serial.printf("[lip.map] t=%lu envelope_t=%lu age=%lu envelope=%ld level=%u stale=%d\n",
+                  now,
+                  envelopeMs,
+                  envelopeAgeMs,
+                  static_cast<long>(envelope),
+                  static_cast<unsigned>(level),
+                  stale ? 1 : 0);
+    lastLoggedEnvelopeMs = envelopeMs;
+    lastLoggedLevel = level;
+    lastLoggedStale = stale;
+  }
+#endif
+  return level;
+}
+#endif
+
 void updateDeferredFaceState() {
   if (!pendingStateAfterPlayback) {
     return;
@@ -4732,6 +6103,7 @@ void updateDeferredFaceState() {
   pendingStateAfterPlayback = false;
   deferredStateReadyMs = 0;
   currentState = state;
+  motionController.setMovementPaused(false);
   if (state == ChanState::Idle || state == ChanState::Listening) {
     faceController.setPhotoFaceMode(false);
   }
@@ -4930,7 +6302,7 @@ bool sendUsbSerialJson(const char* payload) {
     return false;
   }
   if (usbSerialFramedMode) {
-    const bool sent = sendUsbSerialFrame(kUsbSerialTypeJson,
+    const bool sent = sendUsbSerialFrame(Usb::kTypeJson,
                                          reinterpret_cast<const uint8_t*>(payload),
                                          strlen(payload));
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
@@ -4977,10 +6349,50 @@ void writeDeviceInfo(JsonDocument& response, const char* requestId) {
   response["firmwareName"] = STACKCHAN_FIRMWARE_NAME;
   response["firmwareVersion"] = STACKCHAN_FIRMWARE_VERSION;
   response["protocolVersion"] = STACKCHAN_APP_PROTOCOL_VERSION;
+#if STACKCHAN_CLASSIC_FACE_ENABLED
+  response["faceRenderer"] = "classic";
+#else
+  response["faceRenderer"] = "image";
+#endif
+  const FaceAssetStatus& faceAssets = faceController.faceAssetStatus();
+  response["faceRendererMode"] = faceAssetModeName(faceAssets.mode);
+  response["faceAssetSchema"] = faceAssets.schemaVersion;
+  response["faceAssetManifestPresent"] = faceAssets.manifestPresent;
+  response["faceAssetManifestValid"] = faceAssets.manifestValid;
+  response["legacyFaceFallbackActive"] = faceAssetModeUsesLegacyFallback(faceAssets.mode);
+  if (!faceAssets.error.isEmpty()) {
+    response["faceAssetError"] = faceAssets.error;
+  }
+  if (!faceAssets.missingAsset.isEmpty()) {
+    response["faceAssetMissing"] = faceAssets.missingAsset;
+  }
   JsonArray capabilities = response["capabilities"].to<JsonArray>();
   capabilities.add("device.info");
   capabilities.add("affection.get");
   capabilities.add("affection.sync");
+  capabilities.add(SPEECH_BUBBLE_CAPABILITY);
+#if STEP_COUNTER_ENABLED
+  capabilities.add("steps.sync");
+#endif
+  JsonObject display = response["display"].to<JsonObject>();
+  display["width"] = M5.Display.width();
+  display["height"] = M5.Display.height();
+#if STACKCHAN_ROUND_DISPLAY
+  display["shape"] = "round";
+#else
+  display["shape"] = "rect";
+#endif
+  JsonObject speechBubble = response["speechBubble"].to<JsonObject>();
+  speechBubble["version"] = SPEECH_BUBBLE_PROTOCOL_VERSION;
+  speechBubble["sampleRate"] = AUDIO_SAMPLE_RATE;
+  speechBubble["maxSequenceIdUtf8Bytes"] = SPEECH_BUBBLE_MAX_SEQUENCE_ID_BYTES;
+  speechBubble["maxTextUtf8Bytes"] = SPEECH_BUBBLE_MAX_TEXT_BYTES;
+  speechBubble["maxQueuedCues"] = SPEECH_BUBBLE_MAX_QUEUED_CUES;
+  speechBubble["maxPcmBytes"] = SPEECH_BUBBLE_MAX_PCM_BYTES;
+  speechBubble["defaultHoldMs"] = SPEECH_BUBBLE_DEFAULT_HOLD_MS;
+  speechBubble["maxHoldMs"] = SPEECH_BUBBLE_MAX_HOLD_MS;
+  speechBubble["stallTimeoutMs"] = SPEECH_BUBBLE_STALL_TIMEOUT_MS;
+  speechBubble["preSpeakingHoldMs"] = SPEECH_BUBBLE_PRE_SPEAKING_HOLD_MS;
 }
 
 bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags) {
@@ -4998,23 +6410,23 @@ bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uin
 
   uint8_t header[16] = {
     'S', 'C', 'U', '1',
-    kUsbSerialVersion,
+    Usb::kVersion,
     type,
     flags,
     0,
   };
-  writeLe32(header + 8, usbSerialTxSeq++);
-  writeLe32(header + 12, static_cast<uint32_t>(length));
+  Usb::writeLe32(header + 8, usbSerialTxSeq++);
+  Usb::writeLe32(header + 12, static_cast<uint32_t>(length));
 
   uint32_t crc = 0xFFFFFFFFUL;
-  crc = crc32Update(crc, header + 4, 12);
+  crc = Usb::crc32Update(crc, header + 4, 12);
   if (length > 0) {
-    crc = crc32Update(crc, payload, length);
+    crc = Usb::crc32Update(crc, payload, length);
   }
   crc = ~crc;
 
   uint8_t crcBytes[4];
-  writeLe32(crcBytes, crc);
+  Usb::writeLe32(crcBytes, crc);
   const size_t headerWritten = Serial.write(header, sizeof(header));
   size_t payloadWritten = 0;
   if (length > 0) {
@@ -5022,7 +6434,7 @@ bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uin
   }
   const size_t crcWritten = Serial.write(crcBytes, sizeof(crcBytes));
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
-  if (type == kUsbSerialTypePong || type == kUsbSerialTypeJson || type == kUsbSerialTypeError) {
+  if (type == Usb::kTypePong || type == Usb::kTypeJson || type == Usb::kTypeError) {
     Serial.printf("USB TX frame type=0x%02x seq=%lu length=%u wrote=%u/%u at_ms=%lu\n",
                   type,
                   static_cast<unsigned long>(usbSerialTxSeq - 1),
@@ -5044,7 +6456,7 @@ bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uin
 
 bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context) {
   (void)context;
-  return sendUsbSerialFrame(kUsbSerialTypeMicPcm, payload, length);
+  return sendUsbSerialFrame(Usb::kTypeMicPcm, payload, length);
 }
 
 void writePongResponse(JsonDocument& response, JsonDocument& request) {
@@ -5429,7 +6841,76 @@ void handlePlaybackDiagCommand(JsonDocument& doc) {
   sendUsbSerialJson(body.c_str());
 }
 
-void handleJsonCommand(const uint8_t* payload, size_t length) {
+void sendSpeechBubbleProtocolError(SpeechBubbleTransport transport,
+                                   JsonDocument& request,
+                                   const char* error) {
+  JsonDocument response;
+  response["type"] = "display.speech_bubble.error";
+  response["version"] = SPEECH_BUBBLE_PROTOCOL_VERSION;
+  const char* sequenceId = request["sequenceId"] | "";
+  if (sequenceId[0] != '\0') {
+    response["sequenceId"] = sequenceId;
+  }
+  if (!request["segmentIndex"].isNull()) {
+    response["segmentIndex"] = request["segmentIndex"];
+  }
+  response["error"] = error != nullptr ? error : "unknown";
+  String body;
+  serializeJson(response, body);
+  if (transport == SpeechBubbleTransport::WebSocket) {
+    wsServer.sendText(body.c_str());
+  } else if (transport == SpeechBubbleTransport::UsbSerial) {
+    sendUsbSerialJson(body.c_str());
+  }
+}
+
+void handleSpeechBubbleCommand(JsonDocument& doc,
+                               const char* type,
+                               SpeechBubbleTransport transport) {
+  const uint32_t version = doc["version"] | 0U;
+  if (version != SPEECH_BUBBLE_PROTOCOL_VERSION) {
+    sendSpeechBubbleProtocolError(transport, doc, "unsupported_version");
+    return;
+  }
+
+  const char* sequenceId = doc["sequenceId"] | "";
+  const char* commandError = nullptr;
+  bool ok = false;
+  if (strcmp(type, "display.speech_bubble.cue") == 0) {
+    const uint32_t segmentIndex = doc["segmentIndex"] | 0U;
+    const char* text = doc["text"] | "";
+    const uint32_t pcmBytes = doc["pcmBytes"] | 0U;
+    const uint32_t sampleRate = doc["sampleRate"] | AUDIO_SAMPLE_RATE;
+    ok = speechBubbleController.cue(sequenceId,
+                                    segmentIndex,
+                                    text,
+                                    pcmBytes,
+                                    sampleRate,
+                                    transport,
+                                    &commandError);
+  } else if (strcmp(type, "display.speech_bubble.end") == 0) {
+    const int64_t requestedHoldMs = doc["holdMs"] | static_cast<int64_t>(SPEECH_BUBBLE_DEFAULT_HOLD_MS);
+    const uint32_t holdMs = requestedHoldMs <= 0
+                              ? 0U
+                              : static_cast<uint32_t>(min<int64_t>(requestedHoldMs,
+                                                                    SPEECH_BUBBLE_MAX_HOLD_MS));
+    ok = speechBubbleController.end(sequenceId, holdMs, transport, &commandError);
+  } else if (strcmp(type, "display.speech_bubble.cancel") == 0) {
+    ok = speechBubbleController.cancel(sequenceId, transport, &commandError);
+  }
+
+  if (!ok) {
+    Serial.printf("[speech_bubble] command rejected type=%s sequence=%s error=%s\n",
+                  type,
+                  sequenceId,
+                  commandError != nullptr ? commandError : "unknown");
+    sendSpeechBubbleProtocolError(transport, doc, commandError);
+  }
+}
+
+void handleJsonCommand(const uint8_t* payload,
+                       size_t length,
+                       SpeechBubbleTransport transport) {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload, length);
   if (error) {
@@ -5457,12 +6938,18 @@ void handleJsonCommand(const uint8_t* payload, size_t length) {
     sendPongResponse(doc);
   } else if (strcmp(type, "device.info.get") == 0) {
     handleDeviceInfoGetCommand(doc);
+  } else if (strcmp(type, "steps.get") == 0) {
+    handleStepsGetCommand(doc);
   } else if (strcmp(type, "audio.speaker_test") == 0) {
     handleSpeakerTestCommand(doc);
   } else if (strcmp(type, "audio.mic_test") == 0) {
     handleMicTestCommand(doc);
   } else if (strcmp(type, "audio.playback_diag") == 0) {
     handlePlaybackDiagCommand(doc);
+  } else if (strcmp(type, "display.speech_bubble.cue") == 0 ||
+             strcmp(type, "display.speech_bubble.end") == 0 ||
+             strcmp(type, "display.speech_bubble.cancel") == 0) {
+    handleSpeechBubbleCommand(doc, type, transport);
   } else if (strcmp(type, "state") == 0) {
     const char* value = doc["value"] | "";
     handleStateCommand(value);
@@ -5595,10 +7082,14 @@ void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length) {
     return;
   }
 
+  const bool wasUsbSerialClientConnected = usbSerialClientConnected;
   usbSerialClientConnected = true;
   usbSerialLastRxMs = millis();
   audioController.setUsbSerialClientConnected(true);
   updateMicStatusOverlay();
+  if (!wasUsbSerialClientConnected) {
+    sendStepsSnapshot();
+  }
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
   Serial.printf("USB client connected at_ms=%lu framed=%d\n",
                 static_cast<unsigned long>(usbSerialLastRxMs),
@@ -5655,7 +7146,7 @@ void handleUsbSerialJsonPayload(const uint8_t* payload, size_t length) {
 #endif
 
   clearCameraButtonPending("usb_serial");
-  handleJsonCommand(payload, length);
+  handleJsonCommand(payload, length, SpeechBubbleTransport::UsbSerial);
 #else
   (void)payload;
   (void)length;
@@ -5671,14 +7162,16 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
     start["id"] = requestId;
   }
 
-  faceController.setPhotoFaceMode(true);
-  faceController.showFace("photo_0");
+  faceController.setCameraCaptureActive(true);
   const bool micPausedForCapture = CAMERA_PAUSE_MIC_DURING_CAPTURE
                                      ? audioController.pauseMicForCapture()
                                      : false;
+  const bool streetPassSuspendedForCapture = suspendStreetPassBleForCamera();
 
   if (!cameraManager.isReady() && !cameraManager.init()) {
+    faceController.setCameraCaptureActive(false);
     audioController.resumeMicAfterCapture(micPausedForCapture);
+    resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     JsonDocument end;
     end["type"] = "capture.end";
     if (requestId[0] != '\0') {
@@ -5695,8 +7188,10 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
   uint8_t* jpg = nullptr;
   size_t jpgLen = 0;
   if (!cameraManager.captureJpeg(&jpg, &jpgLen)) {
+    faceController.setCameraCaptureActive(false);
     cameraManager.deinit();
     audioController.resumeMicAfterCapture(micPausedForCapture);
+    resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     JsonDocument end;
     end["type"] = "capture.end";
     if (requestId[0] != '\0') {
@@ -5710,6 +7205,10 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
     return;
   }
 
+  // Keep the encoded JPEG, but release the large camera framebuffer and DMA
+  // allocations before serial framing and the rest of the device resume.
+  cameraManager.deinit();
+
   start["contentType"] = "image/jpeg";
   start["length"] = static_cast<uint32_t>(jpgLen);
   String body;
@@ -5719,15 +7218,16 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
   size_t offset = 0;
   while (offset < jpgLen) {
     const size_t chunk = min(static_cast<size_t>(USB_SERIAL_CAPTURE_CHUNK_BYTES), jpgLen - offset);
-    sendUsbSerialFrame(kUsbSerialTypeCaptureImageChunk, jpg + offset, chunk);
+    sendUsbSerialFrame(Usb::kTypeCaptureImageChunk, jpg + offset, chunk);
     offset += chunk;
     delay(1);
   }
 
   cameraManager.releaseBuffer(jpg);
-  cameraManager.deinit();
+  faceController.setCameraCaptureActive(false);
   delay(80);
   audioController.resumeMicAfterCapture(micPausedForCapture);
+  resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
   audioController.deferNextSpeakerStartUntil(millis() + AUDIO_AFTER_CAPTURE_SPEAKER_DELAY_MS);
 
   JsonDocument end;
@@ -5747,14 +7247,18 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
 void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8_t* payload, size_t length) {
 #if USB_SERIAL_PROTOCOL_ENABLED
   (void)flags;
+  const bool wasUsbSerialClientConnected = usbSerialClientConnected;
   usbSerialClientConnected = true;
   usbSerialFramedMode = true;
   usbSerialLastRxMs = millis();
   audioController.setUsbSerialClientConnected(true);
   updateMicStatusOverlay();
+  if (!wasUsbSerialClientConnected) {
+    sendStepsSnapshot();
+  }
 
 #if USB_SERIAL_TTS_DIAG_LOG_ENABLED
-  if (type == kUsbSerialTypeJson || type == kUsbSerialTypeTtsPcm || type == kUsbSerialTypePing) {
+  if (type == Usb::kTypeJson || type == Usb::kTypeTtsPcm || type == Usb::kTypePing) {
     Serial.printf("SCU1 rx type=0x%02x seq=%lu length=%u crc_ok=1\n",
                   type,
                   static_cast<unsigned long>(seq),
@@ -5763,10 +7267,10 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
 #endif
 
   switch (type) {
-    case kUsbSerialTypeJson:
+    case Usb::kTypeJson:
       handleUsbSerialJsonPayload(payload, length);
       break;
-    case kUsbSerialTypeTtsPcm: {
+    case Usb::kTypeTtsPcm: {
       clearCameraButtonPending("usb_audio");
 #if STACKCHAN_DEVICE_STOPWATCH
       usbSerialLastPcmMs = millis();
@@ -5817,10 +7321,11 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
                       static_cast<long>(peakAbs));
       }
 #endif
+      speechBubbleController.onPcmReceived(SpeechBubbleTransport::UsbSerial);
       audioController.onBinaryReceived(const_cast<uint8_t*>(payload), length);
       break;
     }
-    case kUsbSerialTypeCaptureRequest:
+    case Usb::kTypeCaptureRequest:
       if (length > 0) {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, payload, length);
@@ -5829,7 +7334,7 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
         }
       }
       break;
-    case kUsbSerialTypePing: {
+    case Usb::kTypePing: {
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
       Serial.printf("USB ping frame received seq=%lu length=%u at_ms=%lu\n",
                     static_cast<unsigned long>(seq),
@@ -5844,7 +7349,7 @@ void handleUsbSerialFrame(uint8_t type, uint8_t flags, uint32_t seq, const uint8
       writePongResponse(pong, ping);
       String body;
       serializeJson(pong, body);
-      const bool sent = sendUsbSerialFrame(kUsbSerialTypePong, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+      const bool sent = sendUsbSerialFrame(Usb::kTypePong, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
       Serial.printf("USB pong frame sent ok=%d at_ms=%lu\n",
                     sent ? 1 : 0,
@@ -5883,6 +7388,9 @@ void updateUsbSerial(unsigned long now) {
     usbSerialDeferredIdleRequestedMs = 0;
 #endif
     audioController.setUsbSerialClientConnected(false);
+    if (speechBubbleController.activeForTransport(SpeechBubbleTransport::UsbSerial)) {
+      speechBubbleController.reset("usb_timeout");
+    }
     updateMicStatusOverlay();
     clearCameraButtonPending("usb_timeout");
   }
@@ -5904,19 +7412,19 @@ void updateUsbSerial(unsigned long now) {
     const char ch = static_cast<char>(value);
     switch (usbSerialRxState) {
       case UsbSerialRxState::Line:
-        if (static_cast<uint8_t>(value) == kUsbSerialMagic[usbSerialMagicIndex]) {
+        if (static_cast<uint8_t>(value) == Usb::kMagic[usbSerialMagicIndex]) {
           if (usbSerialMagicIndex == 0) {
             usbSerialLineLength = 0;
             usbSerialLineOverflow = false;
           }
           usbSerialFrameHeader[usbSerialMagicIndex++] = static_cast<uint8_t>(value);
-          if (usbSerialMagicIndex == sizeof(kUsbSerialMagic)) {
+          if (usbSerialMagicIndex == sizeof(Usb::kMagic)) {
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
             Serial.printf("USB RX SCU1 magic detected at_ms=%lu\n",
                           static_cast<unsigned long>(millis()));
 #endif
             usbSerialRxState = UsbSerialRxState::Header;
-            usbSerialHeaderIndex = sizeof(kUsbSerialMagic);
+            usbSerialHeaderIndex = sizeof(Usb::kMagic);
             usbSerialMagicIndex = 0;
           }
           continue;
@@ -5924,7 +7432,7 @@ void updateUsbSerial(unsigned long now) {
         if (usbSerialMagicIndex != 0) {
           for (uint8_t i = 0; i < usbSerialMagicIndex; ++i) {
             if (usbSerialLineLength + 1 < USB_SERIAL_LINE_BUFFER_BYTES && !usbSerialLineOverflow) {
-              usbSerialLineBuffer[usbSerialLineLength++] = static_cast<char>(kUsbSerialMagic[i]);
+              usbSerialLineBuffer[usbSerialLineLength++] = static_cast<char>(Usb::kMagic[i]);
               usbSerialLineBuffer[usbSerialLineLength] = '\0';
             }
           }
@@ -5960,23 +7468,23 @@ void updateUsbSerial(unsigned long now) {
       case UsbSerialRxState::Header:
         usbSerialFrameHeader[usbSerialHeaderIndex++] = static_cast<uint8_t>(value);
         if (usbSerialHeaderIndex >= sizeof(usbSerialFrameHeader)) {
-          usbSerialFrameLength = readLe32(usbSerialFrameHeader + 12);
+          usbSerialFrameLength = Usb::readLe32(usbSerialFrameHeader + 12);
           usbSerialPayloadIndex = 0;
           usbSerialCrcIndex = 0;
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
           Serial.printf("SCU1 header version=0x%02x type=0x%02x seq=%lu length=%lu at_ms=%lu\n",
                         usbSerialFrameHeader[4],
                         usbSerialFrameHeader[5],
-                        static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                        static_cast<unsigned long>(Usb::readLe32(usbSerialFrameHeader + 8)),
                         static_cast<unsigned long>(usbSerialFrameLength),
                         static_cast<unsigned long>(millis()));
 #endif
-          if (usbSerialFrameHeader[4] != kUsbSerialVersion ||
+          if (usbSerialFrameHeader[4] != Usb::kVersion ||
               usbSerialFrameLength > USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES) {
 #if USB_SERIAL_TTS_DIAG_LOG_ENABLED
             Serial.printf("SCU1 invalid header version=0x%02x seq=%lu length=%lu max=%u\n",
                           usbSerialFrameHeader[4],
-                          static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                          static_cast<unsigned long>(Usb::readLe32(usbSerialFrameHeader + 8)),
                           static_cast<unsigned long>(usbSerialFrameLength),
                           static_cast<unsigned>(USB_SERIAL_FRAME_MAX_PAYLOAD_BYTES));
 #endif
@@ -5999,22 +7507,22 @@ void updateUsbSerial(unsigned long now) {
         usbSerialFrameCrcBytes[usbSerialCrcIndex++] = static_cast<uint8_t>(value);
         if (usbSerialCrcIndex >= sizeof(usbSerialFrameCrcBytes)) {
           uint32_t crc = 0xFFFFFFFFUL;
-          crc = crc32Update(crc, usbSerialFrameHeader + 4, 12);
+          crc = Usb::crc32Update(crc, usbSerialFrameHeader + 4, 12);
           if (usbSerialFrameLength > 0) {
-            crc = crc32Update(crc, usbSerialFramePayload, usbSerialFrameLength);
+            crc = Usb::crc32Update(crc, usbSerialFramePayload, usbSerialFrameLength);
           }
           crc = ~crc;
-          const uint32_t actualCrc = readLe32(usbSerialFrameCrcBytes);
+          const uint32_t actualCrc = Usb::readLe32(usbSerialFrameCrcBytes);
           if (crc == actualCrc) {
             handleUsbSerialFrame(usbSerialFrameHeader[5],
                                  usbSerialFrameHeader[6],
-                                 readLe32(usbSerialFrameHeader + 8),
+                                 Usb::readLe32(usbSerialFrameHeader + 8),
                                  usbSerialFramePayload,
                                  usbSerialFrameLength);
           } else {
 #if USB_SERIAL_TTS_DIAG_LOG_ENABLED
             Serial.printf("SCU1 crc mismatch seq=%lu expected=0x%08lx actual=0x%08lx length=%lu\n",
-                          static_cast<unsigned long>(readLe32(usbSerialFrameHeader + 8)),
+                          static_cast<unsigned long>(Usb::readLe32(usbSerialFrameHeader + 8)),
                           static_cast<unsigned long>(crc),
                           static_cast<unsigned long>(actualCrc),
                           static_cast<unsigned long>(usbSerialFrameLength));
@@ -6037,7 +7545,7 @@ void updateUsbSerial(unsigned long now) {
   }
 #if USB_SERIAL_RX_DIAG_LOG_ENABLED
   if (rxDiagBytesRead > 0 &&
-      (usbSerialRxDiagEventCount < 40 || rxDiagFirstLength >= sizeof(kUsbSerialMagic))) {
+      (usbSerialRxDiagEventCount < 40 || rxDiagFirstLength >= sizeof(Usb::kMagic))) {
     ++usbSerialRxDiagEventCount;
     Serial.printf("USB RX bytes length=%u first%u=",
                   static_cast<unsigned>(rxDiagBytesRead),
@@ -6059,20 +7567,25 @@ void onWsText(uint8_t clientId, const uint8_t* payload, size_t length) {
   Serial.printf("[ws] text %u bytes\n", static_cast<unsigned>(length));
 #endif
   clearCameraButtonPending("text");
-  handleJsonCommand(payload, length);
+  handleJsonCommand(payload, length, SpeechBubbleTransport::WebSocket);
 }
 
 void onWsBinary(uint8_t clientId, uint8_t* payload, size_t length) {
   (void)clientId;
   clearCameraButtonPending("binary");
+  const unsigned long startedAt = millis();
+  speechBubbleController.onPcmReceived(SpeechBubbleTransport::WebSocket);
   audioController.onBinaryReceived(payload, length);
+  noteVoicePerfWsBinary(length, static_cast<uint32_t>(millis() - startedAt));
 }
 
 void onWsConnection(uint8_t clientId, bool connected) {
   (void)clientId;
   wsClientConnected = connected;
   updateMicStatusOverlay();
-  applyDisplayBrightness();
+  if (displayOn) {
+    applyDisplayBrightness();
+  }
   applyThermalFaceMode();
   if (connected) {
     const unsigned long now = millis();
@@ -6081,12 +7594,16 @@ void onWsConnection(uint8_t clientId, bool connected) {
     Serial.printf("[ws] audio settle %u ms\n", AUDIO_WS_CONNECT_SETTLE_MS);
     applyAffectionResult(affectionController.resetTransient(), now, false);
     sendAffectionState();
+    sendStepsSnapshot();
     sendInteractionEvent("session_start", "instant", now);
   } else {
     wsAudioSettleUntilMs = 0;
+    if (speechBubbleController.activeForTransport(SpeechBubbleTransport::WebSocket)) {
+      speechBubbleController.reset("websocket_disconnect");
+    }
     clearCameraButtonPending("disconnect");
   }
-  if (infoScreenVisible) {
+  if (infoScreenVisible && displayOn) {
     drawInfoScreen();
   }
 }
@@ -6098,11 +7615,42 @@ void redrawNetworkSettingsIfVisible() {
   }
 }
 
-void beginStaWifiConnection(const char* reason) {
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    wifiGotIpReady = true;
+    wifiDisconnectExpected = false;
+    return;
+  }
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    wifiGotIpReady = false;
+    if (!wifiDisconnectExpected) {
+      wifiReconnectEventReason = info.wifi_sta_disconnected.reason;
+      wifiReconnectEventPending = true;
+    }
+    return;
+  }
+  if (event == ARDUINO_EVENT_WIFI_STA_LOST_IP && !wifiDisconnectExpected) {
+    wifiGotIpReady = false;
+    wifiReconnectEventReason = 0xFD;
+    wifiReconnectEventPending = true;
+  }
+}
+
+void beginStaWifiConnection(const char* reason, bool resetRadio = false) {
+  stopServers(reason != nullptr ? reason : "wifi_reconnect");
   wifiConnectStartedMs = millis();
   lastWifiStatus = WiFi.status();
   WiFi.persistent(false);
+  wifiDisconnectExpected = true;
+  wifiGotIpReady = false;
   WiFi.disconnect(false, false);
+  if (resetRadio) {
+    WiFi.mode(WIFI_OFF);
+    delay(150);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(true);
+    Serial.println("[wifi] radio reset");
+  }
   WiFi.begin(wifiCredentials[currentWifiIndex].ssid.c_str(), wifiCredentials[currentWifiIndex].password.c_str());
   Serial.printf("[wifi] connecting to %s reason=%s\n",
                 wifiCredentials[currentWifiIndex].ssid.c_str(),
@@ -6162,6 +7710,18 @@ void updateWiFi(unsigned long now) {
     return;
   }
 
+  if (wifiReconnectEventPending) {
+    const uint8_t reason = wifiReconnectEventReason;
+    wifiReconnectEventPending = false;
+    Serial.printf("[wifi] recovery requested reason=%u status=%d\n",
+                  static_cast<unsigned>(reason),
+                  static_cast<int>(WiFi.status()));
+    wifiConnectAttempts = 0;
+    wifiConnectStartedMs = 0;
+    beginStaWifiConnection("wifi_event", true);
+    return;
+  }
+
   const wl_status_t status = WiFi.status();
   if (status != lastWifiStatus) {
     Serial.printf("[wifi] status=%d\n", static_cast<int>(status));
@@ -6170,6 +7730,10 @@ void updateWiFi(unsigned long now) {
   }
 
   if (status == WL_CONNECTED) {
+    if (!wifiGotIpReady) {
+      return;
+    }
+    wifiDisconnectExpected = false;
     wifiConnectAttempts = 0;
     wifiConnectStartedMs = 0;
     if (!wsStarted) {
@@ -6201,7 +7765,7 @@ void updateWiFi(unsigned long now) {
   }
 
   Serial.printf("[wifi] reconnecting after timeout status=%d\n", static_cast<int>(status));
-  beginStaWifiConnection("timeout");
+  beginStaWifiConnection("timeout", true);
 }
 
 void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
@@ -6215,6 +7779,22 @@ void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
     setPettingActive(false, now);
     return;
   }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+  if (appClientConnected() &&
+      touchStartedInCircle(touch,
+                           roundMicButtonCenterX(),
+                           roundMicButtonCenterY(),
+                           roundMicButtonRadius())) {
+    screenPettingCandidate = false;
+    screenPettingTouchActive = false;
+    screenPettingCandidateSinceMs = 0;
+    screenPettingReleaseSinceMs = 0;
+    screenPettingTravelPx = 0;
+    setPettingActive(false, now);
+    return;
+  }
+#endif
 
 	  if (!touch.isPressed()) {
 	    screenPettingCandidate = false;
@@ -6259,7 +7839,7 @@ void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
   if (heldLongEnough || draggedEnough || screenPettingTouchActive) {
     screenPettingTouchActive = true;
     setPettingActive(true, now);
-#if STACKCHAN_DEVICE_STOPWATCH
+#if STACKCHAN_DEVICE_STOPWATCH && STACKCHAN_PET_ANIMATION_ENABLED
     faceController.setPetAnimationTouchFrame(petAnimationTouchFrameForX(touch.x, cx), now);
 #endif
   }
@@ -6288,9 +7868,18 @@ bool guruguruFaceAssetsAvailable() {
   if (guruguruFaceAssetsChecked) {
     return guruguruFaceAssetsReady;
   }
+  const FaceAssetMode assetMode = faceController.faceAssetStatus().mode;
+  if (!faceAssetModeUsesAnimation(assetMode)) {
+    guruguruFaceAssetsReady = false;
+    guruguruFaceAssetsChecked = true;
+    return false;
+  }
   char path[16];
 #if STACKCHAN_DEVICE_STOPWATCH
-  snprintf(path, sizeof(path), "/dir16.png");
+  const uint8_t centerIndex = faceAssetModeUsesV2(assetMode)
+                                ? STACKCHAN_GURUGURU_FACE_CENTER_INDEX
+                                : 16;
+  snprintf(path, sizeof(path), "/dir%u.png", static_cast<unsigned>(centerIndex));
 #else
   snprintf(path, sizeof(path), "/dir%u.png", static_cast<unsigned>(STACKCHAN_GURUGURU_FACE_CENTER_INDEX));
 #endif
@@ -6968,6 +8557,17 @@ void updateTouch(unsigned long now) {
   }
 
   if (touch.wasClicked()) {
+#if STACKCHAN_DEVICE_STOPWATCH
+    if (!infoScreenVisible && appClientConnected() &&
+        touchInCircle(touch,
+                      roundMicButtonCenterX(),
+                      roundMicButtonCenterY(),
+                      roundMicButtonRadius())) {
+      audioController.setMicMuted(!audioController.micMuted());
+      updateMicStatusOverlay();
+      return;
+    }
+#endif
 #if STACKCHAN_HAS_CAMERA
     if (!infoScreenVisible && appClientConnected() &&
         touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 144, 40, 72)) {
@@ -7012,6 +8612,22 @@ void updateButtons(unsigned long now) {
   (void)now;
 #if STACKCHAN_SMALL_DISPLAY
   if (!interactionsReady(now)) {
+    return;
+  }
+  if (!displayOn) {
+    smallDisplayFacePettingHold = false;
+    smallVolumeHoldRepeatMs = 0;
+    if (M5.BtnA.wasHold()) {
+      Serial.println("[button] hold display_wake");
+      setDisplayOn(true);
+      return;
+    }
+    if (M5.BtnA.wasDecideClickCount()) {
+      const uint8_t clickCount = M5.BtnA.getClickCount();
+      Serial.printf("[button] click_count=%u display_wake\n", clickCount);
+      setDisplayOn(true);
+      return;
+    }
     return;
   }
   if (infoScreenVisible && settingsPage == SettingsPage::Audio && smallVolumeAdjustMode) {
@@ -7112,11 +8728,40 @@ void updateButtons(unsigned long now) {
     }
   }
 #else
+  if (!displayOn) {
 #if STACKCHAN_DEVICE_STOPWATCH
+    if (M5.BtnB.wasDecideClickCount()) {
+      const uint8_t clickCount = M5.BtnB.getClickCount();
+      Serial.printf("[button] key_b_click_count=%u display_wake\n", clickCount);
+      setDisplayOn(true);
+      return;
+    }
+    if (M5.BtnPWR.wasClicked()) {
+      setDisplayOn(true);
+      return;
+    }
+#elif STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
+    if (M5.BtnPWR.wasDecideClickCount()) {
+      const uint8_t clickCount = M5.BtnPWR.getClickCount();
+      Serial.printf("[button] pwr_click_count=%u display_wake\n", clickCount);
+      setDisplayOn(true);
+      return;
+    }
+#else
+    if (M5.BtnPWR.wasClicked()) {
+      setDisplayOn(true);
+      return;
+    }
+#endif
+    return;
+  }
+#if STACKCHAN_DEVICE_STOPWATCH
+#if STACKCHAN_GURUGURU_FACE_ENABLED
   if (M5.BtnA.wasDoubleClicked()) {
     setGuruguruFaceMode(!guruguruFaceMode, now);
     return;
   }
+#endif
   if (M5.BtnA.wasSingleClicked()) {
     setInfoScreenVisible(!infoScreenVisible);
     return;
@@ -7361,6 +9006,7 @@ void setup() {
                 static_cast<unsigned long>(USB_SERIAL_BAUD),
                 static_cast<unsigned>(USB_SERIAL_RX_BUFFER_BYTES),
                 static_cast<unsigned long>(millis()));
+  applyStopwatchStatusLedSetting();
 
   randomSeed(esp_random());
   ensureDeviceId();
@@ -7379,35 +9025,49 @@ void setup() {
   }
 
   faceController.begin();
-  if (deviceSettings.lowPowerMode) {
-    faceController.setThermalFaceMode(ThermalFaceMode::LowPower);
-  }
+  applyThermalFaceMode();
   affectionController.begin(&preferences);
   streetPassController.begin(&preferences);
+  stepCounterController.begin(&preferences);
+  loadStepAffectionRewardState();
   restoreStreetPassTimeFromRtc(millis());
   faceController.setAffectionState(affectionController.state());
   motionController.begin();
   audioController.begin(&wsServer);
   audioController.setMicPacketSender(sendUsbSerialMicPacket, nullptr);
   audioController.setVolume(deviceSettings.volume);
+  speechBubbleController.begin(&audioController, &faceController);
 
   wsServer.onText(onWsText);
   wsServer.onBinary(onWsBinary);
   wsServer.onConnection(onWsConnection);
 
+  WiFi.onEvent(onWiFiEvent);
   connectWiFi();
-  beginStreetPassBle();
   interactionReadyAtMs = millis() + INTERACTION_STARTUP_IGNORE_MS;
   lastInitializeDrawMs = 0;
   drawInitializeScreen(millis());
 }
 
 void loop() {
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  unsigned long lipDiagStepStartedAt = millis();
+#endif
   updateDevice();
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  if (millis() - lipDiagStepStartedAt > 20) {
+    Serial.printf("[lip.loop] step=updateDevice elapsed_ms=%lu current=%d audio=%d\n",
+                  millis() - lipDiagStepStartedAt,
+                  static_cast<int>(currentState),
+                  static_cast<int>(audioController.state()));
+  }
+#endif
 
   unsigned long now = millis();
+  const unsigned long loopStartedAt = now;
   const bool diagSpeakingAtLoopStart =
     currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking;
+  noteVoicePerfLoop(diagSpeakingAtLoopStart, now);
 #if FACE_DIAG_LOG_ENABLED
   auto logFaceDiagStep = [&](const char* name, unsigned long startedAt) {
     const unsigned long elapsed = millis() - startedAt;
@@ -7420,6 +9080,13 @@ void loop() {
     }
   };
 #endif
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  lipDiagStepStartedAt = millis();
+#endif
+  updateSharedImuSample(now);
+  updateStepCounter(now);
+  updateStepAffectionReward(now);
+  updateStepSync(now);
   updateButtons(now);
   if (updateDisplayOffStreetPassMode(now)) {
     return;
@@ -7432,47 +9099,95 @@ void loop() {
 #endif
   updateBackTouch(now);
   updateShake(now);
+  updateInteractionMicPause();
   updateHaptic(now);
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  if (millis() - lipDiagStepStartedAt > 20) {
+    Serial.printf("[lip.loop] step=input elapsed_ms=%lu current=%d audio=%d\n",
+                  millis() - lipDiagStepStartedAt,
+                  static_cast<int>(currentState),
+                  static_cast<int>(audioController.state()));
+  }
+  lipDiagStepStartedAt = millis();
+#endif
   updateUsbSerial(now);
   updateUsbSerialDeferredIdle(now);
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  if (millis() - lipDiagStepStartedAt > 20) {
+    Serial.printf("[lip.loop] step=usb elapsed_ms=%lu current=%d audio=%d\n",
+                  millis() - lipDiagStepStartedAt,
+                  static_cast<int>(currentState),
+                  static_cast<int>(audioController.state()));
+  }
+  lipDiagStepStartedAt = millis();
+#endif
 #if STACKCHAN_DEVICE_STOPWATCH
   if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
+    const unsigned long audioStartedAt = millis();
     audioController.update(millis());
+    noteVoicePerfAudioUpdate(diagSpeakingAtLoopStart,
+                             static_cast<uint32_t>(millis() - audioStartedAt));
   }
 #endif
   updateWiFi(now);
   updateStreetPassNetworkTime(now);
   updateClockOverlay(now);
   streetPassController.update(now);
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  if (millis() - lipDiagStepStartedAt > 20) {
+    Serial.printf("[lip.loop] step=network elapsed_ms=%lu current=%d audio=%d\n",
+                  millis() - lipDiagStepStartedAt,
+                  static_cast<int>(currentState),
+                  static_cast<int>(audioController.state()));
+  }
+#endif
 
   if (wsStarted) {
-#if FACE_DIAG_LOG_ENABLED
     const unsigned long stepStartedAt = millis();
-#endif
     wsServer.loop();
+    noteVoicePerfWsLoop(diagSpeakingAtLoopStart,
+                        static_cast<uint32_t>(millis() - stepStartedAt));
 #if FACE_DIAG_LOG_ENABLED
     logFaceDiagStep("wsServer.loop", stepStartedAt);
 #endif
   }
   if (httpStarted) {
-#if FACE_DIAG_LOG_ENABLED
     const unsigned long stepStartedAt = millis();
-#endif
     httpServer.handleClient();
+    noteVoicePerfHttpLoop(diagSpeakingAtLoopStart,
+                          static_cast<uint32_t>(millis() - stepStartedAt));
 #if FACE_DIAG_LOG_ENABLED
     logFaceDiagStep("httpServer.handleClient", stepStartedAt);
 #endif
   }
   updateCameraButtonPending(now);
   updateStreetPassBle(now);
+  // State/pose commands are processed by USB and WebSocket earlier in this
+  // loop. Re-evaluate here so a freshly started listening mic is stopped and
+  // its buffers are cleared before audioController.update() can transmit a
+  // chunk recorded during servo movement.
+  updateInteractionMicPause();
 
   if (!interactionsReady(now)) {
-    if (displayOn) {
+    const bool speaking = currentState == ChanState::Speaking ||
+                          audioController.state() == ChanState::Speaking;
+    if (displayOn && !speaking) {
       drawInitializeScreen(now);
     }
     audioController.update(now);
     updateSpeakingFaceStateAfterPlayback();
+    speechBubbleController.update(now);
     updateAffectionState(now);
+    if (displayOn && speaking) {
+      const unsigned long faceNow = millis();
+#if STACKCHAN_CLASSIC_FACE_ENABLED
+      faceController.setVoiceMouthLevel(classicMouthLevelFromPlaybackEnvelope(faceNow), faceNow);
+#else
+      faceController.setVoiceMouthLevel(voiceMouthLevelFromPlaybackPeak(faceNow), faceNow);
+#endif
+      faceController.update(faceNow);
+    }
+    updateInteractionMicPause();
     motionController.update(now);
     return;
   }
@@ -7494,23 +9209,29 @@ void loop() {
     if (settingsPage == SettingsPage::Power && now - lastInfoDrawMs >= 3000) {
       drawInfoScreen();
     }
+    unsigned long infoAudioStartedAt = millis();
     audioController.update(now);
+    noteVoicePerfAudioUpdate(diagSpeakingAtLoopStart,
+                             static_cast<uint32_t>(millis() - infoAudioStartedAt));
     updateSpeakingFaceStateAfterPlayback();
+    speechBubbleController.update(now);
     updateAffectionState(now);
     updateDeferredFaceState();
     updateDeferredFaceMode();
     updatePendingAffectionDelta();
     updatePetting(now);
+    updateInteractionMicPause();
     updateListeningNod(now);
     motionController.update(now);
     return;
   }
 
-#if FACE_DIAG_LOG_ENABLED
   unsigned long stepStartedAt = millis();
-#endif
   audioController.update(now);
+  noteVoicePerfAudioUpdate(diagSpeakingAtLoopStart,
+                           static_cast<uint32_t>(millis() - stepStartedAt));
   updateSpeakingFaceStateAfterPlayback();
+  speechBubbleController.update(now);
 #if FACE_DIAG_LOG_ENABLED
   logFaceDiagStep("audioController.update", stepStartedAt);
   stepStartedAt = millis();
@@ -7532,16 +9253,30 @@ void loop() {
 #if STACKCHAN_PET_ANIMATION_ENABLED
     petFaceAnimating = faceController.petAnimationActive();
 #endif
-    if (speaking || guruguruDizzyAnimating || petFaceAnimating || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
-      lastFaceUpdateMs = now;
-      faceController.update(now);
+    const bool voicePettingAnimating = faceController.voicePettingAnimationActive();
+    if (speaking || guruguruDizzyAnimating || petFaceAnimating || voicePettingAnimating || !deviceSettings.lowPowerMode || now - lastFaceUpdateMs >= LOW_POWER_FACE_UPDATE_INTERVAL_MS) {
+      const unsigned long faceNow = millis();
+      lastFaceUpdateMs = faceNow;
+      const unsigned long faceStartedAt = millis();
+      if (speaking) {
+#if STACKCHAN_CLASSIC_FACE_ENABLED
+        faceController.setVoiceMouthLevel(classicMouthLevelFromPlaybackEnvelope(faceNow), faceNow);
+#else
+        faceController.setVoiceMouthLevel(voiceMouthLevelFromPlaybackPeak(faceNow), faceNow);
+#endif
+      }
+      faceController.update(faceNow);
+      noteVoicePerfFaceUpdate(speaking,
+                              static_cast<uint32_t>(millis() - faceStartedAt),
+                              faceNow);
       drawLowPowerPrompt();
       drawStreetPassNotificationOverlay();
-#if STACKCHAN_DEVICE_STOPWATCH
       if (speaking) {
+        const unsigned long audioStartedAt = millis();
         audioController.update(millis());
+        noteVoicePerfAudioUpdate(diagSpeakingAtLoopStart,
+                                 static_cast<uint32_t>(millis() - audioStartedAt));
       }
-#endif
     }
 #if FACE_DIAG_LOG_ENABLED
   } else if (currentState == ChanState::Speaking || audioController.state() == ChanState::Speaking) {
@@ -7555,10 +9290,13 @@ void loop() {
 #endif
   }
   updatePetting(now);
+  updateInteractionMicPause();
   if (deviceSettings.lowPowerMode) {
     cancelListeningNod(false);
   } else {
     updateListeningNod(now);
   }
   motionController.update(now);
+  noteVoicePerfLoopDuration(diagSpeakingAtLoopStart,
+                            static_cast<uint32_t>(millis() - loopStartedAt));
 }

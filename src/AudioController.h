@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <freertos/semphr.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <M5Unified.h>
@@ -114,9 +115,12 @@ public:
   void setMicPacketSender(MicPacketSender sender, void* context);
   void setUsbSerialClientConnected(bool connected);
   void setState(ChanState state);
+  void stopForDisplayOff();
   ChanState state() const;
   bool isPlaybackDraining() const;
   bool hasPlaybackStarted() const;
+  bool pauseMicForInteraction(const char* reason);
+  void resumeMicAfterInteraction(bool wasPaused, const char* reason);
   bool pauseMicForCapture();
   void resumeMicAfterCapture(bool wasPaused);
   void deferNextSpeakerStartUntil(unsigned long timestampMs);
@@ -131,6 +135,14 @@ public:
   bool measureMicDiagnostic(uint32_t durationMs, MicDiagnosticResult& result, const MicDiagnosticConfig& config = MicDiagnosticConfig{});
   MicRuntimeStats micRuntimeStats() const;
   AudioPlaybackDiagnostic playbackDiagnostic() const;
+  int32_t playbackPeak() const;
+  unsigned long playbackPeakMs() const;
+  int32_t playbackEnvelope() const;
+  unsigned long playbackEnvelopeMs() const;
+  uint32_t playbackStreamId() const;
+  uint32_t playbackPcmReceivedBytes() const;
+  uint32_t playbackPcmAcceptedBytes() const;
+  uint32_t playbackPcmDequeuedBytes() const;
   void onBinaryReceived(uint8_t* payload, size_t length);
   void update(unsigned long now);
 
@@ -139,6 +151,9 @@ private:
   void enterListening();
   void enterSpeaking();
   void finishSpeakingPlayback();
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  void requestSpeakerPlaybackFinish();
+#endif
   void startMicInput();
   void stopMicInput(const char* reason);
   void noteMicPause(const char* reason);
@@ -147,6 +162,10 @@ private:
   bool hasMicClient() const;
   static void micCaptureTaskEntry(void* context);
   void micCaptureTaskLoop();
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  static void speakerPlaybackTaskEntry(void* context);
+  void speakerPlaybackTaskLoop();
+#endif
   bool enqueueMicPacket(const int16_t* samples, size_t sampleCount, unsigned long timestampMs, uint16_t flags);
   bool copyNextMicPacket(uint8_t* out);
   void clearMicPacketQueue();
@@ -169,6 +188,8 @@ private:
   size_t appendRxBytesWithPlaybackBackpressure(const uint8_t* data, size_t length);
 #endif
   bool readRxBytes(uint8_t* out, size_t length);
+  bool lockRx(TickType_t waitTicks = portMAX_DELAY) const;
+  void unlockRx() const;
 
   WebSocketServerController* wsServer_ = nullptr;
   MicPacketSender micPacketSender_ = nullptr;
@@ -178,10 +199,11 @@ private:
   bool micEnabled_ = false;
   bool micMuted_ = false;
   bool usbSerialClientConnected_ = false;
-  bool speakerEnabled_ = false;
-  bool speakerStartPending_ = false;
-  bool playbackStarted_ = false;
-  bool pendingIdleAfterPlayback_ = false;
+  volatile bool speakerEnabled_ = false;
+  volatile bool speakerStartPending_ = false;
+  volatile bool playbackStarted_ = false;
+  volatile bool playbackUnderflowActive_ = false;
+  volatile bool pendingIdleAfterPlayback_ = false;
   unsigned long idleDrainEmptySinceMs_ = 0;
   unsigned long speakerStartNotBeforeMs_ = 0;
   unsigned long micCaptureNotBeforeMs_ = 0;
@@ -249,6 +271,14 @@ private:
   uint32_t playbackDiagFinishQueuedChunks_ = 0;
   unsigned long playbackDiagLastPcmMs_ = 0;
   unsigned long playbackDiagLastFinishMs_ = 0;
+  volatile int32_t playbackPeak_ = 0;
+  volatile unsigned long playbackPeakMs_ = 0;
+  volatile int32_t playbackEnvelope_ = 0;
+  volatile unsigned long playbackEnvelopeMs_ = 0;
+  volatile uint32_t playbackStreamId_ = 0;
+  volatile uint32_t playbackPcmReceivedBytes_ = 0;
+  volatile uint32_t playbackPcmAcceptedBytes_ = 0;
+  volatile uint32_t playbackPcmDequeuedBytes_ = 0;
   int32_t micStatsPeak_ = 0;
   int32_t micRuntimeLastPeak_ = 0;
   unsigned long micRuntimeLastCaptureMs_ = 0;
@@ -275,6 +305,13 @@ private:
   uint8_t* rxRing_ = nullptr;
   uint8_t* micTxRing_ = nullptr;
   TaskHandle_t micCaptureTaskHandle_ = nullptr;
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  TaskHandle_t speakerPlaybackTaskHandle_ = nullptr;
+#endif
+  mutable SemaphoreHandle_t rxMutex_ = nullptr;
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  volatile bool speakerFinishPending_ = false;
+#endif
   portMUX_TYPE micMux_ = portMUX_INITIALIZER_UNLOCKED;
   volatile bool micCaptureActive_ = false;
   volatile bool micCaptureRecording_ = false;
