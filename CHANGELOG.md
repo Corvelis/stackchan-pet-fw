@@ -26,6 +26,7 @@
 - CoreS3 camera capture now uses 640x480 JPEG output with bounded USB/HTTP transfer chunks.
 - Display-off now ends audio/app sessions and suspends Wi-Fi, HTTP, WebSocket, and USB Serial; display-on starts Wi-Fi reconnection, while StreetPass BLE continues at a reduced rate.
 - Bundled runtime images, sprite-sheet samples, and image-generation references use the same MIT License as the firmware source.
+- The MIT grant for Ailog-created images does not relicense third-party images embedded in historical release binaries; those remain subject to their original release notices and material-provider terms.
 
 ### Fixed
 

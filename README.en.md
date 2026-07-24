@@ -738,3 +738,9 @@ character source material. The MIT License permits copying, modification,
 redistribution, sale, and commercial use. Redistributions of an image or a
 substantial portion of it must include the copyright and permission notices
 from `LICENSE`. Verify the rights and terms for any replacement images.
+
+This MIT grant does not relicense third-party images embedded in historical
+release binaries. A historical binary containing Tsukuyomi-chan images remains
+subject to the `THIRD_PARTY_NOTICES.md` bundled with that release and the
+original material provider's terms. Ailog's tracked original images from
+`0.3.0` onward use the MIT License; third-party images do not.

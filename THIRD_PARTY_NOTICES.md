@@ -82,6 +82,19 @@ locally prepared runtime images. Any third-party images are not covered by
 Ailog's MIT license grant. Users who install replacement images must follow
 the rights and terms for those images.
 
+## Historical Release Images
+
+The current MIT grant for Ailog-created image assets does not retroactively
+relicense third-party images embedded in historical firmware or factory
+binaries. A historical release containing Tsukuyomi-chan images remains
+subject to the notice bundled with that release and the original material
+provider's terms. Do not treat the current repository's MIT License as
+permission to extract, reuse, or redistribute those third-party images.
+
+The tracked image sets introduced in `0.3.0` and expanded in `v0.3.1` are
+Ailog-created images and use the MIT License, even though documentation in
+those tags retained obsolete references to the earlier development material.
+
 ## Firmware License
 
 The firmware source code and Ailog-created image assets in this repository use

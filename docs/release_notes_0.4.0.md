@@ -110,3 +110,6 @@ through `data_local*`, and replace assets only as a complete validated v2 set.
 - Reproducible release builds for all three normal and three classic targets.
 - Bundled runtime images, sprite-sheet samples, and image-generation references
   use the same [MIT License](../LICENSE) as the firmware source.
+- This MIT grant does not apply to third-party images in historical binaries
+  containing Tsukuyomi-chan material. Follow the notice bundled with that
+  release and the original material provider's terms.

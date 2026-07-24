@@ -60,4 +60,4 @@ python3 scripts/validate_face_assets.py
 bash scripts/build_release_bins.sh all
 ```
 
-変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。ファームウェアソースと同梱自作画像は、いずれも[MIT License](LICENSE)です。
+変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。ファームウェアソースと同梱自作画像は、いずれも[MIT License](LICENSE)です。つくよみちゃん画像を含む旧配布バイナリには現行MITを適用せず、そのリリースに付属する通知と素材提供元の規約に従ってください。

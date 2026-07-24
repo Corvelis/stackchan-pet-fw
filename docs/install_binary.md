@@ -81,6 +81,11 @@ Bundled runtime images, sprite-sheet samples, and image-generation references
 are available under the [`MIT License`](../LICENSE). When replacing them,
 verify the rights and terms for every character and source asset you use.
 
+The current MIT grant does not apply to third-party images in historical
+binaries containing Tsukuyomi-chan material. When using or redistributing an
+old release, follow its bundled `THIRD_PARTY_NOTICES.md` and the original
+material provider's terms.
+
 ## Wi-Fi Setup
 
 On first boot, or when Wi-Fi is not configured, the device starts a setup access point.
