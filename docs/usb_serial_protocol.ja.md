@@ -144,6 +144,10 @@ recommended chunk: 4096 bytes
 ファームウェアはプリバッファ到達後に再生を開始します。末尾で `idle` を送ると、
 短い残りバッファも drain して再生します。
 
+吹き出し対応機では、各文節PCMの直前にSCU1 type `0x01`で
+`display.speech_bubble.cue`を送れます。詳しい順序と制限は
+[発話吹き出しプロトコル v1](speech_bubble_protocol.ja.md)を参照してください。
+
 ## Microphone PCM
 
 本体が `listening` 状態で、マイク送信がミュートされていない場合、ファームウェアは
@@ -159,6 +163,18 @@ payload     signed 16-bit little-endian PCM
 ```
 
 `flags` bit 0 は stream segment start です。PCM は 16 kHz mono です。
+
+## 歩数JSON
+
+StopWatchではSCU1 type `0x01`で歩数スナップショットを要求できます。
+
+```json
+{"type":"steps.get","requestId":"steps-001"}
+```
+
+接続直後および要求時は`steps.snapshot`、歩数変化時は`steps.update`を返します。
+CoreS3／AtomS3Rは`steps.error`を返します。フィールド、日付区切り、通知間隔は
+[歩数カウンター／同期仕様](step_counter_protocol.ja.md)を参照してください。
 
 ## Capture
 
@@ -213,6 +229,26 @@ mic test:
 
 response には `peak`, `rms`, `dc`, `clipCount`, `chunks`, `underruns` などの測定値が入ります。
 HTTP では `/speaker-test` と `/mic-test` でも同じ用途の確認ができます。
+
+playback diagnostics:
+
+```json
+{"type":"audio.playback_diag","requestId":"playback-001"}
+```
+
+同じ`type`と`requestId`のresponseを返します。主なフィールドは次のとおりです。
+
+| フィールド群 | 内容 |
+| --- | --- |
+| `state`, `draining`, `playbackStarted`, `speakerEnabled` | 現在の再生状態 |
+| `rxAvailable`, `rxCapacity`, `maxBufferedBytes` | PCM受信バッファ使用量 |
+| `pcmFramesReceived`, `pcmBytesReceived`, `pcmBytesAccepted`, `pcmBytesDropped` | PCM受信・採用・破棄件数 |
+| `rxOverflowEvents`, `underflowResets`, `speakerQueueFullEvents`, `playRawFailEvents` | overflow、underflow、speaker queueの異常件数 |
+| `playbackPcmReceivedCursor`, `playbackPcmAcceptedCursor`, `playbackPcmDequeuedCursor` | 再生stream内の累積byte位置 |
+| `speechBubbleActive`, `speechBubbleVisible` | 吹き出しprotocol／表示状態 |
+| `voicePerf` | 発話中のloop、顔描画、音声、WebSocket／HTTP処理時間 |
+
+このコマンドは状態を変更せず、WebSocketとUSB Serialの両方で利用できます。
 
 ## 受信側の注意
 

@@ -115,7 +115,9 @@ GATT 失敗時は候補止まりで、履歴には保存しません。
 再開時は次回 scan を即時化します。
 通常ループでは WebSocket / HTTP / USB Serial の処理を StreetPass GATT より先に処理し、音声対話のコマンド処理を優先します。音声 busy 中に届いた GATT write は保存処理を後回しにします。
 
-画面 OFF 時は、画面更新やタッチ処理などを抑えつつ、通信・時刻同期・StreetPass・最低限のサーバ処理だけを動かします。
+画面 OFF 時はWi-Fi、HTTP、WebSocket、USB SerialとNTP時刻同期を停止します。StreetPass BLEは
+scan時間を短く、待機間隔を長くした低頻度スケジュールで継続します。画面 ON 後は通常の
+scan間隔へ戻し、Wi-Fi再接続後にNTP時刻同期を再開します。
 
 ## 本体保存
 

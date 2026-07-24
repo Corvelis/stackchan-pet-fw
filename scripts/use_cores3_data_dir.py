@@ -1,5 +1,6 @@
 from os.path import exists, isabs, isdir, join, normpath, splitext
 from shutil import copy2, copytree, rmtree, which
+import json
 import os
 import subprocess
 
@@ -54,6 +55,27 @@ for root, _, files in os.walk(generated_data_dir):
     for name in files:
         if name in (".DS_Store", ".gitkeep"):
             os.remove(join(root, name))
+
+manifest_path = join(generated_data_dir, "face_assets.json")
+manifest_v2 = False
+if exists(manifest_path):
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+        manifest_v2 = (
+            manifest.get("schemaVersion") == 2
+            and manifest.get("renderer") == "animated"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        manifest_v2 = False
+
+# A manifest-backed v2 directory is already target-specific and complete.
+# Legacy direction remapping removes every blink frame before rebuilding the
+# old 17/25-frame layouts, which would drop v2's center-only blink16.jpg.
+if manifest_v2:
+    print("[data] CoreS3 v2 manifest detected; using assets without legacy remapping")
+    env.Replace(PROJECT_DATA_DIR=generated_data_dir)
+    Return()
 
 def image_path_for(prefix, index):
     for ext in (".png", ".jpg", ".jpeg"):

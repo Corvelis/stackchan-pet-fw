@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "renderer": "animated",
+  "target": "atoms3r",
+  "canvas": {
+    "width": 128,
+    "height": 128
+  },
+  "assetCount": 65,
+  "groups": {
+    "base": {
+      "pattern": "base_m{mouth}_e{eye}.jpg",
+      "mouthFrames": 4,
+      "eyeFrames": 4
+    },
+    "pet": {
+      "pattern": "pet_anim_{index}.jpg",
+      "startIndex": 0,
+      "frameCount": 16
+    },
+    "direction": {
+      "pattern": "dir{index}.jpg",
+      "startIndex": 0,
+      "frameCount": 17,
+      "centerIndex": 16
+    },
+    "blink": {
+      "files": [
+        "blink16.jpg"
+      ]
+    },
+    "dizzy": {
+      "pattern": "dizzy_{index:02d}.jpg",
+      "startIndex": 1,
+      "frameCount": 15
+    }
+  },
+  "generatedBy": "scripts/promote_transition_face_assets.py"
+}

@@ -8,6 +8,11 @@ dist/
 .vscode/launch.json
 .vscode/ipch/
 .DS_Store
+.idea/
+.env
+.env.*
+!.env.example
+compile_commands.json
 __pycache__/
 *.pyc
 *.log
@@ -16,7 +21,6 @@ __pycache__/
 tools/**/.DS_Store
 tools/**/__pycache__/
 tools/**/*.pyc
-tools/face_image_builder/build_faces_from_sprite_sheet/models/*.onnx
 assets/.DS_Store
 assets/**/.DS_Store
 assets/
@@ -29,6 +33,8 @@ tools/face_image_builder/**/previews/
 data_local/
 data_stopwatch_local/
 data_atoms3r_local/
+legacy_face_assets_local/
+face_assets_v2_work/
 src/config_private.h
 src/idf_component.yml
 scripts/audit_face_assets.py

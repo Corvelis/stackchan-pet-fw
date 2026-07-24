@@ -11,5 +11,9 @@ public:
   void releaseBuffer(uint8_t* buffer);
 
 private:
+  bool prepareCameraPower();
+  bool restoreInternalI2c();
+
   bool ready_ = false;
+  bool internalI2cSuspended_ = false;
 };

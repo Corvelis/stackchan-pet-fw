@@ -14,10 +14,28 @@ GitHub Releases には、デバイスごとに次の firmware bin と factory im
 | StopWatch | `stackchan_stopwatch_firmware.bin` | `stackchan_stopwatch_factory.bin` |
 | AtomS3R Chatbot | `stackchan_atoms3r_firmware.bin` | `stackchan_atoms3r_factory.bin` |
 
+あわせて`SHA256SUMS`、`LICENSE`、`THIRD_PARTY_NOTICES.md`を
+ダウンロードしてください。バイナリと同じフォルダで次を実行すると、破損や取り違えを確認できます。
+
+```sh
+shasum -a 256 --ignore-missing -c SHA256SUMS
+```
+
+この例はダウンロードした対象機種のファイルだけを検証します。全assetを取得した場合は
+`--ignore-missing`を外すと、一覧の欠落も検出できます。
+
 | 種類 | 用途 |
 | --- | --- |
 | firmware bin | 既に導入済みの人向けの更新用です。Wi-Fi 設定、LittleFS 画像、CoreS3 のサーボ原点などを保持します。 |
 | factory image | 新しく入れる人向けです。bootloader、partition table、firmware、LittleFS 画像データを結合しています。 |
+
+GitHub Releaseの`firmware`／`factory`バイナリは画像顔です。クラシック顔は配布バイナリの
+実行時設定ではありません。利用する場合は、ソースから対象機種の`*-classic` envをビルド・
+書き込みしてください。詳細は[対応デバイス別ガイド](devices.ja.md#クラシック顔ビルド)を参照してください。
+
+顔画像v2導入後に旧バージョンへ戻す場合、firmware binだけを戻すと、旧firmwareが必要とする
+画像がLittleFSにない可能性があります。対象バージョンのfactory imageまたはLittleFSも同時に
+戻してください。更新方式ごとの詳細は [顔画像v2移行ガイド](face_asset_migration.ja.md) を参照してください。
 
 リリース作成時は、リポジトリ直下で次を実行すると同じファイル名の asset を `dist/` に生成できます。
 このコマンドは通常の画像フォルダを使って配布物を作るため、`STACKCHAN_FACE_DATA_DIR` は指定しません。
@@ -31,20 +49,16 @@ bash scripts/build_release_bins.sh all
 ## 注意事項
 
 - 対象デバイスと違うバイナリを書き込まないでください。
+- 顔画像v2導入後のダウングレードでは、旧firmwareと対応する旧LittleFSを組み合わせてください。
 - factory image を書き込むと、本体内に保存済みの Wi-Fi 設定、StreetPass 設定、CoreS3 のサーボ原点設定などは初期化されます。
 - ファームウェア単体では会話機能は動作しません。
 - 会話、音声認識、TTS、応答生成には、対応するスマホアプリ、WebSocket クライアント、または USB Serial クライアントが必要です。
 - StopWatch / AtomS3R Chatbot にはカメラとサーボがありません。`/capture`、`capture.request`、サーボ原点調整は使えません。
-- バイナリに含まれる画像を、素材として取り出して使うことは許可しません。
-- スクリーンショット、キャプチャ動画、紹介動画を投稿する場合は、このファームウェア/アプリを使用していることが分かる形で記載してください。
+- バイナリに含まれる同梱画像も、ファームウェアソースと同じMIT Licenseです。
+- 画像またはその実質的な部分を再配布する場合は、`LICENSE`の著作権表示と許諾表示を含めてください。
+- 発話吹き出しは、対応クライアントがTTS PCMと`display.speech_bubble.*`メッセージを送った場合に表示します。ファームウェア単体では字幕を生成しません。
 
-表記例:
-
-```text
-Stack-chan Multi-Device Controller 使用
-```
-
-## 画像とクレジット
+## 画像とライセンス
 
 GitHub Releases で配布する factory image には、リポジトリ通常フォルダの画像を含めます。
 通常フォルダは次の3つです。
@@ -58,12 +72,17 @@ data_atoms3r/
 `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/` はローカル差し替え用です。
 これらは Git 管理や GitHub Releases の配布物には含めません。
 
-ローカル差し替えでつくよみちゃん素材を使う場合は、フリー素材キャラクター「つくよみちゃん」
-（© Rei Yumesaki）と、使用する立ち絵素材の利用規約・クレジット表記ルールを確認してください。
-このリポジトリと通常配布バイナリには、つくよみちゃん素材そのものは含めません。
+自分のキャラクターへ差し替える場合は、[顔画像ビルダー](../tools/face_image_builder/README.md)の
+プロンプト、分割CLI、サンプル、3機種向け生成手順で完全なv2画像セットを作成・検証してから、
+対象機種の`data_local*`をLittleFSへ書き込んでください。
 
-- 利用規約: https://tyc.rei-yumesaki.net/about/terms/
-- クレジット表記: https://tyc.rei-yumesaki.net/about/terms/credit/
+通常配布画像、スプライトシートサンプル、画像生成用参考画像は[`MIT License`](../LICENSE)で
+利用できます。独自画像へ差し替える場合は、使用するキャラクターや素材の権利・利用規約を各自で
+確認してください。
+
+現行のMIT Licenseは、つくよみちゃん画像を含む旧配布バイナリの第三者画像には適用されません。
+旧配布物を利用・再配布する場合は、そのリリースに付属する`THIRD_PARTY_NOTICES.md`と素材提供元の
+利用規約を確認してください。
 
 ## Wi-Fi 設定
 
@@ -219,13 +238,14 @@ http://192.168.4.1/wifi
 共通:
 
 - `Network` では、現在の Wi-Fi モード、IP アドレス、WebSocket 接続先、Wi-Fi 設定用 QR を確認できます。
+- 画面をオフにするとWi-Fi、HTTP、WebSocket、USB Serialのアプリ接続を停止します。画面をオンにするとWi-Fi再接続を開始するため、会話クライアントも再接続してください。StreetPass BLEは低頻度で継続します。
 - Wi-Fi 未設定時は、対象デバイスの設定用 Wi-Fi を出します。スマホや PC をそこへ接続し、`http://192.168.4.1/wifi` を開くと Wi-Fi 設定ができます。
 - `Display` では、画面の明るさと画面オン/オフを変更できます。AtomS3R Chatbot には `Display` 画面はありません。
 - `Audio` では、スピーカー音量を変更できます。
 - `Pwr` では、バッテリー、温度、低電力モードを確認/変更できます。
 - 低電力モードをオンにすると、画面の最大輝度を抑え、待機中の表情更新を減らします。
   発話中の音声再生と口パクは継続します。
-- CoreS3 はマイク表示タップ、AtomS3R Chatbot は通常画面の BtnA ダブルクリックで、マイク送信のミュート/解除を操作できます。StopWatch には本体側のマイクミュート操作はありません。
+- CoreS3は右側、StopWatchは右下外周のマイク表示タップ、AtomS3R Chatbotは通常画面のBtnAダブルクリックで、マイク送信のミュート/解除を操作できます。
 
 通常/ボイス画面とぐるぐるモード:
 
@@ -254,8 +274,9 @@ StopWatch:
 - BtnB または電源ボタンで画面オン/オフを切り替えます。
 - ぐるぐる中は BtnB ダブルクリックでタッチ入力/IMU入力を切り替え、BtnB 長押しで IMU 基準姿勢をリセットします。
 - 通常画面中央付近のタッチ/ドラッグでなでなで反応を発生させます。
-- 設定画面は Network、Display、Audio、Power、StreetPass の順です。上部の `<` / `>` または左右フリックでページを切り替えます。
+- 設定画面は Network、Display、Audio、Power、Steps、StreetPass の順です。上部の `<` / `>` または左右フリックでページを切り替えます。
 - Display / Audio では `-` / `+` をタップして明るさや音量を 20 単位で調整します。
+- Stepsでは当日の歩数、午前4時のリセット、保存済みの日別履歴を確認できます。
 
 AtomS3R Chatbot:
 

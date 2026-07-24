@@ -148,6 +148,10 @@ Recommended sequence:
 Playback starts after the firmware prebuffer is reached. Sending `idle` at the
 end drains any remaining short buffer.
 
+On capable devices, an SCU1 type `0x01` `display.speech_bubble.cue` may precede
+each segment PCM. See [Speech Bubble Protocol v1](speech_bubble_protocol.md) for
+ordering and limits.
+
 ## Microphone PCM
 
 When the device is in `listening` state and mic streaming is not muted, the
@@ -164,6 +168,19 @@ payload     signed 16-bit little-endian PCM
 ```
 
 `flags` bit 0 marks the start of a stream segment. The PCM is 16 kHz mono.
+
+## Step JSON
+
+On StopWatch, request a step snapshot with an SCU1 type `0x01` frame:
+
+```json
+{"type":"steps.get","requestId":"steps-001"}
+```
+
+The device sends `steps.snapshot` just after connection and on request, then
+`steps.update` as the count changes. CoreS3 and AtomS3R return `steps.error`.
+See the [Step Counter And Sync Protocol](step_counter_protocol.md) for fields,
+day rollover, and update timing.
 
 ## Capture
 
@@ -222,6 +239,26 @@ Mic test:
 The response includes metrics such as `peak`, `rms`, `dc`, `clipCount`,
 `chunks`, and `underruns`. HTTP `/speaker-test` and `/mic-test` provide the same
 diagnostic entry points.
+
+Playback diagnostics:
+
+```json
+{"type":"audio.playback_diag","requestId":"playback-001"}
+```
+
+The response uses the same `type` and `requestId`. Its main field groups are:
+
+| Fields | Meaning |
+| --- | --- |
+| `state`, `draining`, `playbackStarted`, `speakerEnabled` | Current playback state |
+| `rxAvailable`, `rxCapacity`, `maxBufferedBytes` | PCM receive-buffer use |
+| `pcmFramesReceived`, `pcmBytesReceived`, `pcmBytesAccepted`, `pcmBytesDropped` | PCM received, accepted, and dropped |
+| `rxOverflowEvents`, `underflowResets`, `speakerQueueFullEvents`, `playRawFailEvents` | Overflow, underflow, and speaker-queue failures |
+| `playbackPcmReceivedCursor`, `playbackPcmAcceptedCursor`, `playbackPcmDequeuedCursor` | Cumulative byte positions in the playback stream |
+| `speechBubbleActive`, `speechBubbleVisible` | Bubble protocol and display state |
+| `voicePerf` | Loop, face, audio, WebSocket, and HTTP timing during speech |
+
+This read-only command is available over both WebSocket and USB Serial.
 
 ## Receiver Requirements
 

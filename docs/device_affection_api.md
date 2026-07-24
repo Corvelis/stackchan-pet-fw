@@ -56,15 +56,40 @@ Outbound JSON:
   "deviceId": "stackchan_8f3a21",
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "dev",
+  "firmwareVersion": "0.4.0",
   "protocolVersion": 2,
-  "capabilities": ["device.info", "affection.get", "affection.sync"]
+  "faceRenderer": "image",
+  "faceRendererMode": "animated",
+  "faceAssetSchema": 2,
+  "faceAssetManifestPresent": true,
+  "faceAssetManifestValid": true,
+  "legacyFaceFallbackActive": false,
+  "capabilities": ["device.info", "affection.get", "affection.sync", "display.speech_bubble.v1"],
+  "display": {"width": 320, "height": 240, "shape": "rect"},
+  "speechBubble": {
+    "version": 1,
+    "sampleRate": 16000,
+    "maxSequenceIdUtf8Bytes": 64,
+    "maxTextUtf8Bytes": 512,
+    "maxQueuedCues": 16,
+    "maxPcmBytes": 8388608,
+    "defaultHoldMs": 800,
+    "maxHoldMs": 5000,
+    "stallTimeoutMs": 15000,
+    "preSpeakingHoldMs": 500
+  }
 }
 ```
 
 `deviceId` is a stable ID generated on first boot and stored in NVS. It is not an
 IP address or a per-USB-connection temporary ID. If NVS storage fails, the
 firmware falls back to a stable ID derived from the eFuse MAC.
+`faceRendererMode` is the active `classic`, `animated`, `transition`, `legacy`,
+or `emergency` profile. Invalid manifests add `faceAssetError`, and missing
+frames also add `faceAssetMissing`. `display` and `speechBubble` let clients
+discover the screen geometry and cue limits from the connected device. On
+StopWatch, `capabilities` also contains `steps.sync`; see the
+[Step Counter And Sync Protocol](step_counter_protocol.md).
 
 ## Device-Owned State
 
@@ -95,7 +120,10 @@ device uptime from `millis()`; it is not a Unix timestamp. Use it for logs,
 debugging, and short-window `repeat` throttling, not for ordering across device
 restarts.
 
-Conversation style uses five levels, while face images use three visual tiers.
+Conversation style uses five levels. `visualTier` remains a three-level style
+classification for protocol compatibility, but the v2 renderer does not select
+separate static face images for each tier. The `legacy` fallback may still read
+this value for compatibility.
 
 | `levelIndex` | `level` | `styleId` | `visualTier` |
 | ---: | --- | --- | --- |

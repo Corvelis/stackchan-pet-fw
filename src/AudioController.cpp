@@ -238,6 +238,10 @@ bool configureAtomicVoiceMicCodec(const char*, const MicDiagnosticConfig* = null
 
 void AudioController::begin(WebSocketServerController* wsServer) {
   wsServer_ = wsServer;
+  rxMutex_ = xSemaphoreCreateMutex();
+  if (rxMutex_ == nullptr) {
+    Serial.println("[audio] failed to create rx mutex");
+  }
   rxCapacity_ = AUDIO_RX_RING_BYTES;
   rxRing_ = static_cast<uint8_t*>(heap_caps_malloc(rxCapacity_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (rxRing_ == nullptr) {
@@ -285,6 +289,19 @@ void AudioController::begin(WebSocketServerController* wsServer) {
   if (micCaptureTaskHandle_ == nullptr) {
     Serial.println("[audio] failed to start mic capture task");
   }
+
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  xTaskCreatePinnedToCore(AudioController::speakerPlaybackTaskEntry,
+                          "speaker_play",
+                          AUDIO_SPEAKER_PLAYBACK_TASK_STACK_WORDS,
+                          this,
+                          AUDIO_SPEAKER_PLAYBACK_TASK_PRIORITY,
+                          &speakerPlaybackTaskHandle_,
+                          AUDIO_SPEAKER_PLAYBACK_TASK_CORE);
+  if (speakerPlaybackTaskHandle_ == nullptr) {
+    Serial.println("[audio] failed to start speaker playback task");
+  }
+#endif
 }
 
 void AudioController::setMicPacketSender(MicPacketSender sender, void* context) {
@@ -329,6 +346,14 @@ void AudioController::setState(ChanState state) {
       enterSpeaking();
       break;
   }
+}
+
+void AudioController::stopForDisplayOff() {
+  state_ = ChanState::Idle;
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  speakerFinishPending_ = false;
+#endif
+  enterIdle();
 }
 
 ChanState AudioController::state() const {
@@ -377,23 +402,63 @@ AudioPlaybackDiagnostic AudioController::playbackDiagnostic() const {
   return diag;
 }
 
-bool AudioController::pauseMicForCapture() {
+int32_t AudioController::playbackPeak() const {
+  return playbackPeak_;
+}
+
+unsigned long AudioController::playbackPeakMs() const {
+  return playbackPeakMs_;
+}
+
+int32_t AudioController::playbackEnvelope() const {
+  return playbackEnvelope_;
+}
+
+unsigned long AudioController::playbackEnvelopeMs() const {
+  return playbackEnvelopeMs_;
+}
+
+uint32_t AudioController::playbackStreamId() const {
+  return playbackStreamId_;
+}
+
+uint32_t AudioController::playbackPcmReceivedBytes() const {
+  return playbackPcmReceivedBytes_;
+}
+
+uint32_t AudioController::playbackPcmAcceptedBytes() const {
+  return playbackPcmAcceptedBytes_;
+}
+
+uint32_t AudioController::playbackPcmDequeuedBytes() const {
+  return playbackPcmDequeuedBytes_;
+}
+
+bool AudioController::pauseMicForInteraction(const char* reason) {
   if (!micEnabled_) {
     return false;
   }
 
-  stopMicInput("camera capture");
-  Serial.println("[audio] mic paused for camera capture");
+  stopMicInput(reason == nullptr ? "interaction" : reason);
+  Serial.printf("[audio] mic paused for %s\n", reason == nullptr ? "interaction" : reason);
   return true;
 }
 
-void AudioController::resumeMicAfterCapture(bool wasPaused) {
+void AudioController::resumeMicAfterInteraction(bool wasPaused, const char* reason) {
   if (!wasPaused || state_ != ChanState::Listening || micEnabled_) {
     return;
   }
 
   startMicInput();
-  Serial.println("[audio] mic resumed after camera capture");
+  Serial.printf("[audio] mic resumed after %s\n", reason == nullptr ? "interaction" : reason);
+}
+
+bool AudioController::pauseMicForCapture() {
+  return pauseMicForInteraction("camera capture");
+}
+
+void AudioController::resumeMicAfterCapture(bool wasPaused) {
+  resumeMicAfterInteraction(wasPaused, "camera capture");
 }
 
 void AudioController::deferNextSpeakerStartUntil(unsigned long timestampMs) {
@@ -732,12 +797,14 @@ void AudioController::onBinaryReceived(uint8_t* payload, size_t length) {
   playbackDiagPcmFramesReceived_++;
   playbackDiagPcmBytesReceived_ += static_cast<uint32_t>(length);
   playbackDiagLastPcmMs_ = millis();
+  playbackPcmReceivedBytes_ += static_cast<uint32_t>(length);
 #if STACKCHAN_DEVICE_STOPWATCH
   size_t written = appendRxBytesWithPlaybackBackpressure(payload, length);
 #else
   size_t written = appendRxBytes(payload, length);
 #endif
   playbackDiagPcmBytesAccepted_ += static_cast<uint32_t>(written);
+  playbackPcmAcceptedBytes_ += static_cast<uint32_t>(written);
   if (rxAvailable() > playbackDiagMaxBufferedBytes_) {
     playbackDiagMaxBufferedBytes_ = rxAvailable();
   }
@@ -765,7 +832,16 @@ void AudioController::onBinaryReceived(uint8_t* payload, size_t length) {
 
 void AudioController::update(unsigned long now) {
   if (state_ == ChanState::Speaking) {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+    if (speakerFinishPending_) {
+      speakerFinishPending_ = false;
+      finishSpeakingPlayback();
+      return;
+    }
+    (void)now;
+#else
     updateSpeakerPlayback();
+#endif
   } else if (state_ == ChanState::Listening) {
     updateMicDiagnostics(now);
     updateMicSend();
@@ -773,6 +849,9 @@ void AudioController::update(unsigned long now) {
 }
 
 void AudioController::enterIdle() {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  speakerFinishPending_ = false;
+#endif
   if (micEnabled_) {
     stopMicInput("idle");
   }
@@ -786,6 +865,7 @@ void AudioController::enterIdle() {
   }
   speakerStartPending_ = false;
   playbackStarted_ = false;
+  playbackUnderflowActive_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
   speakerRxPacketCount_ = 0;
@@ -812,11 +892,25 @@ void AudioController::enterIdle() {
   playbackDiagFinishQueuedChunks_ = 0;
   playbackDiagLastPcmMs_ = 0;
   playbackDiagLastFinishMs_ = 0;
+  playbackPeak_ = 0;
+  playbackPeakMs_ = 0;
+  playbackEnvelope_ = 0;
+  playbackEnvelopeMs_ = 0;
+  ++playbackStreamId_;
+  if (playbackStreamId_ == 0) {
+    ++playbackStreamId_;
+  }
+  playbackPcmReceivedBytes_ = 0;
+  playbackPcmAcceptedBytes_ = 0;
+  playbackPcmDequeuedBytes_ = 0;
   clearRxRing();
   Serial.println("[audio] idle: mic off, speaker stopped");
 }
 
 void AudioController::enterListening() {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  speakerFinishPending_ = false;
+#endif
   if (speakerEnabled_) {
     M5.Speaker.stop(AUDIO_SPEAKER_CHANNEL);
     M5.Speaker.end();
@@ -827,8 +921,13 @@ void AudioController::enterListening() {
   }
   speakerStartPending_ = false;
   playbackStarted_ = false;
+  playbackUnderflowActive_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
+  playbackPeak_ = 0;
+  playbackPeakMs_ = 0;
+  playbackEnvelope_ = 0;
+  playbackEnvelopeMs_ = 0;
   speakerRxPacketCount_ = 0;
   speakerLastBufferLogBytes_ = 0;
   clearRxRing();
@@ -842,12 +941,16 @@ void AudioController::enterListening() {
 }
 
 void AudioController::enterSpeaking() {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  speakerFinishPending_ = false;
+#endif
   if (micEnabled_) {
     Serial.println("[audio] stopping mic before speaker start");
     stopMicInput("speaker start");
   }
 
   playbackStarted_ = false;
+  playbackUnderflowActive_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
   speakerRxPacketCount_ = 0;
@@ -874,6 +977,17 @@ void AudioController::enterSpeaking() {
   playbackDiagFinishQueuedChunks_ = 0;
   playbackDiagLastPcmMs_ = 0;
   playbackDiagLastFinishMs_ = 0;
+  playbackPeak_ = 0;
+  playbackPeakMs_ = 0;
+  playbackEnvelope_ = 0;
+  playbackEnvelopeMs_ = 0;
+  ++playbackStreamId_;
+  if (playbackStreamId_ == 0) {
+    ++playbackStreamId_;
+  }
+  playbackPcmReceivedBytes_ = 0;
+  playbackPcmAcceptedBytes_ = 0;
+  playbackPcmDequeuedBytes_ = 0;
   clearRxRing();
 
   const unsigned long now = millis();
@@ -909,6 +1023,7 @@ void AudioController::startSpeakerIfDue() {
     M5.Speaker.setVolume(volume_);
     M5.Speaker.setChannelVolume(AUDIO_SPEAKER_CHANNEL, 255);
     playbackStarted_ = false;
+    playbackUnderflowActive_ = false;
     idleDrainEmptySinceMs_ = 0;
     Serial.println("[audio] speaking: speaker on");
   } else {
@@ -1072,6 +1187,29 @@ void AudioController::micCaptureTaskEntry(void* context) {
   }
   vTaskDelete(nullptr);
 }
+
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+void AudioController::speakerPlaybackTaskEntry(void* context) {
+  auto* controller = static_cast<AudioController*>(context);
+  if (controller != nullptr) {
+    controller->speakerPlaybackTaskLoop();
+  }
+  vTaskDelete(nullptr);
+}
+
+void AudioController::speakerPlaybackTaskLoop() {
+  for (;;) {
+    if (state_ == ChanState::Speaking || speakerStartPending_ || speakerEnabled_) {
+      if (!speakerFinishPending_) {
+        updateSpeakerPlayback();
+      }
+      vTaskDelay(pdMS_TO_TICKS(1));
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+  }
+}
+#endif
 
 void AudioController::micCaptureTaskLoop() {
   int16_t captureBuffer[AUDIO_CHUNK_SAMPLES] = {};
@@ -1484,6 +1622,11 @@ void AudioController::updateMicDiagnostics(unsigned long now) {
 }
 
 void AudioController::updateSpeakerPlayback() {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+  if (speakerFinishPending_) {
+    return;
+  }
+#endif
   if (speakerStartPending_) {
     startSpeakerIfDue();
   }
@@ -1505,6 +1648,7 @@ void AudioController::updateSpeakerPlayback() {
 #endif
     if (rxAvailable() >= AUDIO_PLAYBACK_PREBUFFER_BYTES || (pendingIdleAfterPlayback_ && rxAvailable() > 0)) {
       playbackStarted_ = true;
+      playbackUnderflowActive_ = false;
       playbackDiagStarts_++;
       Serial.printf("TTS prebuffer ready threshold=%u buffered=%u\n",
                     static_cast<unsigned>(AUDIO_PLAYBACK_PREBUFFER_BYTES),
@@ -1518,7 +1662,11 @@ void AudioController::updateSpeakerPlayback() {
         return;
       }
       if (now - idleDrainEmptySinceMs_ >= AUDIO_IDLE_DRAIN_GRACE_MS) {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+        requestSpeakerPlaybackFinish();
+#else
         finishSpeakingPlayback();
+#endif
       }
       return;
     } else {
@@ -1534,7 +1682,9 @@ void AudioController::updateSpeakerPlayback() {
     if (!readRxBytes(reinterpret_cast<uint8_t*>(buffer), AUDIO_PLAYBACK_CHUNK_BYTES)) {
       break;
     }
+    playbackPcmDequeuedBytes_ += AUDIO_PLAYBACK_CHUNK_BYTES;
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+    playbackUnderflowActive_ = false;
 #if VERBOSE_LOG_ENABLED
     Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
 #endif
@@ -1548,7 +1698,9 @@ void AudioController::updateSpeakerPlayback() {
     const size_t remaining = rxAvailable();
     memset(buffer, 0, AUDIO_PLAYBACK_CHUNK_BYTES);
     readRxBytes(reinterpret_cast<uint8_t*>(buffer), remaining);
+    playbackPcmDequeuedBytes_ += static_cast<uint32_t>(remaining);
     playPcmChunk(buffer, AUDIO_PLAYBACK_CHUNK_SAMPLES);
+    playbackUnderflowActive_ = false;
 #if VERBOSE_LOG_ENABLED
     Serial.printf("I2S write bytes=%u\n", static_cast<unsigned>(AUDIO_PLAYBACK_CHUNK_BYTES));
 #endif
@@ -1561,15 +1713,21 @@ void AudioController::updateSpeakerPlayback() {
       return;
     }
     if (now - idleDrainEmptySinceMs_ >= AUDIO_IDLE_DRAIN_GRACE_MS) {
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+      requestSpeakerPlaybackFinish();
+#else
       finishSpeakingPlayback();
+#endif
     }
     return;
   }
 
   if (!pendingIdleAfterPlayback_ && rxAvailable() < AUDIO_PLAYBACK_CHUNK_BYTES && M5.Speaker.isPlaying(AUDIO_SPEAKER_CHANNEL) == 0) {
-    playbackDiagUnderflowResets_++;
-    playbackDiagLastUnderflowBufferedBytes_ = rxAvailable();
-    playbackStarted_ = false;
+    if (!playbackUnderflowActive_) {
+      playbackUnderflowActive_ = true;
+      playbackDiagUnderflowResets_++;
+      playbackDiagLastUnderflowBufferedBytes_ = rxAvailable();
+    }
   }
 }
 
@@ -1586,12 +1744,23 @@ void AudioController::finishSpeakingPlayback() {
   speakerEnabled_ = false;
   speakerStartPending_ = false;
   playbackStarted_ = false;
+  playbackUnderflowActive_ = false;
   pendingIdleAfterPlayback_ = false;
   idleDrainEmptySinceMs_ = 0;
   clearRxRing();
+  playbackPeak_ = 0;
+  playbackPeakMs_ = 0;
+  playbackEnvelope_ = 0;
+  playbackEnvelopeMs_ = 0;
   state_ = ChanState::Idle;
   Serial.println("[audio] playback drained; speaker stopped");
 }
+
+#if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
+void AudioController::requestSpeakerPlaybackFinish() {
+  speakerFinishPending_ = true;
+}
+#endif
 
 void AudioController::playPcmChunk(const int16_t* samples, size_t sampleCount) {
   if (sampleCount == 0) {
@@ -1604,12 +1773,39 @@ void AudioController::playPcmChunk(const int16_t* samples, size_t sampleCount) {
     return;
   }
 
+  int32_t peak = 0;
+  uint64_t absoluteSum = 0;
+  for (size_t i = 0; i < sampleCount; ++i) {
+    const int16_t sample = samples[i];
+    const int32_t absSample = sample == INT16_MIN ? 32768 : abs(sample);
+    absoluteSum += static_cast<uint32_t>(absSample);
+    if (absSample > peak) {
+      peak = absSample;
+    }
+  }
+  const int32_t envelope = static_cast<int32_t>(absoluteSum / sampleCount);
+  const unsigned long levelNow = millis();
+  playbackPeak_ = peak;
+  playbackPeakMs_ = levelNow;
+  playbackEnvelope_ = envelope;
+  playbackEnvelopeMs_ = levelNow;
+
   int16_t* buffer = speakerBuffers_[speakerBufferIndex_];
   memcpy(buffer, samples, sampleCount * sizeof(int16_t));
   speakerBufferIndex_ = (speakerBufferIndex_ + 1) % AUDIO_SPEAKER_BUFFER_COUNT;
 
   const unsigned long playRawStartedAt = millis();
   const bool ok = M5.Speaker.playRaw(buffer, sampleCount, AUDIO_SAMPLE_RATE, false, 1, AUDIO_SPEAKER_CHANNEL, false);
+#if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
+  Serial.printf("[lip.audio] t=%lu samples=%u envelope=%ld peak=%ld playRaw=%d queued=%u rx=%u\n",
+                levelNow,
+                static_cast<unsigned>(sampleCount),
+                static_cast<long>(envelope),
+                static_cast<long>(peak),
+                ok ? 1 : 0,
+                static_cast<unsigned>(M5.Speaker.isPlaying(AUDIO_SPEAKER_CHANNEL)),
+                static_cast<unsigned>(rxAvailable()));
+#endif
 #if STACKCHAN_DEVICE_STOPWATCH && USB_SERIAL_TTS_DIAG_LOG_ENABLED
   const unsigned long playRawElapsedMs = millis() - playRawStartedAt;
   if (playRawElapsedMs > 20) {
@@ -1675,17 +1871,31 @@ void AudioController::resetMicBuffers() {
 }
 
 void AudioController::clearRxRing() {
+  if (!lockRx()) {
+    return;
+  }
   rxReadIndex_ = 0;
   rxWriteIndex_ = 0;
   rxSize_ = 0;
+  unlockRx();
 }
 
 size_t AudioController::rxAvailable() const {
-  return rxSize_;
+  if (!lockRx()) {
+    return 0;
+  }
+  const size_t available = rxSize_;
+  unlockRx();
+  return available;
 }
 
 size_t AudioController::rxFree() const {
-  return rxCapacity_ - rxSize_;
+  if (!lockRx()) {
+    return 0;
+  }
+  const size_t freeBytes = rxCapacity_ - rxSize_;
+  unlockRx();
+  return freeBytes;
 }
 
 size_t AudioController::rxCapacity() const {
@@ -1696,8 +1906,11 @@ size_t AudioController::appendRxBytes(const uint8_t* data, size_t length) {
   if (rxRing_ == nullptr || rxCapacity_ == 0) {
     return 0;
   }
+  if (!lockRx()) {
+    return 0;
+  }
 
-  const size_t writable = min(length, rxFree());
+  const size_t writable = min(length, rxCapacity_ - rxSize_);
   size_t copied = 0;
   while (copied < writable) {
     const size_t contiguous = min(writable - copied, rxCapacity_ - rxWriteIndex_);
@@ -1706,6 +1919,7 @@ size_t AudioController::appendRxBytes(const uint8_t* data, size_t length) {
     copied += contiguous;
   }
   rxSize_ += writable;
+  unlockRx();
   return writable;
 }
 
@@ -1729,8 +1943,6 @@ size_t AudioController::appendRxBytesWithPlaybackBackpressure(const uint8_t* dat
       break;
     }
 
-    updateSpeakerPlayback();
-
     const unsigned long now = millis();
     if (now - lastProgressMs >= AUDIO_RX_BACKPRESSURE_TIMEOUT_MS) {
       break;
@@ -1742,7 +1954,14 @@ size_t AudioController::appendRxBytesWithPlaybackBackpressure(const uint8_t* dat
 #endif
 
 bool AudioController::readRxBytes(uint8_t* out, size_t length) {
-  if (rxRing_ == nullptr || rxAvailable() < length) {
+  if (rxRing_ == nullptr) {
+    return false;
+  }
+  if (!lockRx()) {
+    return false;
+  }
+  if (rxSize_ < length) {
+    unlockRx();
     return false;
   }
 
@@ -1754,5 +1973,16 @@ bool AudioController::readRxBytes(uint8_t* out, size_t length) {
     copied += contiguous;
   }
   rxSize_ -= length;
+  unlockRx();
   return true;
+}
+
+bool AudioController::lockRx(TickType_t waitTicks) const {
+  return rxMutex_ == nullptr || xSemaphoreTake(rxMutex_, waitTicks) == pdTRUE;
+}
+
+void AudioController::unlockRx() const {
+  if (rxMutex_ != nullptr) {
+    xSemaphoreGive(rxMutex_);
+  }
 }

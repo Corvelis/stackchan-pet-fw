@@ -19,7 +19,12 @@ void MotionController::begin() {
 #if STACKCHAN_HAS_SERVO
   if (servoOutputEnabled_) {
     M5StackChan.Motion.setAutoAngleSyncEnabled(true);
-    Serial.printf("[motion] StackChan serial servo output enabled after %u ms\n", SERVO_STARTUP_OUTPUT_DELAY_MS);
+    // The BSP has already initialized the serial servos before this controller
+    // starts. Read and adopt their physical pose now; this arms later user
+    // interactions without sending a startup movement command.
+    servoOutputStarted_ = true;
+    syncCurrentPoseFromServos();
+    Serial.println("[motion] StackChan serial servo ready at current pose");
   } else {
     Serial.println("[motion] servo output disabled");
   }
@@ -57,20 +62,59 @@ void MotionController::setMotion(const char* name) {
 }
 
 void MotionController::setTargetPose(int pan, int tilt) {
+  if (movementPaused_) {
+    return;
+  }
   targetPose_ = {clampPan(pan), clampTilt(tilt)};
   logPose("target", targetPose_);
 }
 
 void MotionController::setImmediatePose(int pan, int tilt) {
-  currentPose_ = {clampPan(pan), clampTilt(tilt)};
-  targetPose_ = currentPose_;
-  writeServoPose(currentPose_);
-  logPose("immediate", currentPose_);
+  if (movementPaused_) {
+    return;
+  }
+  targetPose_ = {clampPan(pan), clampTilt(tilt)};
+  if (!servoOutputStarted_) {
+    currentPose_ = targetPose_;
+  }
+  logPose("immediate target", targetPose_);
 }
 
-void MotionController::holdCurrentPose() {
+void MotionController::deferOutputUntil(unsigned long readyMs) {
+  if (static_cast<int32_t>(readyMs - outputDeferredUntilMs_) > 0) {
+    outputDeferredUntilMs_ = readyMs;
+  }
+}
+
+void MotionController::setMovementPaused(bool paused) {
+  if (movementPaused_ == paused) {
+    return;
+  }
+
+  movementPaused_ = paused;
+  if (!paused) {
+    Serial.println("[motion] movement resumed");
+    return;
+  }
+
+#if STACKCHAN_HAS_SERVO
+  if (servoOutputEnabled_ && servoOutputStarted_) {
+    // The logical pose is only updated after a complete axis movement. Stop at
+    // the physical angle instead so an in-flight interaction cannot continue
+    // into speech playback or snap back to the last completed target.
+    if (M5StackChan.Motion.isMoving()) {
+      M5StackChan.Motion.stop();
+    }
+    const auto angles = M5StackChan.Motion.getCurrentAngles();
+    currentPose_ = fromStackChanAngles(angles.x, angles.y);
+  }
+#endif
   targetPose_ = currentPose_;
-  logPose("hold", currentPose_);
+  activeServoAxis_ = ServoAxis::None;
+  nextServoAxisStartMs_ = 0;
+  outputDeferredUntilMs_ = 0;
+  logPose("paused", currentPose_);
+  Serial.println("[motion] movement paused and held");
 }
 
 void MotionController::saveCurrentPoseAsHome() {
@@ -85,8 +129,8 @@ void MotionController::saveCurrentPoseAsHome() {
   saveCalibration();
   currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
   targetPose_ = currentPose_;
+  activeServoAxis_ = ServoAxis::None;
   disableAutoAngleSyncAfterFirstMove_ = true;
-  writeServoPose(currentPose_);
   Serial.printf("[motion] saved servo home offset yaw=%d pitch=%d\n", yawOffset_, pitchOffset_);
 #else
   Serial.println("[motion] servo home save ignored; servo unavailable");
@@ -94,14 +138,18 @@ void MotionController::saveCurrentPoseAsHome() {
 }
 
 void MotionController::moveToSavedHome() {
-  currentPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
-  targetPose_ = currentPose_;
+  if (movementPaused_) {
+    return;
+  }
+  targetPose_ = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
   disableAutoAngleSyncAfterFirstMove_ = true;
-  writeServoPose(currentPose_);
-  logPose("saved home", currentPose_);
+  logPose("saved home target", targetPose_);
 }
 
 void MotionController::update(unsigned long now) {
+  if (movementPaused_) {
+    return;
+  }
   if (now - lastUpdateMs_ < SERVO_UPDATE_INTERVAL_MS) {
     return;
   }
@@ -117,18 +165,94 @@ void MotionController::update(unsigned long now) {
     return;
   }
 
-  Pose next = {
-    approach(currentPose_.pan, targetPose_.pan),
-    approach(currentPose_.tilt, targetPose_.tilt),
-  };
-
-  if (next.pan == currentPose_.pan && next.tilt == currentPose_.tilt) {
+  if (activeServoAxis_ != ServoAxis::None) {
+    if (activeServoAxisMoving()) {
+      return;
+    }
+    finishActiveServoAxis();
+    nextServoAxisStartMs_ = now + SERVO_AXIS_SETTLE_MS;
     return;
   }
 
-  currentPose_ = next;
-  writeServoPose(currentPose_);
-  logPose("current", currentPose_);
+  if (outputDeferredUntilMs_ != 0 &&
+      static_cast<int32_t>(now - outputDeferredUntilMs_) < 0) {
+    return;
+  }
+  outputDeferredUntilMs_ = 0;
+
+  if (nextServoAxisStartMs_ != 0 &&
+      static_cast<int32_t>(now - nextServoAxisStartMs_) < 0) {
+    return;
+  }
+  nextServoAxisStartMs_ = 0;
+
+  const bool panChanged = targetPose_.pan != currentPose_.pan;
+  const bool tiltChanged = targetPose_.tilt != currentPose_.tilt;
+  if (!panChanged && !tiltChanged) {
+    return;
+  }
+
+  // Starting both servos in the same 20 ms BSP update produces a supply-current
+  // spike on Stack-chan. On CoreS3 that spike can reset USB and leave the Wi-Fi
+  // interface stale. Run one complete axis movement at a time; newer targets
+  // remain queued in targetPose_ and are picked up when the active axis rests.
+  ServoAxis nextAxis = ServoAxis::None;
+  if (panChanged && tiltChanged) {
+    nextAxis = preferPanNext_ ? ServoAxis::Pan : ServoAxis::Tilt;
+    preferPanNext_ = !preferPanNext_;
+  } else {
+    nextAxis = panChanged ? ServoAxis::Pan : ServoAxis::Tilt;
+  }
+  startServoAxis(nextAxis,
+                 nextAxis == ServoAxis::Pan ? targetPose_.pan : targetPose_.tilt);
+}
+
+bool MotionController::readyForInteractionTarget(unsigned long now) const {
+#if STACKCHAN_HAS_SERVO
+  if (movementPaused_ || !servoOutputEnabled_ || !servoOutputStarted_) {
+    return false;
+  }
+  if (activeServoAxis_ != ServoAxis::None ||
+      currentPose_.pan != targetPose_.pan ||
+      currentPose_.tilt != targetPose_.tilt) {
+    return false;
+  }
+  if (nextServoAxisStartMs_ != 0 &&
+      static_cast<int32_t>(now - nextServoAxisStartMs_) < 0) {
+    return false;
+  }
+  if (outputDeferredUntilMs_ != 0 &&
+      static_cast<int32_t>(now - outputDeferredUntilMs_) < 0) {
+    return false;
+  }
+#else
+  (void)now;
+#endif
+  return true;
+}
+
+bool MotionController::servoMotionActive(unsigned long now) const {
+#if STACKCHAN_HAS_SERVO
+  if (movementPaused_ || !servoOutputEnabled_ || !servoOutputStarted_) {
+    return false;
+  }
+  if (activeServoAxis_ != ServoAxis::None ||
+      currentPose_.pan != targetPose_.pan ||
+      currentPose_.tilt != targetPose_.tilt) {
+    return true;
+  }
+  if (nextServoAxisStartMs_ != 0 &&
+      static_cast<int32_t>(now - nextServoAxisStartMs_) < 0) {
+    return true;
+  }
+  if (outputDeferredUntilMs_ != 0 &&
+      static_cast<int32_t>(now - outputDeferredUntilMs_) < 0) {
+    return true;
+  }
+#else
+  (void)now;
+#endif
+  return false;
 }
 
 Pose MotionController::currentPose() const {
@@ -153,16 +277,6 @@ int MotionController::clampPan(int pan) const {
 
 int MotionController::clampTilt(int tilt) const {
   return constrain(tilt, SERVO_TILT_MIN, SERVO_TILT_MAX);
-}
-
-int MotionController::approach(int current, int target) const {
-  if (current < target) {
-    return min(current + SERVO_STEP_DEGREES, target);
-  }
-  if (current > target) {
-    return max(current - SERVO_STEP_DEGREES, target);
-  }
-  return current;
 }
 
 void MotionController::loadCalibration() {
@@ -226,7 +340,13 @@ void MotionController::syncCurrentPoseFromServos() {
   const auto angles = M5StackChan.Motion.getCurrentAngles();
   if (physicalAnglesLookValid(angles.x, angles.y)) {
     currentPose_ = fromStackChanAngles(angles.x, angles.y);
+    // Startup must never turn the default logical center into an unsolicited
+    // physical movement. Adopt the position in which the device was powered on
+    // as both the current and target pose; later app/interaction commands may
+    // move from here normally.
+    targetPose_ = currentPose_;
     Serial.printf("[motion] startup pose sync yaw=%d pitch=%d\n", angles.x, angles.y);
+    Serial.println("[motion] startup pose adopted without movement");
     logPose("startup physical", currentPose_);
   } else {
     Serial.printf("[motion] startup pose sync ignored yaw=%d pitch=%d\n", angles.x, angles.y);
@@ -236,21 +356,48 @@ void MotionController::syncCurrentPoseFromServos() {
 #endif
 }
 
-void MotionController::writeServoPose(const Pose& pose) {
+bool MotionController::activeServoAxisMoving() const {
 #if STACKCHAN_HAS_SERVO
-  if (!servoOutputReady(millis())) {
+  if (activeServoAxis_ == ServoAxis::Pan) {
+    return M5StackChan.Motion.isYawMoving();
+  }
+  if (activeServoAxis_ == ServoAxis::Tilt) {
+    return M5StackChan.Motion.isPitchMoving();
+  }
+#endif
+  return false;
+}
+
+void MotionController::finishActiveServoAxis() {
+  if (activeServoAxis_ == ServoAxis::Pan) {
+    currentPose_.pan = activeServoAxisTarget_;
+  } else if (activeServoAxis_ == ServoAxis::Tilt) {
+    currentPose_.tilt = activeServoAxisTarget_;
+  }
+  activeServoAxis_ = ServoAxis::None;
+  logPose("current", currentPose_);
+}
+
+void MotionController::startServoAxis(ServoAxis axis, int logicalAngle) {
+#if STACKCHAN_HAS_SERVO
+  if (!servoOutputReady(millis()) || axis == ServoAxis::None) {
     return;
   }
 
-  const int yaw = toStackChanYaw(pose.pan);
-  const int pitch = toStackChanPitch(pose.tilt);
-  M5StackChan.Motion.move(yaw, pitch, SERVO_OUTPUT_SPEED);
+  activeServoAxis_ = axis;
+  activeServoAxisTarget_ = logicalAngle;
+  if (axis == ServoAxis::Pan) {
+    M5StackChan.Motion.moveYaw(toStackChanYaw(logicalAngle), SERVO_OUTPUT_SPEED);
+  } else {
+    M5StackChan.Motion.movePitch(toStackChanPitch(logicalAngle), SERVO_OUTPUT_SPEED);
+  }
   if (disableAutoAngleSyncAfterFirstMove_) {
     M5StackChan.Motion.setAutoAngleSyncEnabled(false);
     disableAutoAngleSyncAfterFirstMove_ = false;
   }
 #else
-  (void)pose;
+  (void)axis;
+  (void)logicalAngle;
 #endif
 }
 

@@ -14,6 +14,43 @@ USB Serial APIs are documented in the README and API reference files.
 
 The setup Wi-Fi password is device-specific. The setup page is `http://192.168.4.1/wifi`.
 
+## Classic Face Builds
+
+The firmware can render the classic Stack-chan face procedurally as white eyes
+and a mouth on a black background instead of loading character face images.
+The existing environments continue to use image faces.
+
+| Device | Classic face env |
+| --- | --- |
+| CoreS3 + Stack-chan | `m5stack-cores3-classic` |
+| M5Stack StopWatch | `m5stack-stopwatch-classic` |
+| M5Stack AtomS3R Chatbot | `m5stack-atoms3r-chatbot-classic` |
+
+For example, build or upload the CoreS3 variant with:
+
+```sh
+pio run -e m5stack-cores3-classic
+pio run -e m5stack-cores3-classic -t upload
+```
+
+Classic mode uses display-specific face proportions, blinks, and drives an 8-step
+mouth animation at about 6 fps from the PCM mean amplitude. CoreS3 retains its
+320 x 240 layout. StopWatch uses the round square canvas while keeping the mouth
+above the lower speech bubble, and AtomS3R places the eyes below its top bubble
+with thicker features that remain legible at 128 x 128. Speech bubbles and
+connection-status overlays remain available. Image-specific petting, guruguru, and dizzy-face
+animations and guruguru controls are disabled. Petting still updates affection;
+audio playback, CoreS3 servo motion, and other non-face features continue to work.
+
+It uses the existing M5GFX renderer and adds no Avatar library dependency.
+Clients can distinguish the build through `device.info.faceRenderer`, whose value
+is `classic` or `image`.
+Image builds select `animated`, `transition`, `legacy`, or `emergency` at boot.
+Inspect the active profile in `faceRendererMode`, its schema in `faceAssetSchema`,
+and manifest status in `faceAssetManifestPresent` / `faceAssetManifestValid`.
+`legacyFaceFallbackActive` is true only for the five-file fallback. The existing
+`faceRenderer` field remains for compatibility. See `docs/face_renderer_v2.md`.
+
 ## Feature Differences
 
 | Feature | CoreS3 | StopWatch | AtomS3R Chatbot |
@@ -34,6 +71,7 @@ The setup Wi-Fi password is device-specific. The setup page is `http://192.168.4
 | Guruguru dizzy animation | yes | yes | yes |
 | Haptic feedback | no | yes | no |
 | Clock display | no | yes | no |
+| Step counter / 30-day history | no | yes | no |
 | StreetPass | yes | yes | yes |
 
 `motion` and `pose` commands are accepted on devices without servos, but no
@@ -45,8 +83,9 @@ Implementation differences:
 - CoreS3 builds with `STACKCHAN_HAS_SERVO=1`, `STACKCHAN_HAS_CAMERA=1`, and `STACKCHAN_HAS_BACK_TOUCH=1`, so it uses servo motion, camera capture, and the Stack-chan back touch sensor.
 - StopWatch builds with `STACKCHAN_ROUND_DISPLAY=1`, `STACKCHAN_HAS_SCREEN_TOUCH_PETTING=1`, and `STACKCHAN_HAS_HAPTIC=1`, so it uses the round UI, screen-touch petting, haptics, and clock display.
 - AtomS3R Chatbot builds with `STACKCHAN_SMALL_DISPLAY=1` and `STACKCHAN_HAS_ATOMIC_ECHO_BASE=1`, so it uses BtnA-only controls and Atomic Echo Base audio.
-- Petting display uses `pet_anim_0..pet_anim_8` on all three targets. Only the physical trigger differs: CoreS3 uses back touch, StopWatch uses center screen touch/drag, and AtomS3R uses BtnA hold.
-- Guruguru display uses `dir*`, `blink*`, and `dizzy_*` assets on all three targets. CoreS3 and AtomS3R use 16 directions plus center. StopWatch uses 8 directions plus center at runtime. The image directories still keep `dir0..dir16` and `blink0..blink16` for StopWatch so the asset pipeline stays unified.
+- StopWatch counts steps from its IMU, rolls activity days over at 04:00 Japan Standard Time, and stores up to 30 days including today. See the [Step Counter And Sync Protocol](step_counter_protocol.md).
+- Petting display uses `pet_anim_0..pet_anim_15` on all three targets. Only the physical trigger differs: CoreS3 uses back touch, StopWatch uses center screen touch/drag, and AtomS3R uses BtnA hold.
+- Guruguru display uses `dir*`, `blink*`, and `dizzy_*` assets on all three targets. CoreS3 and AtomS3R use `dir0..16` with center frame `blink16`; StopWatch uses the reduced `dir0..8` set with center frame `blink8`.
 - Guruguru dizzy spin thresholds are target-specific. CoreS3 uses 32 total steps and 24 biased steps in a 2-second window. StopWatch uses 16 total steps and 12 biased steps. AtomS3R uses 22 total steps and 4 biased steps, and also triggers dizzy when irregular IMU shake changes of at least 0.40G continue for 900ms.
 - Image files live in LittleFS as JPGs. At runtime, guruguru direction, blink, and dizzy frames are cached under `STACKCHAN_GURUGURU_CANVAS_CACHE_ENABLED` with `M5Canvas`. The canvases call `setPsram(true)`, so they prefer PSRAM allocation.
 
@@ -59,8 +98,13 @@ settings screen is visible, or while the display is off.
 | Device | Normal/voice screen | Guruguru face mode | Settings screens |
 | --- | --- | --- | --- |
 | CoreS3 + Stack-chan | Power short-press toggles display. Power double-click turns guruguru on. Back touch triggers petting. Edge flick opens settings | Power double-click turns guruguru off. Triple-click or more switches touch/IMU input. Touch input uses screen touch/drag for 16 directions plus center. IMU input uses device tilt; screen hold resets the baseline | Hold Network to switch STA/SoftAP. Servo screen saves/restores home |
-| StopWatch | BtnA short-press opens settings. BtnA double-click turns guruguru on. BtnB/power short-press toggles display. Center touch/drag triggers petting | BtnA double-click turns guruguru off. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
+| StopWatch | BtnA short-press opens settings. BtnA double-click turns guruguru on. BtnB/power short-press toggles display. Center touch/drag triggers petting. While connected, tapping the lower-right mic overlay toggles mute | BtnA double-click turns guruguru off. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
 | AtomS3R Chatbot | BtnA short-press opens Network. BtnA double-click mutes mic. BtnA hold triggers petting. BtnA triple-click turns guruguru on | BtnA triple-click turns guruguru off. IMU input only. BtnA hold resets the baseline. BtnA short-press still advances pages, and opening Network stops guruguru display. BtnA double-click is ignored | BtnA short-press changes pages. Hold Network to switch STA/SoftAP. Double-click Audio to enter volume adjust mode |
+
+Turning the display off ends the audio state and app connection, then stops
+Wi-Fi, HTTP, WebSocket, and USB Serial. Turning it on starts Wi-Fi reconnection,
+so clients must reconnect as well. StreetPass BLE continues at a reduced rate.
+StopWatch also lowers CPU frequency and uses short light-sleep intervals.
 
 ## Common Setup
 
@@ -172,20 +216,21 @@ Release asset generation uses the `m5stack-stopwatch-release` environment.
 - Double-click BtnB while guruguru face mode is active: switch between touch input and IMU input.
 - Hold BtnB while guruguru face mode is active: reset the IMU baseline.
 - Briefly hold near the center of the normal face screen, or drag from near the center: petting interaction. This is disabled while the display is off or the settings screen is visible.
+- While a WebSocket or USB Serial client is connected, tap the microphone overlay on the lower-right rim of the normal face screen: mute or unmute mic streaming. This tap target is excluded from petting detection.
 - Touch or drag the normal face screen while guruguru face mode is active: in touch input mode, this selects one of 8 directions plus center. In IMU input mode, device tilt controls the face direction.
 - Tap the `<` / `>` buttons at the top of the settings screen: move to the previous or next settings page.
 - Flick left or right on the settings screen: move to the previous or next settings page. A left flick moves forward, and a right flick moves backward.
-- Settings page order: Network -> Display -> Audio -> Power -> StreetPass -> Network. StopWatch has no Servo page.
+- Settings page order: Network -> Display -> Audio -> Power -> Steps -> StreetPass -> Network. StopWatch has no Servo page.
 - Tap the QR screen: return to the Network screen.
 - Network screen: hold to switch between STA and SoftAP. In SoftAP mode, tap `Wi-Fi QR` or `Setup QR` to show the corresponding QR code. When connected in STA mode, tap `Setup QR` to show the setup QR code.
 - Display screen: tap `-` / `+` to adjust brightness in 20-point steps. Tap `Screen Off` / `Screen On` to toggle the display.
 - Audio screen: tap `-` / `+` to adjust speaker volume in 20-point steps.
 - Power screen: tap `Low Power On` / `Low Power Off` to toggle low-power mode.
+- Steps screen: view today's count, the 04:00 reset, and stored daily history.
 - StreetPass screen: tap `Turn On` / `Turn Off` to toggle StreetPass, and tap `Profile` / `History` to switch between the local profile and latest history view.
 
 StopWatch has no camera or servo. HTTP `/capture`, USB Serial `capture.request`,
-servo home calibration, and camera-overlay operation are unavailable. The round UI
-also does not support mic-overlay tap mute/unmute.
+servo home calibration, and camera-overlay operation are unavailable.
 
 ## M5Stack AtomS3R Chatbot
 

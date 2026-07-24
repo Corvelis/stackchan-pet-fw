@@ -10,19 +10,27 @@ public:
   void setMotion(const char* name);
   void setTargetPose(int pan, int tilt);
   void setImmediatePose(int pan, int tilt);
-  void holdCurrentPose();
+  void deferOutputUntil(unsigned long readyMs);
+  void setMovementPaused(bool paused);
   void saveCurrentPoseAsHome();
   void moveToSavedHome();
   void update(unsigned long now);
+  bool readyForInteractionTarget(unsigned long now) const;
+  bool servoMotionActive(unsigned long now) const;
   Pose currentPose() const;
   Pose targetPose() const;
   int savedYawOffset() const;
   int savedPitchOffset() const;
 
 private:
+  enum class ServoAxis : uint8_t {
+    None,
+    Pan,
+    Tilt,
+  };
+
   int clampPan(int pan) const;
   int clampTilt(int tilt) const;
-  int approach(int current, int target) const;
   void loadCalibration();
   void saveCalibration();
   int toStackChanYaw(int pan) const;
@@ -33,7 +41,9 @@ private:
   bool physicalAnglesLookValid(int yaw, int pitch) const;
   bool servoOutputReady(unsigned long now) const;
   void syncCurrentPoseFromServos();
-  void writeServoPose(const Pose& pose);
+  bool activeServoAxisMoving() const;
+  void finishActiveServoAxis();
+  void startServoAxis(ServoAxis axis, int logicalAngle);
   void logPose(const char* label, const Pose& pose) const;
 
   Pose currentPose_;
@@ -43,5 +53,11 @@ private:
   int pitchOffset_ = 0;
   bool servoOutputEnabled_ = false;
   bool servoOutputStarted_ = false;
+  bool movementPaused_ = false;
   bool disableAutoAngleSyncAfterFirstMove_ = false;
+  ServoAxis activeServoAxis_ = ServoAxis::None;
+  int activeServoAxisTarget_ = 0;
+  bool preferPanNext_ = true;
+  unsigned long nextServoAxisStartMs_ = 0;
+  unsigned long outputDeferredUntilMs_ = 0;
 };

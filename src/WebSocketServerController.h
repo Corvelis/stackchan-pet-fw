@@ -10,7 +10,9 @@ using WebSocketConnectionHandler = void (*)(uint8_t clientId, bool connected);
 class WebSocketServerController {
 public:
   void begin(uint16_t port);
+  void stop();
   void loop();
+  bool isStarted() const;
   void onText(WebSocketTextHandler handler);
   void onBinary(WebSocketBinaryHandler handler);
   void onConnection(WebSocketConnectionHandler handler);
