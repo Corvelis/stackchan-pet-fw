@@ -10,13 +10,27 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 
 ## 最新リリース: v0.4.0
 
-- 3機種の顔表示を、口パク・瞬き・なでなで・方向・クラクラに対応した顔画像v2へ移行。
-- `good_*`、`bad_*`、`photo_*`、好感度・温度・低電力別の旧静止顔を配布画像から削除。
-- CoreS3の640×480カメラ撮影と、サーボ・マイク・音声対話の安定性を改善。
+### 顔表示・リアクション
+
+- 3機種の顔表示を、4×4口パク／瞬き、なでなで、方向、クラクラに対応した顔画像v2へ移行。
+- 配布画像をCoreS3／AtomS3Rは65 JPG、StopWatchは57 JPGに整理し、`good_*`、`bad_*`、
+  `photo_*`、好感度・温度・低電力別の旧静止顔を削除。
+- 旧画像だけが残る端末向けに限定fallbackを維持し、温度・低電力・撮影状態では顔画像を切り替えない構成へ変更。
+- なでなでが3秒未満なら不満、3秒以上なら喜びを表示し、クラクラ後は閉じ目から通常顔へ段階的に復帰。
+- 画像を使わないclassic顔を機種別のsource buildとして追加。program描画の口パク、瞬き、吹き出しに対応。
+
+### デバイス機能・安定性
+
+- CoreS3カメラを640×480 JPEGへ変更し、I2C競合とUSB／HTTP転送を修正。
+- CoreS3の起動時サーボ、発話中の不要動作、機械音によるマイク再反応、上向き過ぎるなでなで動作を修正。
 - StopWatchに歩数計、午前4時区切りの30日履歴、好感度報酬、アプリ同期を追加。
-- WebSocket／USB Serial共通の発話吹き出しprotocolと状態診断を追加。
-- 基本顔／なでなで用4×4スプライトシートの作成・分割・変換・検証toolを追加。
-- 3機種それぞれに更新用`firmware`と初回導入用`factory`バイナリを用意。
+- 画面OFF時にWi-Fi／HTTP／WebSocket／USB Serialを休止し、StreetPass BLEは低頻度で継続。
+
+### 通信・画像作成・配布
+
+- WebSocket／USB Serial共通の発話吹き出しprotocolと、音声・マイク・StreetPassなどの診断情報を追加。
+- 基本顔／なでなで用4×4スプライトシートの作成・分割・変換・manifest生成・検証toolとsampleを追加。
+- 3機種の画像顔／classic顔をCIでbuildし、各機種の更新用`firmware`と初回導入用`factory`バイナリを生成。
 
 詳細は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)、全versionの履歴は
 [日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。

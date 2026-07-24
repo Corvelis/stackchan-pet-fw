@@ -12,13 +12,27 @@ out of scope.
 
 ## Latest Release: v0.4.0
 
-- Migrated all three targets to face image v2 with lip-sync, blink, petting, direction, and dizzy animations.
-- Removed legacy static release faces for affection, thermal, low-power, `good_*`, `bad_*`, and `photo_*` states.
-- Improved CoreS3 640×480 camera capture and servo, microphone, and voice-session stability.
+### Face Rendering and Reactions
+
+- Migrated all three targets to face image v2 with 4×4 lip-sync／blink, petting, direction, and dizzy animations.
+- Reduced release assets to 65 JPG files on CoreS3／AtomS3R and 57 on StopWatch, removing legacy
+  `good_*`, `bad_*`, `photo_*`, affection, thermal, and low-power static faces.
+- Retained a limited fallback for devices containing only old images, while stopping thermal, low-power, and camera states from selecting separate face images.
+- Added dissatisfied reactions for petting shorter than 3 seconds, happy reactions for 3 seconds or longer, and gradual closed-to-open-eye dizzy recovery.
+- Added target-specific source-built classic faces with procedural lip-sync, blink, and speech bubbles but no image assets.
+
+### Device Features and Stability
+
+- Changed CoreS3 camera capture to 640×480 JPEG and fixed I2C conflicts and USB／HTTP transfer handling.
+- Fixed CoreS3 startup servo motion, unwanted speaking motion, microphone retriggers from mechanical noise, and excessive upward petting poses.
 - Added a StopWatch step counter, 30-day history with a 04:00 rollover, affection rewards, and app synchronization.
-- Added a shared WebSocket／USB Serial speech-bubble protocol and expanded diagnostics.
-- Added tools for generating, splitting, converting, and validating 4×4 base-face and petting sprite sheets.
-- Prepared update `firmware` and first-install `factory` binaries for all three targets.
+- Suspended Wi-Fi／HTTP／WebSocket／USB Serial while the display is off, while keeping StreetPass BLE at a reduced rate.
+
+### Communication, Image Creation, and Distribution
+
+- Added a shared WebSocket／USB Serial speech-bubble protocol and expanded audio, microphone, and StreetPass diagnostics.
+- Added tools and samples for generating, splitting, converting, manifesting, and validating 4×4 base-face and petting sprite sheets.
+- Added CI builds for image and classic faces on all three targets and generation of update `firmware` and first-install `factory` binaries.
 
 See the [0.4.0 Release Notes](docs/release_notes_0.4.0.md) for details and the
 [English Changelog](CHANGELOG.md) for the complete version history.
