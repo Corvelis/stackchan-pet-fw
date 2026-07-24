@@ -29,6 +29,10 @@ shasum -a 256 --ignore-missing -c SHA256SUMS
 | firmware bin | 既に導入済みの人向けの更新用です。Wi-Fi 設定、LittleFS 画像、CoreS3 のサーボ原点などを保持します。 |
 | factory image | 新しく入れる人向けです。bootloader、partition table、firmware、LittleFS 画像データを結合しています。 |
 
+GitHub Releaseの`firmware`／`factory`バイナリは画像顔です。クラシック顔は配布バイナリの
+実行時設定ではありません。利用する場合は、ソースから対象機種の`*-classic` envをビルド・
+書き込みしてください。詳細は[対応デバイス別ガイド](devices.ja.md#クラシック顔ビルド)を参照してください。
+
 顔画像v2導入後に旧バージョンへ戻す場合、firmware binだけを戻すと、旧firmwareが必要とする
 画像がLittleFSにない可能性があります。対象バージョンのfactory imageまたはLittleFSも同時に
 戻してください。更新方式ごとの詳細は [顔画像v2移行ガイド](face_asset_migration.ja.md) を参照してください。
@@ -52,6 +56,7 @@ bash scripts/build_release_bins.sh all
 - StopWatch / AtomS3R Chatbot にはカメラとサーボがありません。`/capture`、`capture.request`、サーボ原点調整は使えません。
 - バイナリに含まれる同梱画像も、ファームウェアソースと同じMIT Licenseです。
 - 画像またはその実質的な部分を再配布する場合は、`LICENSE`の著作権表示と許諾表示を含めてください。
+- 発話吹き出しは、対応クライアントがTTS PCMと`display.speech_bubble.*`メッセージを送った場合に表示します。ファームウェア単体では字幕を生成しません。
 
 ## 画像とライセンス
 

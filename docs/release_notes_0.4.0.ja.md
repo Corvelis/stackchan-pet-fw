@@ -60,6 +60,19 @@ PSRAMを使ったRGB565取り込みと、USB／HTTPの分割送信により、�
 - `audio.playback_diag`で、音声バッファ、PCM受信・破棄、underflow、speaker queue、吹き出し、発話中の処理時間を読み取れます。
 - HTTP `/status`に詳細な`mic`、`voicePerf`、`streetpass`と`currentState`／`audioState`を追加しました。診断クライアントは未知フィールドを無視してください。
 
+## クラシック顔と発話吹き出し
+
+- CoreS3、StopWatch、AtomS3Rに`*-classic`ビルド環境を用意しました。黒背景へ白い目と口を
+  プログラム描画し、瞬きとPCM振幅に連動した8段階の口パクを行います。
+- classicは実行時切替ではなく別ビルドです。GitHub Releaseの通常`firmware`／`factory`バイナリは
+  画像顔のため、classicを使う場合は[機種別ガイド](devices.ja.md#クラシック顔ビルド)に従って
+  ソースから対象の`*-classic` envを書き込んでください。
+- classicでも吹き出しと状態overlayは表示します。画像固有のなでなで・ぐるぐる・混乱顔
+  アニメーションとぐるぐる操作は無効ですが、なでなで入力による好感度更新や音声などは継続します。
+- 発話吹き出しは画像顔／classic共通です。クライアントが`display.speech_bubble.v1`対応を確認し、
+  文節ごとのcueをTTS PCMの直前に送ると、再生位置に合わせて表示します。WebSocketとUSB Serialは
+  同じJSONを使います。詳細は[発話吹き出しプロトコル](speech_bubble_protocol.ja.md)を参照してください。
+
 ## StopWatch歩数カウンター
 
 StopWatchはIMUで歩数を計測し、日本時間の午前4時区切りで当日を含む最大30日分を保存します。
@@ -93,7 +106,7 @@ firmware-only更新では端末のLittleFSを保持します。すでに顔画�
 
 - WebSocket／USB Serial共通の発話吹き出しプロトコルを追加しました。
 - StopWatch本体側の歩数カウンターと状態通知を追加しました。
-- 3機種の通常／classic、合計6環境の再現可能な配布ビルドを整備しました。
+- 3機種の通常／classic、合計6環境をCIで再現可能にビルドできるよう整備しました。
 - 同梱ランタイム画像、スプライトシートサンプル、画像生成用参考画像は、
   ファームウェアソースと同じ[MIT License](../LICENSE)で利用できます。
 - このMIT Licenseは、つくよみちゃん画像を含む旧配布バイナリの第三者画像には適用されません。

@@ -46,11 +46,18 @@ pio run -e m5stack-atoms3r-chatbot -t uploadfs
 
 配布用の`data/`、`data_stopwatch/`、`data_atoms3r/`は、旧静止顔を含まない`animated` v2構成です。旧画像だけを持つ端末はfirmware-only更新時に限定的なfallbackを利用できます。
 
+- [クラシック顔ビルドと機種別ガイド](docs/devices.ja.md#クラシック顔ビルド)
 - [顔レンダラーv2設計](docs/face_renderer_v2.ja.md)
 - [顔画像v2移行ガイド](docs/face_asset_migration.ja.md)
 - [顔画像生成ツール](tools/face_image_builder/README.md)
+- [発話吹き出しプロトコル](docs/speech_bubble_protocol.ja.md)
 - [0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)
 - [StopWatch歩数同期仕様](docs/step_counter_protocol.ja.md)
+
+GitHub Releaseの通常バイナリは画像顔です。白い目と口をプログラム描画するclassic顔は、各機種の
+`*-classic`環境をソースから別途ビルドします。classic顔でも口パク、瞬き、吹き出しは利用できます。
+吹き出しは接続クライアントがTTS PCMと対応するcueを送った場合に表示され、画像顔とclassic顔の
+両方でWebSocket／USB Serialから利用できます。
 
 ## 開発と配布
 

@@ -70,6 +70,23 @@ chunks keep a large JPEG from monopolizing transport processing.
 - `audio.playback_diag` reports audio buffering, PCM receive/drop counts, underflow, speaker queue, speech-bubble state, and speech processing timings.
 - HTTP `/status` now includes detailed `mic`, `voicePerf`, and `streetpass` objects plus `currentState`/`audioState`. Diagnostic clients should ignore unknown fields.
 
+## Classic faces and speech bubbles
+
+- CoreS3, StopWatch, and AtomS3R have separate `*-classic` build environments.
+  They draw white eyes and a mouth on black, blink, and drive eight-step lip
+  sync from PCM amplitude.
+- Classic is a separate compile-time build, not a runtime setting. Regular
+  GitHub Release `firmware` and `factory` binaries use image faces. To use
+  classic, build and flash the target `*-classic` environment from source as
+  described in the [Device Guide](devices.md#classic-face-builds).
+- Classic still displays speech bubbles and status overlays. Image-specific
+  petting, guruguru, and dizzy-face animations and guruguru controls are
+  disabled, while affection input, audio, and other non-face features continue.
+- Speech bubbles work with both image and classic faces. A client checks for
+  `display.speech_bubble.v1` and sends each cue immediately before its TTS PCM
+  segment. WebSocket and USB Serial use the same JSON. See the
+  [Speech Bubble Protocol](speech_bubble_protocol.md).
+
 ## StopWatch step counter
 
 StopWatch counts steps from its IMU, uses 04:00 Japan Standard Time as the
@@ -107,7 +124,7 @@ through `data_local*`, and replace assets only as a complete validated v2 set.
 
 - Shared WebSocket and USB Serial speech-bubble protocol.
 - StopWatch device-side step counter and status reporting.
-- Reproducible release builds for all three normal and three classic targets.
+- Reproducible CI builds for all three normal and three classic targets.
 - Bundled runtime images, sprite-sheet samples, and image-generation references
   use the same [MIT License](../LICENSE) as the firmware source.
 - This MIT grant does not apply to third-party images in historical binaries

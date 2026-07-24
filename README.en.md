@@ -55,6 +55,13 @@ PlatformIO environments:
 See the [Device Guide](docs/devices.md) for target-specific build commands,
 controls, and unsupported features.
 
+The regular `firmware` and `factory` binaries on GitHub Releases use image
+faces. A classic face is not a runtime setting; build the target's separate
+`*-classic` environment from source. It needs no face-image LittleFS and keeps
+procedural eyes and mouth, blinking, eight-step lip sync, speech bubbles, and
+status overlays. Image-specific petting, guruguru, and dizzy-face animations
+and guruguru controls are disabled.
+
 ## Install PlatformIO
 
 Use either the VS Code PlatformIO extension or PlatformIO Core CLI.
@@ -107,6 +114,13 @@ Ignored:
 - `data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/`: personal complete image sets.
 - `face_assets_v2_work/`: sprite-sheet splitting, conversion, and review workspace.
 - `legacy_face_assets_local/`: legacy migration and fallback-test fixtures.
+
+Speech bubbles work with both image and classic faces. They are not subtitles
+generated automatically by the firmware. A connected client first checks for
+`display.speech_bubble.v1`, then sends `display.speech_bubble.cue` immediately
+before the corresponding TTS PCM segment. WebSocket and USB Serial use the same
+JSON. See the [Speech Bubble Protocol](docs/speech_bubble_protocol.md) for
+ordering, limits, layout, and clearing behavior.
 
 ## Setup
 

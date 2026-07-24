@@ -10,6 +10,7 @@
 - Strict face-asset validation, schema, conversion tools, unit tests, and CI validation.
 - Face renderer diagnostics in `device.info`.
 - Shared WebSocket and USB Serial speech-bubble protocol.
+- Three separate source-built classic-face environments with procedural blinking, eight-step lip sync, speech-bubble overlays, and no image-specific reaction animations.
 - Read-only `audio.playback_diag` JSON command and expanded `/status` microphone, voice-performance, and StreetPass diagnostics.
 - StopWatch-only step counter, 30-day history, `steps.sync` status reporting, and affection rewards.
 - Reproducible six-environment CI builds and device-specific release/factory image generation.

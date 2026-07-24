@@ -54,6 +54,11 @@ PlatformIO の環境名:
 機種別のビルド方法、操作方法、非対応機能は
 [対応デバイス別ガイド](docs/devices.ja.md) を参照してください。
 
+GitHub Releaseで配布する通常の`firmware`／`factory`バイナリは画像顔です。クラシック顔は
+実行時設定で切り替えるモードではなく、各機種の`*-classic` envをソースからビルドする別構成です。
+画像LittleFSは不要で、プログラム描画の白い目と口、瞬き、8段階の口パク、吹き出し、状態overlayを
+利用できます。画像固有のなでなで・ぐるぐる・混乱顔アニメーションとぐるぐる操作は無効です。
+
 ## PlatformIO の準備
 
 VS Code の PlatformIO 拡張、または PlatformIO Core CLI を使います。
@@ -105,6 +110,12 @@ GitHub に上げないもの:
 - `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/`: 個人用の完成画像セット
 - `face_assets_v2_work/`: スプライトシートの分割・変換・確認用作業フォルダ
 - `legacy_face_assets_local/`: 旧画像の移行・fallback確認用フォルダ
+
+発話吹き出しは画像顔とクラシック顔の両方に対応します。ファームウェアだけで自動生成する字幕ではなく、
+接続クライアントが`display.speech_bubble.v1`対応を確認し、TTS PCMの文節直前に
+`display.speech_bubble.cue`を送った場合に表示します。WebSocketとUSB Serialで同じJSONを使います。
+送信順序、文字数、表示位置、消去条件は[発話吹き出しプロトコル](docs/speech_bubble_protocol.ja.md)を
+参照してください。
 
 ## セットアップ手順
 

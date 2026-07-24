@@ -30,6 +30,11 @@ asset, omit `--ignore-missing` to detect missing files as well.
 | firmware bin | Update an existing install. Preserves Wi-Fi settings, LittleFS images, and CoreS3 servo calibration. |
 | factory image | First-time install. Combines bootloader, partition table, firmware, and LittleFS runtime image data. |
 
+GitHub Release `firmware` and `factory` binaries use image faces. Classic is
+not a runtime option in those binaries. Build and flash the target's
+`*-classic` environment from source as described in the
+[Device Guide](devices.md#classic-face-builds).
+
 After face asset v2 is installed, downgrading only the firmware may leave v2-only
 LittleFS assets that an older firmware cannot use. Restore the matching factory
 image or LittleFS image as well. See the [Face Asset v2 Migration Guide](face_asset_migration.md).
@@ -56,6 +61,9 @@ To generate one device, pass `cores3`, `stopwatch`, or `atoms3r`.
   firmware source.
 - Redistributing an image or a substantial portion of it requires including
   the copyright and permission notices from `LICENSE`.
+- Speech bubbles appear only when a compatible client sends TTS PCM together
+  with `display.speech_bubble.*` messages. The firmware does not generate
+  subtitles by itself.
 
 ## Images And License
 
