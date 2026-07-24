@@ -31,10 +31,12 @@ git diff --check
 ```sh
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 python3 scripts/validate_face_assets.py
+python3 scripts/check_no_local_paths.py
 ```
 
 - 通常配布用の`data*`はmanifest付きv2だけを受け付けます。manifestなしの129枚構成は移行ツールと互換テスト専用です。新旧画像を部分的に混ぜないでください。
 - `.pio/`、`dist/`、バックアップ、ローカル画像素材、秘密情報はコミットしないでください。
+- 開発PCのユーザー名を含む絶対パスを、文書、コメント、設定、サンプルへ記載しないでください。
 - 日本語と英語の公開仕様を変えた場合は、対応する両方の文書を更新してください。
 
 ### コミットの分け方
@@ -55,6 +57,8 @@ python3 scripts/validate_face_assets.py
 - When shared code, `config.h`, or `platformio.ini` changes, build all six environments listed in the Japanese section above.
 - Run `python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v` and
   `python3 scripts/validate_face_assets.py` when runtime face assets change.
+- Run `python3 scripts/check_no_local_paths.py` and do not commit absolute paths
+  containing a developer machine's username.
 - Release `data*` directories must be complete manifest-backed v2 sets. The manifest-free 129-image layout is only for migration tooling and compatibility tests. Never mix partial new and legacy sets.
 - Do not commit `.pio/`, `dist/`, backups, local source artwork, or secrets.
 - Update both Japanese and English documentation when a public interface or behavior changes.
