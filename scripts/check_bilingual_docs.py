@@ -18,7 +18,7 @@ def relative(path: Path) -> str:
 def documentation_pairs() -> set[tuple[Path, Path]]:
     pairs = {
         (ROOT / "CHANGELOG.ja.md", ROOT / "CHANGELOG.md"),
-        (ROOT / "README.ja.md", ROOT / "README.en.md"),
+        (ROOT / "README.md", ROOT / "README.en.md"),
     }
 
     docs_dir = ROOT / "docs"

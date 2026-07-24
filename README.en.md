@@ -1,6 +1,6 @@
 # Stack-chan Multi-Device Controller
 
-[日本語](README.ja.md) | [English](README.en.md)
+[日本語](README.md) | [English](README.en.md)
 
 Firmware for an M5Stack CoreS3 based Stack-chan, M5Stack StopWatch, and M5Stack
 AtomS3R Chatbot. It provides face rendering, microphone/speaker streaming,
@@ -11,6 +11,19 @@ capture.
 This repository contains only the device firmware side. It documents the
 HTTP, WebSocket, and USB Serial interfaces exposed by the device; external client
 implementations are out of scope.
+
+## Latest Release: v0.4.0
+
+- Migrated all three targets to face image v2 with lip-sync, blink, petting, guruguru, and dizzy animations.
+- Removed legacy static release faces such as `good_*`, `bad_*`, and `photo_*`, while retaining a limited fallback for existing devices.
+- Improved CoreS3 640×480 camera capture and servo, microphone, and voice-session stability.
+- Added a StopWatch step counter, 30-day history with a 04:00 rollover, affection rewards, and app synchronization.
+- Added a shared WebSocket／USB Serial speech-bubble protocol and expanded diagnostics.
+- Added tools for generating, splitting, converting, and validating 4×4 base-face and petting sprite sheets.
+- Prepared update `firmware` and first-install／complete-migration `factory` binaries for all three targets.
+
+See the [0.4.0 Release Notes](docs/release_notes_0.4.0.md) for details and the
+[English Changelog](CHANGELOG.md) for the complete version history.
 
 ## Features
 
