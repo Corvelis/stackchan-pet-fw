@@ -162,6 +162,13 @@ build_target() {
     0x10000 "${firmware_bin}" \
     "${LITTLEFS_OFFSET}" "${littlefs_bin}"
 
+  for release_binary in "${firmware_asset}" "${factory_asset}"; do
+    if LC_ALL=C grep -a -F -q "${HOME}/" "${release_binary}"; then
+      echo "Developer home path found in release binary: ${release_binary}" >&2
+      exit 1
+    fi
+  done
+
   echo "Wrote:"
   ls -lh "${firmware_asset}" "${factory_asset}"
 }
