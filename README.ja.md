@@ -94,6 +94,7 @@ macOS で PlatformIO は入っているのに `pio` が見つからない場合�
 - `docs/speech_bubble_protocol.ja.md`: TTS発話吹き出し protocol 詳細
 - `docs/streetpass_protocol.ja.md`: すれ違い通信 BLE / JSON API 詳細
 - `docs/release_notes_0.4.0.ja.md`: 0.4.0の更新・移行・ダウングレード案内
+- `CHANGELOG.ja.md`: 全versionの日本語変更履歴
 
 任意:
 
@@ -186,7 +187,8 @@ bash scripts/build_release_bins.sh all
 > 旧静止顔は配布物へ含めませんが、firmware-only更新では端末に残る旧基本5枚を
 > `legacy` fallbackとして利用できます。詳細は[顔画像v2移行ガイド](docs/face_asset_migration.ja.md)を参照してください。
 
-更新内容と既存環境からの移行判断は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)にまとめています。
+更新内容と既存環境からの移行判断は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)、
+全versionの変更履歴は[日本語CHANGELOG](CHANGELOG.ja.md)にまとめています。
 
 ファームウェアはLittleFSからJPGを読みます。配布画像の構成、命名、レンダラー選択は
 [顔レンダラーv2](docs/face_renderer_v2.ja.md)にまとめています。

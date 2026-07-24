@@ -25,7 +25,7 @@ CoreS3 + ｽﾀｯｸﾁｬﾝ、M5Stack StopWatch、AtomS3R Chatbot向けの共
 - 基本顔となでなで用の4x4スプライトシート作成プロンプト、画像分割、リサイズ、命名、manifest生成・検証ツールを追加しました。
 - 3機種それぞれに、更新用`firmware`と初回導入・完全移行用`factory`バイナリを用意します。
 
-変更内容と移行時の注意点は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)、全変更履歴は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+変更内容と移行時の注意点は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)、全変更履歴は[日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。
 
 ## クイックスタート
 
@@ -67,4 +67,4 @@ python3 scripts/validate_face_assets.py
 bash scripts/build_release_bins.sh all
 ```
 
-変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。ファームウェアソースと同梱自作画像は、いずれも[MIT License](LICENSE)です。つくよみちゃん画像を含む旧配布バイナリには現行MITを適用せず、そのリリースに付属する通知と素材提供元の規約に従ってください。
+変更時の確認事項は[CONTRIBUTING.md](CONTRIBUTING.md)、変更内容は[日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。ファームウェアソースと同梱自作画像は、いずれも[MIT License](LICENSE)です。つくよみちゃん画像を含む旧配布バイナリには現行MITを適用せず、そのリリースに付属する通知と素材提供元の規約に従ってください。

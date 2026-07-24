@@ -98,6 +98,7 @@ Required:
 - `docs/speech_bubble_protocol.md`: TTS speech-bubble protocol details.
 - `docs/streetpass_protocol.md`: StreetPass BLE and JSON API details.
 - `docs/release_notes_0.4.0.md`: 0.4.0 update, migration, and downgrade notes.
+- `CHANGELOG.md`: complete English version history.
 
 Optional:
 
@@ -196,7 +197,8 @@ The generated filenames match the release asset table in the
 > updates can still use an old five-file set already present on a device as a limited fallback.
 
 See the [0.4.0 Release Notes](docs/release_notes_0.4.0.md) for the change summary
-and update guidance for existing installations.
+and update guidance for existing installations. See the
+[English Changelog](CHANGELOG.md) for the complete version history.
 
 The firmware loads JPG frames from LittleFS. See [Face Renderer v2](docs/face_renderer_v2.md)
 for naming, profiles, and renderer selection, and the

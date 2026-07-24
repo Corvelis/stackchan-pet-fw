@@ -32,13 +32,16 @@ git diff --check
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 python3 scripts/validate_face_assets.py
 python3 scripts/check_no_local_paths.py
+python3 scripts/check_bilingual_docs.py
 ```
 
 - 通常配布用の`data*`はmanifest付きv2だけを受け付けます。manifestなしの129枚構成は移行ツールと互換テスト専用です。新旧画像を部分的に混ぜないでください。
 - `.pio/`、`dist/`、バックアップ、ローカル画像素材、秘密情報はコミットしないでください。
 - 開発PCのユーザー名を含む絶対パスを、文書、コメント、設定、サンプルへ記載しないでください。
 - Release環境はコンパイル時のホームパスを匿名化し、`build_release_bins.sh`は生成バイナリに実ホームパスが残っていないことを検査します。
-- 日本語と英語の公開仕様を変えた場合は、対応する両方の文書を更新してください。
+- 公開文書は必ず日本語版と英語版を同時に作成・更新してください。`CHANGELOG.md`と
+  `CHANGELOG.ja.md`、`docs/*.md`と`docs/*.ja.md`、各toolの`README.md`と
+  `README.en.md`は対です。CIは片方だけの追加・更新を失敗として扱います。
 
 ### コミットの分け方
 
@@ -60,11 +63,16 @@ python3 scripts/check_no_local_paths.py
   `python3 scripts/validate_face_assets.py` when runtime face assets change.
 - Run `python3 scripts/check_no_local_paths.py` and do not commit absolute paths
   containing a developer machine's username.
+- Run `python3 scripts/check_bilingual_docs.py`. Public documentation must
+  always be created and updated as a Japanese/English pair. CI rejects changes
+  that update only one side.
 - Release environments anonymize the build home path, and
   `build_release_bins.sh` rejects binaries that still contain the real home
   directory.
 - Release `data*` directories must be complete manifest-backed v2 sets. The manifest-free 129-image layout is only for migration tooling and compatibility tests. Never mix partial new and legacy sets.
 - Do not commit `.pio/`, `dist/`, backups, local source artwork, or secrets.
-- Update both Japanese and English documentation when a public interface or behavior changes.
+- Paired documents include `CHANGELOG.md`／`CHANGELOG.ja.md`,
+  `docs/*.md`／`docs/*.ja.md`, and each tool's
+  `README.md`／`README.en.md`.
 
 Keep firmware code, runtime assets, documentation, and CI/build configuration in separate commits where practical. For generated assets, record the source and generation command in the commit message or pull request description.

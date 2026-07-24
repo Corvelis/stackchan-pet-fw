@@ -1,5 +1,7 @@
 # 顔画像ファイル棚卸し
 
+[English](face_image_inventory.md) | [日本語](face_image_inventory.ja.md)
+
 ## 結論
 
 - 通常配布は顔画像v2のみです。

@@ -1,5 +1,7 @@
 # 顔画像グループの使用仕様
 
+[English](face_image_usage_analysis.md) | [日本語](face_image_usage_analysis.ja.md)
+
 この文書は、顔画像v2の各グループが実行時にどう使われるかをまとめます。移行前の129枚構成と旧静止顔の分析は`v0.3.1`タグを参照してください。
 
 ## 表示の優先順位
