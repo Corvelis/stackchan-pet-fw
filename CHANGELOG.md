@@ -2,7 +2,7 @@
 
 [日本語](CHANGELOG.ja.md) | [English](CHANGELOG.md)
 
-## [0.4.0](docs/release_notes_0.4.0.md) - 2026-07-23
+## [0.4.0](docs/release_notes_0.4.0.md) - 2026-07-25
 
 ### Added
 

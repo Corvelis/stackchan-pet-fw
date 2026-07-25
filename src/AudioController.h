@@ -121,8 +121,10 @@ public:
   bool hasPlaybackStarted() const;
   bool pauseMicForInteraction(const char* reason);
   void resumeMicAfterInteraction(bool wasPaused, const char* reason);
+  void setInteractionMicBlocked(bool blocked, const char* reason);
   bool pauseMicForCapture();
   void resumeMicAfterCapture(bool wasPaused);
+  void resetSpeakerAfterCameraCapture();
   void deferNextSpeakerStartUntil(unsigned long timestampMs);
   void deferMicCaptureUntil(unsigned long timestampMs);
   void setVolume(uint8_t volume);
@@ -198,6 +200,7 @@ private:
   unsigned long nextMicSendDueMs_ = 0;
   bool micEnabled_ = false;
   bool micMuted_ = false;
+  bool interactionMicBlocked_ = false;
   bool usbSerialClientConnected_ = false;
   volatile bool speakerEnabled_ = false;
   volatile bool speakerStartPending_ = false;

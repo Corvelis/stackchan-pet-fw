@@ -349,6 +349,7 @@ void AudioController::setState(ChanState state) {
 }
 
 void AudioController::stopForDisplayOff() {
+  interactionMicBlocked_ = false;
   state_ = ChanState::Idle;
 #if AUDIO_SPEAKER_PLAYBACK_TASK_ENABLED
   speakerFinishPending_ = false;
@@ -445,12 +446,37 @@ bool AudioController::pauseMicForInteraction(const char* reason) {
 }
 
 void AudioController::resumeMicAfterInteraction(bool wasPaused, const char* reason) {
-  if (!wasPaused || state_ != ChanState::Listening || micEnabled_) {
+  if (!wasPaused || interactionMicBlocked_ || state_ != ChanState::Listening || micEnabled_) {
     return;
   }
 
   startMicInput();
   Serial.printf("[audio] mic resumed after %s\n", reason == nullptr ? "interaction" : reason);
+}
+
+void AudioController::setInteractionMicBlocked(bool blocked, const char* reason) {
+  if (interactionMicBlocked_ == blocked) {
+    if (blocked && micEnabled_) {
+      stopMicInput(reason == nullptr ? "interaction block" : reason);
+    }
+    return;
+  }
+
+  interactionMicBlocked_ = blocked;
+  if (blocked) {
+    if (micEnabled_) {
+      stopMicInput(reason == nullptr ? "interaction block" : reason);
+    }
+    Serial.printf("[audio] mic block enabled for %s\n",
+                  reason == nullptr ? "interaction" : reason);
+    return;
+  }
+
+  Serial.printf("[audio] mic block cleared for %s\n",
+                reason == nullptr ? "interaction" : reason);
+  if (state_ == ChanState::Listening && !micMuted_ && !micEnabled_) {
+    startMicInput();
+  }
 }
 
 bool AudioController::pauseMicForCapture() {
@@ -459,6 +485,39 @@ bool AudioController::pauseMicForCapture() {
 
 void AudioController::resumeMicAfterCapture(bool wasPaused) {
   resumeMicAfterInteraction(wasPaused, "camera capture");
+}
+
+void AudioController::resetSpeakerAfterCameraCapture() {
+#if STACKCHAN_HAS_CAMERA && STACKCHAN_DEVICE_CORES3
+  // esp_camera uses GDMA on CoreS3. Its teardown can leave M5Unified's I2S
+  // speaker driver registered but unable to consume queued PCM. Camera
+  // capture runs with the microphone stopped and before its spoken response,
+  // so fully uninstall the idle speaker driver here. The next Speaking state
+  // will create a fresh I2S/GDMA channel.
+  if (state_ == ChanState::Speaking || speakerEnabled_ || pendingIdleAfterPlayback_) {
+    Serial.printf("[audio] camera speaker reset skipped state=%s enabled=%d draining=%d\n",
+                  audioStateName(state_),
+                  speakerEnabled_ ? 1 : 0,
+                  pendingIdleAfterPlayback_ ? 1 : 0);
+    return;
+  }
+
+  if (M5.Speaker.isRunning() || M5.Speaker.isEnabled()) {
+    M5.Speaker.stop(AUDIO_SPEAKER_CHANNEL);
+    M5.Speaker.end();
+  }
+  const bool resetStarted = M5.Speaker.begin();
+  if (resetStarted) {
+    M5.Speaker.stop(AUDIO_SPEAKER_CHANNEL);
+    M5.Speaker.end();
+  }
+  speakerStartPending_ = false;
+  playbackStarted_ = false;
+  playbackUnderflowActive_ = false;
+  idleDrainEmptySinceMs_ = 0;
+  Serial.printf("[audio] speaker/I2S reset after camera capture: %s\n",
+                resetStarted ? "ready" : "failed");
+#endif
 }
 
 void AudioController::deferNextSpeakerStartUntil(unsigned long timestampMs) {
@@ -496,7 +555,7 @@ void AudioController::setMicMuted(bool muted) {
   micMuted_ = muted;
   if (micMuted_) {
     stopMicInput("muted");
-  } else if (state_ == ChanState::Listening && !micEnabled_) {
+  } else if (!interactionMicBlocked_ && state_ == ChanState::Listening && !micEnabled_) {
     startMicInput();
   }
   Serial.printf("[audio] mic_muted=%d\n", micMuted_);
@@ -935,6 +994,9 @@ void AudioController::enterListening() {
   if (micMuted_) {
     stopMicInput("muted");
     Serial.println("[audio] listening: mic muted");
+  } else if (interactionMicBlocked_) {
+    stopMicInput("servo/interaction block");
+    Serial.println("[audio] listening: mic held off for servo/interaction noise");
   } else {
     startMicInput();
   }
@@ -1032,6 +1094,10 @@ void AudioController::startSpeakerIfDue() {
 }
 
 void AudioController::startMicInput() {
+  if (interactionMicBlocked_) {
+    Serial.println("[audio] mic start blocked for servo/interaction noise");
+    return;
+  }
   resetMicBuffers();
   auto micCfg = M5.Mic.config();
   micCfg.sample_rate = AUDIO_SAMPLE_RATE;
