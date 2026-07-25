@@ -218,17 +218,14 @@ void FaceController::setVoicePettingActive(bool active, unsigned long now) {
   }
 
   voicePettingActive_ = active;
-  if (active) {
-    // The client can begin TTS immediately after the pet event. Close the eyes
-    // before that state change so the first, subtle transition frame cannot be
-    // overwritten before it reaches the display.
-    voiceEyeIndex_ = static_cast<uint8_t>(VOICE_SPRITE_EYE_FRAME_COUNT - 1);
-    voicePettingEyeTransitioning_ = false;
-    nextVoicePettingEyeFrameMs_ = 0;
-  } else {
-    voicePettingEyeTransitioning_ = voiceEyeIndex_ != 0;
-    nextVoicePettingEyeFrameMs_ = voicePettingEyeTransitioning_ ? now : 0;
-  }
+  const uint8_t targetEye = active
+                              ? static_cast<uint8_t>(VOICE_SPRITE_EYE_FRAME_COUNT - 1)
+                              : 0;
+  // Ease into and out of the petting expression one eye frame at a time.
+  // Once fully closed, voicePettingActive_ keeps the eyes closed until the
+  // interaction actually ends; it does not run an opening loop while petted.
+  voicePettingEyeTransitioning_ = voiceEyeIndex_ != targetEye;
+  nextVoicePettingEyeFrameMs_ = voicePettingEyeTransitioning_ ? now : 0;
   voiceBlinkAnimating_ = false;
   voiceBlinkSequenceIndex_ = 0;
   nextVoiceBlinkFrameMs_ = 0;
