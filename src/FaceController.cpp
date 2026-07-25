@@ -218,8 +218,17 @@ void FaceController::setVoicePettingActive(bool active, unsigned long now) {
   }
 
   voicePettingActive_ = active;
-  voicePettingEyeTransitioning_ = true;
-  nextVoicePettingEyeFrameMs_ = now;
+  if (active) {
+    // The client can begin TTS immediately after the pet event. Close the eyes
+    // before that state change so the first, subtle transition frame cannot be
+    // overwritten before it reaches the display.
+    voiceEyeIndex_ = static_cast<uint8_t>(VOICE_SPRITE_EYE_FRAME_COUNT - 1);
+    voicePettingEyeTransitioning_ = false;
+    nextVoicePettingEyeFrameMs_ = 0;
+  } else {
+    voicePettingEyeTransitioning_ = voiceEyeIndex_ != 0;
+    nextVoicePettingEyeFrameMs_ = voicePettingEyeTransitioning_ ? now : 0;
+  }
   voiceBlinkAnimating_ = false;
   voiceBlinkSequenceIndex_ = 0;
   nextVoiceBlinkFrameMs_ = 0;
@@ -230,7 +239,6 @@ void FaceController::setVoicePettingActive(bool active, unsigned long now) {
     clearVoiceSpriteBlockingModes(now);
     prepareVoiceSpriteCache(micConnected_ || state_ == ChanState::Speaking);
   } else if (voiceEyeIndex_ == 0) {
-    voicePettingEyeTransitioning_ = false;
     scheduleBlink(now);
   }
 
@@ -1321,7 +1329,10 @@ void FaceController::update(unsigned long now) {
     }
 #endif
     if (faceAssetModeUsesV2(faceAssetStatus_.mode)) {
-      drawEmergencyFace();
+      // A presentation mode can temporarily block the voice sprite while the
+      // device state changes. Keep the last image frame on screen; the
+      // geometric emergency renderer is only valid when asset detection chose
+      // FaceAssetMode::Emergency at startup.
       return;
     }
     if (now - lastLipSyncMs_ >= LIP_SYNC_INTERVAL_MS) {
@@ -1381,7 +1392,9 @@ void FaceController::update(unsigned long now) {
 #endif
   if (faceAssetModeUsesV2(faceAssetStatus_.mode) &&
       !(guruguruFaceMode_ && state_ == ChanState::Idle)) {
-    drawEmergencyFace();
+    // Cache ownership changes during shake/petting/guruguru transitions can
+    // briefly leave no active v2 presenter. Preserve the last valid image
+    // frame instead of flashing the geometric emergency face.
     return;
   }
 
@@ -2294,6 +2307,11 @@ void FaceController::drawEmergencyFaceTarget(Target& target) {
 }
 
 void FaceController::drawEmergencyFace() {
+  if (faceAssetStatus_.mode != FaceAssetMode::Emergency) {
+    Serial.printf("[face] blocked emergency renderer in mode=%s\n",
+                  faceAssetModeName(faceAssetStatus_.mode));
+    return;
+  }
   const unsigned long now = millis();
   if (canvasReady_) {
     drawEmergencyFaceTarget(canvas_);

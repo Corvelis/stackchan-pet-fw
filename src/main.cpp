@@ -174,6 +174,7 @@ unsigned long nextPetMoveMs = 0;
 unsigned long lastPettingRepeatEventMs = 0;
 Pose pettingBasePose = {SERVO_PAN_CENTER, SERVO_TILT_CENTER};
 bool shakeActive = false;
+bool shakeReturnMotionActive = false;
 bool interactionMicPaused = false;
 unsigned long servoMicQuietUntilMs = 0;
 unsigned long shakeEndMs = 0;
@@ -2514,6 +2515,7 @@ void resetInteractionStateForDisplayOff(unsigned long now) {
   lastPettingRepeatEventMs = 0;
 
   shakeActive = false;
+  shakeReturnMotionActive = false;
   shakeEndMs = 0;
   nextShakeMotionMs = 0;
   lastShakeRepeatEventMs = 0;
@@ -2860,6 +2862,10 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
   pettingEndMs = 0;
   nextPetMoveMs = 0;
   lastPettingRepeatEventMs = 0;
+  // Ignore motion caused by the petting servo returning to center. Without
+  // this cooldown, the device can interpret its own movement as a user shake.
+  lastShakeTriggerMs = now;
+  shakeStrongSamples = 0;
 #if STACKCHAN_PET_ANIMATION_ENABLED
   if (wasVoicePettingFace) {
     faceController.setVoicePettingActive(false, now);
@@ -2948,19 +2954,29 @@ bool interactionMicShouldPause(unsigned long now) {
 }
 
 void updateInteractionMicPause() {
-  if (interactionMicShouldPause(millis())) {
-    if (!interactionMicPaused) {
-      interactionMicPaused = audioController.pauseMicForInteraction("servo/interaction noise");
-    }
+  const bool shouldPause = interactionMicShouldPause(millis());
+  if (shouldPause == interactionMicPaused) {
     return;
   }
 
-  if (!interactionMicPaused) {
+  audioController.setInteractionMicBlocked(shouldPause, "servo/interaction noise");
+  interactionMicPaused = shouldPause;
+}
+
+bool interactionMotionAllowedDuringSpeech() {
+  return pettingActive || shakeActive || shakeReturnMotionActive;
+}
+
+void updateShakeReturnMotion(unsigned long now) {
+  if (!shakeReturnMotionActive || motionController.servoMotionActive(now)) {
     return;
   }
 
-  audioController.resumeMicAfterInteraction(true, "servo/interaction noise");
-  interactionMicPaused = false;
+  shakeReturnMotionActive = false;
+  if (currentState == ChanState::Speaking) {
+    motionController.setMovementPaused(true);
+  }
+  Serial.println("[shake] return motion complete");
 }
 
 bool isGestureMotionStrong(const m5::imu_data_t& data, float* shakeAccOut, float* gyroMagOut) {
@@ -3003,15 +3019,20 @@ void setShakeActive(bool active, unsigned long now) {
     lastShakeTriggerMs = now;
     if (!shakeActive) {
       shakeActive = true;
+      shakeReturnMotionActive = false;
       shakeStrongSamples = 0;
       nextShakeMotionMs = 0;
       cancelListeningNod(false);
+      // A shake is an explicit user interaction, so it may move even if the
+      // app starts its spoken reaction at the same time. Ordinary speech
+      // remains paused by setState().
+      motionController.setMovementPaused(false);
       faceController.setShakeFaceMode(true);
       motionController.setTargetPose(SERVO_PAN_CENTER + random(-10, 11), SERVO_TILT_CENTER - random(4, 11));
       applyAffectionResult(affectionController.applyEvent("shake", 1.0f, 1.0f, nullptr, now), now, true);
       sendInteractionEvent("shake", "start", now);
       pulseHaptic(HAPTIC_SHAKE_LEVEL, HAPTIC_SHAKE_MS, now);
-      motionController.deferOutputUntil(now + INTERACTION_SERVO_START_DELAY_MS);
+      motionController.deferOutputUntil(now + SHAKE_SERVO_START_DELAY_MS);
       lastShakeRepeatEventMs = now;
       Serial.println("[shake] start");
     } else if (now - lastShakeRepeatEventMs >= 800) {
@@ -3031,7 +3052,11 @@ void setShakeActive(bool active, unsigned long now) {
   lastShakeRepeatEventMs = 0;
   shakeStrongSamples = 0;
   faceController.setShakeFaceMode(false);
-  if (!pettingActive && currentState != ChanState::Listening) {
+  if (!pettingActive) {
+    // Keep speech-driven motion suppression lifted only until the explicit
+    // shake return has reached the calibrated center.
+    motionController.setMovementPaused(false);
+    shakeReturnMotionActive = true;
     motionController.setMotion("center");
   }
   sendInteractionEvent("shake", "end", now);
@@ -3071,6 +3096,11 @@ void updateShake(unsigned long now) {
     return;
   }
 
+  if (!shakeActive && pettingActive) {
+    shakeStrongSamples = 0;
+    return;
+  }
+
   if (now < nextShakeCheckMs) {
     return;
   }
@@ -3106,9 +3136,6 @@ void updateShake(unsigned long now) {
       lastShakeRepeatEventMs = now;
     }
     if (now < shakeEndMs) {
-      return;
-    }
-    if (currentState == ChanState::Speaking && audioController.state() != ChanState::Idle) {
       return;
     }
     setShakeActive(false, now);
@@ -3635,6 +3662,7 @@ void handleCaptureRequest() {
     logCameraRequestPhase("init_failed");
 #endif
     faceController.setCameraCaptureActive(false);
+    audioController.resetSpeakerAfterCameraCapture();
     audioController.resumeMicAfterCapture(micPausedForCapture);
     resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     sendJson(503, "{\"error\":\"camera_not_ready\"}");
@@ -3653,6 +3681,7 @@ void handleCaptureRequest() {
 #endif
     faceController.setCameraCaptureActive(false);
     cameraManager.deinit();
+    audioController.resetSpeakerAfterCameraCapture();
     audioController.resumeMicAfterCapture(micPausedForCapture);
     resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     sendJson(500, "{\"error\":\"capture_failed\"}");
@@ -3666,6 +3695,7 @@ void handleCaptureRequest() {
   // The JPEG buffer is independent, so release the camera before asking the
   // Wi-Fi stack to allocate TCP buffers for the response.
   cameraManager.deinit();
+  audioController.resetSpeakerAfterCameraCapture();
 #if CAMERA_DIAG_LOG_ENABLED
   logCameraRequestPhase("camera_released", jpgLen);
 #endif
@@ -5903,7 +5933,7 @@ void drawStreetPassNotificationOverlay() {
 void setState(ChanState state) {
   if (currentState == state) {
     if (state == ChanState::Speaking) {
-      motionController.setMovementPaused(true);
+      motionController.setMovementPaused(!interactionMotionAllowedDuringSpeech());
       const bool wasDraining = audioController.isPlaybackDraining();
       const bool wasOutOfSync = audioController.state() != ChanState::Speaking;
       if (wasDraining || wasOutOfSync) {
@@ -5939,7 +5969,8 @@ void setState(ChanState state) {
   }
 
   currentState = state;
-  motionController.setMovementPaused(state == ChanState::Speaking);
+  motionController.setMovementPaused(
+    state == ChanState::Speaking && !interactionMotionAllowedDuringSpeech());
   pendingStateAfterPlayback = false;
   deferredStateReadyMs = 0;
   if (state == ChanState::Speaking && wsAudioSettleUntilMs != 0 &&
@@ -7170,6 +7201,7 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
 
   if (!cameraManager.isReady() && !cameraManager.init()) {
     faceController.setCameraCaptureActive(false);
+    audioController.resetSpeakerAfterCameraCapture();
     audioController.resumeMicAfterCapture(micPausedForCapture);
     resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     JsonDocument end;
@@ -7190,6 +7222,7 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
   if (!cameraManager.captureJpeg(&jpg, &jpgLen)) {
     faceController.setCameraCaptureActive(false);
     cameraManager.deinit();
+    audioController.resetSpeakerAfterCameraCapture();
     audioController.resumeMicAfterCapture(micPausedForCapture);
     resumeStreetPassBleAfterCamera(streetPassSuspendedForCapture);
     JsonDocument end;
@@ -7208,6 +7241,7 @@ void handleUsbSerialCaptureRequest(JsonDocument& doc) {
   // Keep the encoded JPEG, but release the large camera framebuffer and DMA
   // allocations before serial framing and the rest of the device resume.
   cameraManager.deinit();
+  audioController.resetSpeakerAfterCameraCapture();
 
   start["contentType"] = "image/jpeg";
   start["length"] = static_cast<uint32_t>(jpgLen);
@@ -9189,6 +9223,7 @@ void loop() {
     }
     updateInteractionMicPause();
     motionController.update(now);
+    updateShakeReturnMotion(now);
     return;
   }
 
@@ -9223,6 +9258,7 @@ void loop() {
     updateInteractionMicPause();
     updateListeningNod(now);
     motionController.update(now);
+    updateShakeReturnMotion(now);
     return;
   }
 
@@ -9297,6 +9333,7 @@ void loop() {
     updateListeningNod(now);
   }
   motionController.update(now);
+  updateShakeReturnMotion(now);
   noteVoicePerfLoopDuration(diagSpeakingAtLoopStart,
                             static_cast<uint32_t>(millis() - loopStartedAt));
 }
