@@ -124,6 +124,7 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 - [StreetPass protocol](docs/streetpass_protocol.ja.md)
 - [好感度API](docs/device_affection_api.ja.md)
 - [StopWatch歩数同期protocol](docs/step_counter_protocol.ja.md)
+- [StopWatchスマホカメラ・リモート撮影仕様](docs/phone_camera_remote_protocol.ja.md)
 
 ## ドキュメント
 

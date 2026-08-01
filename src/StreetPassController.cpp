@@ -83,13 +83,14 @@ void StreetPassController::markAllRead() {
 }
 
 bool StreetPassController::syncTime(uint32_t unixTime, const char* timezone, unsigned long now) {
-  if (unixTime == 0) {
+  if (unixTime < 1700000000UL) {
     return false;
   }
+  (void)timezone;
   timeSynced_ = true;
   timeAnchorUnix_ = unixTime;
   timeAnchorMillis_ = static_cast<uint32_t>(now);
-  timezone_ = timezone == nullptr || timezone[0] == '\0' ? "UTC" : timezone;
+  timezone_ = STACKCHAN_TIMEZONE_NAME;
   saveSettings();
   return true;
 }
@@ -230,7 +231,7 @@ void StreetPassController::loadSettings() {
   timeSynced_ = preferences_->getBool("time_sync", false);
   timeAnchorUnix_ = preferences_->getUInt("time_unix", 0);
   timeAnchorMillis_ = preferences_->getUInt("time_ms", 0);
-  timezone_ = preferences_->getString("timezone", "UTC");
+  timezone_ = STACKCHAN_TIMEZONE_NAME;
   preferences_->end();
 #if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_ATOMS3R_CHATBOT
   const bool migratedDefaultName = profile_.name == STREETPASS_LEGACY_DEFAULT_NAME;
@@ -436,7 +437,7 @@ bool StreetPassController::applyProfileSet(JsonDocument& request) {
 
 bool StreetPassController::applyTimeSet(JsonDocument& request, unsigned long now) {
   const uint32_t unixTime = request["unixTime"] | 0;
-  return syncTime(unixTime, request["timezone"] | "UTC", now);
+  return syncTime(unixTime, request["timezone"] | STACKCHAN_TIMEZONE_NAME, now);
 }
 
 bool StreetPassController::applyAck(JsonDocument& request) {

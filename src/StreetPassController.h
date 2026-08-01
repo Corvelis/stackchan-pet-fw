@@ -90,5 +90,5 @@ private:
   bool timeSynced_ = false;
   uint32_t timeAnchorUnix_ = 0;
   uint32_t timeAnchorMillis_ = 0;
-  String timezone_ = "UTC";
+  String timezone_ = STACKCHAN_TIMEZONE_NAME;
 };

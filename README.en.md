@@ -128,6 +128,7 @@ See the protocol documents for details.
 - [StreetPass Protocol](docs/streetpass_protocol.md)
 - [Affection API](docs/device_affection_api.md)
 - [StopWatch Step Sync Protocol](docs/step_counter_protocol.md)
+- [StopWatch Phone Camera Remote Protocol](docs/phone_camera_remote_protocol.md)
 
 ## Documentation
 

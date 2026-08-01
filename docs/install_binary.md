@@ -257,7 +257,7 @@ Common:
 - `Pwr` shows battery, temperature, and low-power mode controls.
 - Low-power mode caps display brightness and reduces idle face updates.
   Audio playback and lip-sync during speech continue.
-- CoreS3 mutes or unmutes mic streaming from its right-side mic overlay, StopWatch from its lower-right rim overlay, and AtomS3R Chatbot by double-clicking BtnA on the normal face screen.
+- CoreS3 mutes or unmutes mic streaming from its right-side mic overlay, StopWatch from its lower-left rim overlay, and AtomS3R Chatbot by double-clicking BtnA on the normal face screen.
 
 Normal/voice screen and guruguru mode:
 
