@@ -54,7 +54,7 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
   "deviceId": "stackchan_8f3a21",
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "0.5.0",
+  "firmwareVersion": "0.4.1",
   "protocolVersion": 2,
   "faceRenderer": "image",
   "faceRendererMode": "animated",

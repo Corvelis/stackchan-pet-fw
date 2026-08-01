@@ -10,7 +10,7 @@ servos and camera capture.
 This repository contains the device firmware. External client implementations are
 out of scope.
 
-## Latest Release: v0.5.0
+## Latest Release: v0.4.1
 
 ### StopWatch Phone Camera
 
@@ -32,7 +32,7 @@ out of scope.
 - Publishes the phone-camera remote protocol in Japanese and English.
 - Distributes update `firmware` and first-install `factory` binaries for all three targets.
 
-See the [0.5.0 Release Notes](docs/release_notes_0.5.0.md) for details and the
+See the [0.4.1 Release Notes](docs/release_notes_0.4.1.md) for details and the
 [English Changelog](CHANGELOG.md) for the complete version history.
 
 ## Supported Devices
@@ -135,7 +135,7 @@ See the protocol documents for details.
 | --- | --- |
 | Target builds and controls | [Device Guide](docs/devices.md) |
 | Binary installation and recovery | [Binary Installation Guide](docs/install_binary.md) |
-| v0.5.0 update | [0.5.0 Release Notes](docs/release_notes_0.5.0.md) |
+| v0.4.1 update | [0.4.1 Release Notes](docs/release_notes_0.4.1.md) |
 | v0.4.0 face asset v2 migration | [0.4.0 Release Notes](docs/release_notes_0.4.0.md) |
 | Complete version history | [Changelog](CHANGELOG.md) |
 | Face image creation | [Face Image Builder](tools/face_image_builder/README.en.md) |
@@ -160,7 +160,7 @@ are not embedded in binaries.
 ## License
 
 The current firmware source, bundled original images, and samples use the
-[MIT License](LICENSE). The current source tree and v0.5.0 release assets contain
+[MIT License](LICENSE). The current source tree and v0.4.1 release assets contain
 no third-party character material.
 
 Historical release binaries containing Tsukuyomi-chan images are not relicensed

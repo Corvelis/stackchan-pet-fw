@@ -8,7 +8,7 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 
 このリポジトリはデバイス本体側のファームウェアです。外部クライアントの実装は含みません。
 
-## 最新リリース: v0.5.0
+## 最新リリース: v0.4.1
 
 ### StopWatchスマホカメラ
 
@@ -30,7 +30,7 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 - スマホカメラ遠隔操作protocolを日本語／英語で公開。
 - 3機種の更新用`firmware`と初回導入用`factory`バイナリを配布。
 
-詳細は[0.5.0リリースノート](docs/release_notes_0.5.0.ja.md)、全versionの履歴は
+詳細は[0.4.1リリースノート](docs/release_notes_0.4.1.ja.md)、全versionの履歴は
 [日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。
 
 ## 対応デバイス
@@ -131,7 +131,7 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 | --- | --- |
 | 機種別のbuild・操作 | [対応デバイス別ガイド](docs/devices.ja.md) |
 | binary導入・復旧 | [バイナリ版インストール手順](docs/install_binary.ja.md) |
-| v0.5.0更新 | [0.5.0リリースノート](docs/release_notes_0.5.0.ja.md) |
+| v0.4.1更新 | [0.4.1リリースノート](docs/release_notes_0.4.1.ja.md) |
 | v0.4.0顔画像v2移行 | [0.4.0リリースノート](docs/release_notes_0.4.0.ja.md) |
 | 全versionの変更 | [CHANGELOG](CHANGELOG.ja.md) |
 | 顔画像の作成 | [顔画像ビルダー](tools/face_image_builder/README.md) |
@@ -154,7 +154,7 @@ build pathがbinaryへ残っていないことも検査します。
 ## ライセンス
 
 現在のfirmware source、同梱自作画像、sampleは[MIT License](LICENSE)です。
-現在のsource treeとv0.5.0配布物には第三者のcharacter素材を含みません。
+現在のsource treeとv0.4.1配布物には第三者のcharacter素材を含みません。
 
 つくよみちゃん画像を含む過去の配布binaryには現行MITを適用せず、当時のrelease通知と
 素材提供元の規約に従ってください。依存関係は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を

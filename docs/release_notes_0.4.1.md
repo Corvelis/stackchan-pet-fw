@@ -1,8 +1,8 @@
-# Stack-chan Multi-Device Controller 0.5.0
+# Stack-chan Multi-Device Controller 0.4.1
 
-[English](release_notes_0.5.0.md) | [日本語](release_notes_0.5.0.ja.md)
+[English](release_notes_0.4.1.md) | [日本語](release_notes_0.4.1.ja.md)
 
-Version 0.5.0 lets M5Stack StopWatch request photo capture and front/rear lens
+Version 0.4.1 lets M5Stack StopWatch request photo capture and front/rear lens
 changes from a connected compatible phone app. It also improves camera and
 microphone touch handling and Japan Standard Time／NTP synchronization for the
 clock and StreetPass.
@@ -18,7 +18,7 @@ clock and StreetPass.
 - A firmware-only update preserves Wi-Fi, StreetPass, and LittleFS image data.
 - A factory image installs firmware and face asset v2 together, but resets
   settings stored on the device.
-- Version 0.4.0 and 0.5.0 use the same face asset v2 set, so a device already on
+- Version 0.4.0 and 0.4.1 use the same face asset v2 set, so a device already on
   0.4.0 can use a firmware-only update.
 - Verify downloads with `SHA256SUMS`, and keep the bundled `LICENSE` and
   `THIRD_PARTY_NOTICES.md`.

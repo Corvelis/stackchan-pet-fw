@@ -72,7 +72,7 @@ firmware source, as described in the repository's `LICENSE`.
 
 The tracked face images introduced in tag `0.3.0`, the expanded image set in
 tag `v0.3.1`, and the face asset v2 set introduced in `v0.4.0` and retained in
-`v0.5.0` were created and provided by Ailog. These original image sets use the
+`v0.4.1` were created and provided by Ailog. These original image sets use the
 repository's MIT License.
 
 The current source tree and the tracked images in tags `0.3.0` and `v0.3.1`

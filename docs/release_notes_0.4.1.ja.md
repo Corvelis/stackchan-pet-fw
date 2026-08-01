@@ -1,8 +1,8 @@
-# Stack-chan Multi-Device Controller 0.5.0
+# Stack-chan Multi-Device Controller 0.4.1
 
-[English](release_notes_0.5.0.md) | [日本語](release_notes_0.5.0.ja.md)
+[English](release_notes_0.4.1.md) | [日本語](release_notes_0.4.1.ja.md)
 
-0.5.0では、M5Stack StopWatchから接続中の対応スマホアプリへ、写真撮影と
+0.4.1では、M5Stack StopWatchから接続中の対応スマホアプリへ、写真撮影と
 イン／アウトカメラ切替を要求できるようになりました。あわせて、カメラ／マイク表示の
 タッチ判定と、StreetPass・時計の日本時間／NTP同期を改善しています。
 
@@ -16,7 +16,7 @@
 
 - `firmware.bin`だけの更新では、Wi-Fi設定、StreetPass設定、LittleFS画像などを保持します。
 - `factory.bin`はfirmwareと顔画像v2をまとめて導入しますが、本体内の設定を初期化します。
-- v0.4.0とv0.5.0の顔画像v2セットは同じため、v0.4.0導入済み端末はfirmware-onlyで更新できます。
+- v0.4.0とv0.4.1の顔画像v2セットは同じため、v0.4.0導入済み端末はfirmware-onlyで更新できます。
 - `SHA256SUMS`でダウンロードを検証し、同梱の`LICENSE`、`THIRD_PARTY_NOTICES.md`も保存してください。
 - 詳しい書き込み方法は[バイナリ版インストール手順](install_binary.ja.md)を参照してください。
 
