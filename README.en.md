@@ -10,31 +10,29 @@ servos and camera capture.
 This repository contains the device firmware. External client implementations are
 out of scope.
 
-## Latest Release: v0.4.0
+## Latest Release: v0.5.0
 
-### Face Rendering and Reactions
+### StopWatch Phone Camera
 
-- Migrated all three targets to face image v2 with 4×4 lip-sync／blink, petting, direction, and dizzy animations.
-- Reduced release assets to 65 JPG files on CoreS3／AtomS3R and 57 on StopWatch, removing legacy
-  `good_*`, `bad_*`, `photo_*`, affection, thermal, and low-power static faces.
-- Retained a limited fallback for devices containing only old images, while stopping thermal, low-power, and camera states from selecting separate face images.
-- Added dissatisfied reactions for petting shorter than 3 seconds, happy reactions for 3 seconds or longer, and gradual closed-to-open-eye dizzy recovery.
-- Added target-specific source-built classic faces with procedural lip-sync, blink, and speech bubbles but no image assets.
+- Sends shutter and front/rear lens requests to a compatible phone app over WebSocket or USB Serial.
+- Short-press the lower-right camera overlay to capture; hold it for about 0.8 seconds to switch lenses.
+- Shows the current lens as `IN`／`OUT` and reports pending, success, and failure through the display and haptics.
+- Validates transport, request ID, and operation while handling timeouts, disconnects, and display-off safely.
 
-### Device Features and Stability
+### Touch Controls and Time Sync
 
-- Changed CoreS3 camera capture to 640×480 JPEG and fixed I2C conflicts and USB／HTTP transfer handling.
-- Fixed CoreS3 startup servo motion, unwanted speaking motion, microphone retriggers from mechanical noise, and excessive upward petting poses.
-- Added a StopWatch step counter, 30-day history with a 04:00 rollover, affection rewards, and app synchronization.
-- Suspended Wi-Fi／HTTP／WebSocket／USB Serial while the display is off, while keeping StreetPass BLE at a reduced rate.
+- Uses shared gesture tracking for camera and microphone overlays to prevent long-press and drag misfires.
+- Moves the StopWatch microphone overlay to the lower-left and enlarges StopWatch／CoreS3 touch targets.
+- Standardizes time on `Asia/Tokyo` and immediately applies RTC, app, and NTP updates to the system clock.
+- Confirms NTP responses and supports Wi-Fi reconnect sync, retry, and six-hour refreshes.
 
-### Communication, Image Creation, and Distribution
+### Protocol and Distribution
 
-- Added a shared WebSocket／USB Serial speech-bubble protocol and expanded audio, microphone, and StreetPass diagnostics.
-- Added tools and samples for generating, splitting, converting, manifesting, and validating 4×4 base-face and petting sprite sheets.
-- Added CI builds for image and classic faces on all three targets and generation of update `firmware` and first-install `factory` binaries.
+- Adds `phone_camera.remote_shutter.v1` and `phone_camera.remote_lens.v1` capabilities.
+- Publishes the phone-camera remote protocol in Japanese and English.
+- Distributes update `firmware` and first-install `factory` binaries for all three targets.
 
-See the [0.4.0 Release Notes](docs/release_notes_0.4.0.md) for details and the
+See the [0.5.0 Release Notes](docs/release_notes_0.5.0.md) for details and the
 [English Changelog](CHANGELOG.md) for the complete version history.
 
 ## Supported Devices
@@ -59,6 +57,7 @@ instructions, and unsupported features.
 - Interaction events for petting, shake, connection, camera, and other actions
 - Affection management and status overlays
 - StopWatch step counter, 30-day history, and synchronization
+- StopWatch shutter and lens requests to a compatible phone app
 - CoreS3 servo reactions
 
 ## Installation
@@ -136,7 +135,8 @@ See the protocol documents for details.
 | --- | --- |
 | Target builds and controls | [Device Guide](docs/devices.md) |
 | Binary installation and recovery | [Binary Installation Guide](docs/install_binary.md) |
-| v0.4.0 update and migration | [0.4.0 Release Notes](docs/release_notes_0.4.0.md) |
+| v0.5.0 update | [0.5.0 Release Notes](docs/release_notes_0.5.0.md) |
+| v0.4.0 face asset v2 migration | [0.4.0 Release Notes](docs/release_notes_0.4.0.md) |
 | Complete version history | [Changelog](CHANGELOG.md) |
 | Face image creation | [Face Image Builder](tools/face_image_builder/README.en.md) |
 | Development checks | [Contributing](CONTRIBUTING.md#english) |
@@ -160,7 +160,7 @@ are not embedded in binaries.
 ## License
 
 The current firmware source, bundled original images, and samples use the
-[MIT License](LICENSE). The current source tree and v0.4.0 release assets contain
+[MIT License](LICENSE). The current source tree and v0.5.0 release assets contain
 no third-party character material.
 
 Historical release binaries containing Tsukuyomi-chan images are not relicensed

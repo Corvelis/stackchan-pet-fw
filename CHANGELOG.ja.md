@@ -2,6 +2,31 @@
 
 [日本語](CHANGELOG.ja.md) | [English](CHANGELOG.md)
 
+## [0.5.0](docs/release_notes_0.5.0.ja.md) - 2026-08-01
+
+### 追加
+
+- StopWatchから対応スマホアプリへ撮影を要求する、WebSocket／USB Serial共通のスマホカメラ・リモート撮影protocol。
+- イン／アウトカメラ切替要求、現在レンズの`IN`／`OUT`表示、処理中・成功・失敗の画面表示と振動feedback。
+- transport所有権、session単位のrequest ID、応答照合、相互排他、timeoutを管理するスマホカメラ状態controller。
+- `phone_camera.remote_shutter.v1`と`phone_camera.remote_lens.v1` capability。
+- スマホカメラ遠隔操作仕様の日本語版／英語版。
+
+### 変更
+
+- StopWatchのマイク表示を右下から左下へ移動し、右下をスマホカメラ操作に使用。
+- StopWatch／CoreS3のカメラ・マイク操作を、開始位置、押下時間、移動量、終了位置を追跡する共通gesture判定へ移行。
+- StopWatch／CoreS3のoverlay button操作領域を拡大し、カメラ領域をなでなで判定から除外。
+- StreetPassと時計のtimezoneを`Asia/Tokyo`へ統一。
+- RTC、アプリ、NTPの時刻をシステム時計へ即時反映し、補正後のUTCをRTCへ書き戻すよう変更。
+- NTPを応答callbackで確定し、Wi-Fi再接続時の再同期、10秒retry、6時間更新に対応。
+
+### 修正
+
+- 長押しやdragの終了時にカメラ撮影／マイク切替が短押しとして誤発火する問題を修正。
+- 既存の有効なシステム時刻を、新しいNTP応答と誤認する可能性を解消。
+- RTC復元または`streetpass.time.set`後にシステム時計と表示が古いまま残る問題を修正。
+
 ## [0.4.0](docs/release_notes_0.4.0.ja.md) - 2026-07-25
 
 ### 追加

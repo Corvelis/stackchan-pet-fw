@@ -17,7 +17,7 @@ AtomS3R Chatbot do not count steps.
 ## Capability detection
 
 This protocol is available when `device.info.capabilities` contains `steps.sync`.
-In 0.4.0 only the StopWatch returns this capability.
+In 0.5.0 only the StopWatch returns this capability.
 
 ## Transport
 

@@ -2,6 +2,31 @@
 
 [日本語](CHANGELOG.ja.md) | [English](CHANGELOG.md)
 
+## [0.5.0](docs/release_notes_0.5.0.md) - 2026-08-01
+
+### Added
+
+- Shared WebSocket／USB Serial phone-camera remote protocol for requesting a capture from a compatible phone app on StopWatch.
+- Front/rear lens requests, `IN`／`OUT` lens display, pending/success/failure UI, and haptic feedback.
+- Phone-camera state controller for transport ownership, session-scoped request IDs, response matching, mutual exclusion, and timeouts.
+- `phone_camera.remote_shutter.v1` and `phone_camera.remote_lens.v1` capabilities.
+- Japanese and English phone-camera remote protocol documents.
+
+### Changed
+
+- Moved the StopWatch microphone overlay from the lower-right to the lower-left and assigned the lower-right to phone-camera controls.
+- Replaced StopWatch／CoreS3 camera and microphone taps with shared gesture tracking for start position, duration, travel, and release position.
+- Enlarged StopWatch／CoreS3 overlay-button touch targets and excluded the camera target from petting detection.
+- Standardized StreetPass and clock timezone handling on `Asia/Tokyo`.
+- Applied RTC, app, and NTP time immediately to the system clock and wrote corrected UTC back to the RTC.
+- Confirmed NTP through its response callback and added Wi-Fi reconnect sync, 10-second retry, and six-hour refresh handling.
+
+### Fixed
+
+- Prevented a hold or drag release from accidentally firing a short camera or microphone action.
+- Prevented an already-valid system clock from being mistaken for a fresh NTP response.
+- Prevented the system clock and display from remaining stale after RTC restore or `streetpass.time.set`.
+
 ## [0.4.0](docs/release_notes_0.4.0.md) - 2026-07-25
 
 ### Added
