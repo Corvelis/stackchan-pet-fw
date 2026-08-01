@@ -54,7 +54,7 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
   "deviceId": "stackchan_8f3a21",
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "0.4.0",
+  "firmwareVersion": "0.4.1",
   "protocolVersion": 2,
   "faceRenderer": "image",
   "faceRendererMode": "animated",
@@ -86,6 +86,10 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
 `faceAssetMissing` も追加されます。`display`と`speechBubble`は、クライアントが画面形状と
 吹き出し制限を実機から判定するための値です。StopWatchでは`capabilities`に`steps.sync`も
 追加されます。歩数JSONは[歩数カウンター／同期仕様](step_counter_protocol.ja.md)を参照してください。
+また、StopWatchでは`phone_camera.remote_shutter.v1`と
+`phone_camera.remote_lens.v1`も追加されます。対応スマホアプリはこれらのcapabilityを
+確認してから、[スマホカメラ・リモート撮影仕様](phone_camera_remote_protocol.ja.md)の
+`phone_camera.*` messageを使用してください。
 
 ## 本体が保持する状態
 

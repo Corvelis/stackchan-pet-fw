@@ -1187,6 +1187,27 @@ void FaceController::setCameraCaptureActive(bool active) {
   }
 }
 
+void FaceController::setPhoneCameraState(PhoneCameraState state,
+                                         PhoneCameraLens lens,
+                                         PhoneCameraOperation operation) {
+  if (phoneCameraState_ == state &&
+      phoneCameraLens_ == lens &&
+      phoneCameraOperation_ == operation) {
+    return;
+  }
+  phoneCameraState_ = state;
+  phoneCameraLens_ = lens;
+  phoneCameraOperation_ = operation;
+  phoneCameraOverlayDirty_ = true;
+  bool deferOverlayDraw = false;
+#if STACKCHAN_VOICE_SPRITE_ANIMATION_ENABLED
+  deferOverlayDraw = state_ == ChanState::Speaking && voiceSpriteAnimationAllowed();
+#endif
+  if (enabled_ && !deferOverlayDraw) {
+    drawCameraOverlay();
+  }
+}
+
 void FaceController::setAffectionState(const AffectionState& state) {
   if (affectionState_.affection == state.affection &&
       affectionState_.mood == state.mood &&
@@ -1371,6 +1392,7 @@ void FaceController::update(unsigned long now) {
       clockOverlayDirty_ ||
       stepOverlayDirty_ ||
       cameraOverlayDirty_ ||
+      phoneCameraOverlayDirty_ ||
       micOverlayDirty_ ||
       affectionDeltaExpired) {
     drawAffectionOverlay(now);
@@ -3170,7 +3192,74 @@ void FaceController::drawRoundBatteryOverlayTarget(Target& target) {
 
 template <typename Target>
 void FaceController::drawRoundCameraOverlayTarget(Target& target) {
-#if STACKCHAN_HAS_CAMERA
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  const int32_t size = min(M5.Display.width(), M5.Display.height());
+  const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
+  const int32_t cy = M5.Display.height() / 2 + size * 17 / 100;
+  const int32_t r = 28;
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
+  if (phoneCameraState_ == PhoneCameraState::Unavailable) {
+    cameraOverlayDirty_ = false;
+    phoneCameraOverlayDirty_ = false;
+    return;
+  }
+
+  uint16_t border = M5.Display.color565(90, 170, 230);
+  uint16_t fill = M5.Display.color565(14, 32, 46);
+  uint16_t icon = M5.Display.color565(205, 232, 255);
+  if (phoneCameraState_ == PhoneCameraState::Pending) {
+    border = M5.Display.color565(150, 150, 150);
+    fill = M5.Display.color565(32, 32, 36);
+    icon = M5.Display.color565(145, 150, 155);
+  } else if (phoneCameraState_ == PhoneCameraState::Success) {
+    border = M5.Display.color565(90, 220, 145);
+    fill = M5.Display.color565(16, 50, 32);
+    icon = M5.Display.color565(215, 255, 230);
+  } else if (phoneCameraState_ == PhoneCameraState::Failure) {
+    border = M5.Display.color565(235, 92, 92);
+    fill = M5.Display.color565(58, 18, 22);
+    icon = M5.Display.color565(255, 220, 220);
+  }
+
+  target.fillCircle(cx, cy, r, fill);
+  target.drawCircle(cx, cy, r, border);
+  target.fillRect(cx - 11, cy - 7, 22, 13, icon);
+  target.fillRect(cx - 6, cy - 13, 10, 6, icon);
+  target.fillCircle(cx, cy - 1, 6, fill);
+  target.drawCircle(cx, cy - 1, 6, icon);
+
+  const char* lensLabel = "--";
+  if (phoneCameraLens_ == PhoneCameraLens::Front) {
+    lensLabel = "IN";
+  } else if (phoneCameraLens_ == PhoneCameraLens::Back) {
+    lensLabel = "OUT";
+  }
+  const int32_t badgeW = phoneCameraLens_ == PhoneCameraLens::Back ? 24 : 20;
+  const int32_t badgeY = cy + 11;
+  target.fillRoundRect(cx - badgeW / 2, badgeY, badgeW, 11, 3, fill);
+  target.drawRoundRect(cx - badgeW / 2, badgeY, badgeW, 11, 3, border);
+  target.setFont(&fonts::Font0);
+  target.setTextSize(1);
+  target.setTextDatum(middle_center);
+  target.setTextColor(icon, fill);
+  target.drawString(lensLabel, cx, badgeY + 6);
+  target.setTextDatum(top_left);
+
+  if (phoneCameraState_ == PhoneCameraState::Pending) {
+    if (phoneCameraOperation_ == PhoneCameraOperation::LensChange) {
+      target.drawArc(cx + 17, cy - 16, 6, 5, 30, 330, border);
+      target.drawLine(cx + 19, cy - 22, cx + 23, cy - 19, border);
+    } else {
+      target.drawArc(cx - 17, cy - 16, 6, 5, 30, 330, border);
+    }
+  } else if (phoneCameraState_ == PhoneCameraState::Success) {
+    target.drawLine(cx - 23, cy - 17, cx - 19, cy - 13, border);
+    target.drawLine(cx - 19, cy - 13, cx - 12, cy - 21, border);
+  } else if (phoneCameraState_ == PhoneCameraState::Failure) {
+    target.drawLine(cx - 23, cy - 21, cx - 13, cy - 12, border);
+    target.drawLine(cx - 13, cy - 21, cx - 23, cy - 12, border);
+  }
+#elif STACKCHAN_HAS_CAMERA
   const int32_t size = min(M5.Display.width(), M5.Display.height());
   const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
   const int32_t cy = M5.Display.height() / 2 - size * 17 / 100;
@@ -3209,13 +3298,14 @@ void FaceController::drawRoundCameraOverlayTarget(Target& target) {
   (void)target;
 #endif
   cameraOverlayDirty_ = false;
+  phoneCameraOverlayDirty_ = false;
 }
 
 template <typename Target>
 void FaceController::drawRoundMicOverlayTarget(Target& target) {
 #if STACKCHAN_ROUND_DISPLAY
   const int32_t size = min(M5.Display.width(), M5.Display.height());
-  const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
+  const int32_t cx = M5.Display.width() / 2 - size * 36 / 100;
   const int32_t cy = M5.Display.height() / 2 + size * 17 / 100;
   const int32_t r = 22;
   target.fillCircle(cx, cy, r + 4, TFT_BLACK);
@@ -5545,6 +5635,7 @@ bool FaceController::overlaysNeedRefresh(unsigned long now) const {
          clockOverlayDirty_ ||
          stepOverlayDirty_ ||
          cameraOverlayDirty_ ||
+         phoneCameraOverlayDirty_ ||
          micOverlayDirty_ ||
          (affectionDeltaUntilMs_ != 0 && now >= affectionDeltaUntilMs_);
 }

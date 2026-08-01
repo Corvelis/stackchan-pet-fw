@@ -16,7 +16,7 @@
 ## 対応判定
 
 `device.info`の`capabilities`に`steps.sync`があれば、この仕様に対応しています。
-0.4.0ではStopWatchだけがこれを返します。
+0.4.1ではStopWatchだけがこれを返します。
 
 ## 通信
 

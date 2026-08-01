@@ -141,14 +141,21 @@ Record merge rules:
 
 ## Time
 
-The firmware stores time internally as UTC. The device UI does not show
-encounter times.
+The firmware stores Unix time internally as UTC and uses `Asia/Tokyo` (UTC+9)
+as its timezone. The StopWatch clock and step-counter day boundary use Japan
+Standard Time.
 
 Time sources:
 
 - app-provided `streetpass.time.set`,
 - NTP while connected in STA Wi-Fi mode,
 - boot-time RTC restore on devices where RTC is available.
+
+Every STA Wi-Fi connection starts an NTP synchronization. The firmware accepts
+the time only after an actual NTP response, applies even large corrections
+immediately, and writes the corrected UTC value back to the RTC. App-provided
+time is likewise applied immediately to the system clock and RTC; companion
+apps should send `streetpass.time.set` when they connect.
 
 Current implementation values:
 
@@ -257,7 +264,7 @@ ACK updates `synced` and `unread`; it does not delete records.
   "type": "streetpass.time.set",
   "requestId": "req-6",
   "unixTime": 1780123456,
-  "timezone": "UTC"
+  "timezone": "Asia/Tokyo"
 }
 ```
 

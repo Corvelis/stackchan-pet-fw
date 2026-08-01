@@ -56,7 +56,7 @@ Outbound JSON:
   "deviceId": "stackchan_8f3a21",
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "0.4.0",
+  "firmwareVersion": "0.4.1",
   "protocolVersion": 2,
   "faceRenderer": "image",
   "faceRendererMode": "animated",
@@ -89,7 +89,10 @@ or `emergency` profile. Invalid manifests add `faceAssetError`, and missing
 frames also add `faceAssetMissing`. `display` and `speechBubble` let clients
 discover the screen geometry and cue limits from the connected device. On
 StopWatch, `capabilities` also contains `steps.sync`; see the
-[Step Counter And Sync Protocol](step_counter_protocol.md).
+[Step Counter And Sync Protocol](step_counter_protocol.md). StopWatch also adds
+`phone_camera.remote_shutter.v1` and `phone_camera.remote_lens.v1`. Compatible
+phone apps should check these capabilities before using the `phone_camera.*`
+messages in the [Phone Camera Remote Protocol](phone_camera_remote_protocol.md).
 
 ## Device-Owned State
 

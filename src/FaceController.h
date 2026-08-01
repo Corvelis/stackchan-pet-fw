@@ -8,6 +8,7 @@
 #include "AffectionController.h"
 #include "AppState.h"
 #include "FaceAssetProfile.h"
+#include "PhoneCameraRemoteController.h"
 #include "config.h"
 
 enum class AuthFaceMode {
@@ -57,6 +58,9 @@ public:
   void setMicState(bool connected, bool muted, bool streaming);
   void setCameraButtonPending(bool pending);
   void setCameraCaptureActive(bool active);
+  void setPhoneCameraState(PhoneCameraState state,
+                           PhoneCameraLens lens = PhoneCameraLens::Unknown,
+                           PhoneCameraOperation operation = PhoneCameraOperation::None);
   void setAffectionState(const AffectionState& state);
   void showAffectionDelta(int delta, unsigned long now);
   void showGuruguruStep(uint8_t steps, uint8_t difficulty, unsigned long now);
@@ -387,5 +391,13 @@ private:
   bool cameraButtonPending_ = false;
   bool cameraCaptureActive_ = false;
   bool cameraOverlayDirty_ = true;
+  PhoneCameraState phoneCameraState_ = PhoneCameraState::Unavailable;
+  PhoneCameraLens phoneCameraLens_ = PhoneCameraLens::Unknown;
+  PhoneCameraOperation phoneCameraOperation_ = PhoneCameraOperation::None;
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  bool phoneCameraOverlayDirty_ = true;
+#else
+  bool phoneCameraOverlayDirty_ = false;
+#endif
   String currentPath_;
 };

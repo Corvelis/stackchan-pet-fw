@@ -18,8 +18,10 @@
 #include <Preferences.h>
 #include <cstring>
 #include <esp_heap_caps.h>
+#include <esp_sntp.h>
 #include <math.h>
 #include <qrcodegen.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "AffectionController.h"
@@ -28,6 +30,7 @@
 #include "CameraManager.h"
 #include "FaceController.h"
 #include "MotionController.h"
+#include "PhoneCameraRemoteController.h"
 #include "SpeechBubbleController.h"
 #include "StepCounterController.h"
 #include "StreetPassController.h"
@@ -47,6 +50,7 @@ CameraManager cameraManager;
 AffectionController affectionController;
 StreetPassController streetPassController;
 StepCounterController stepCounterController;
+PhoneCameraRemoteController phoneCameraRemoteController;
 WebServer httpServer(HTTP_PORT);
 Preferences preferences;
 String deviceId;
@@ -277,6 +281,23 @@ unsigned long usbSerialSpeakingReceivedMs = 0;
 unsigned long usbSerialFirstPcmMs = 0;
 unsigned long usbSerialLastPcmMs = 0;
 uint32_t usbSerialRxDiagEventCount = 0;
+enum class OverlayTouchTarget : uint8_t {
+  None,
+  PhoneCamera,
+  DeviceCamera,
+  Microphone,
+};
+
+struct OverlayTouchGesture {
+  OverlayTouchTarget target = OverlayTouchTarget::None;
+  unsigned long startedMs = 0;
+  int32_t startX = 0;
+  int32_t startY = 0;
+  uint32_t maxTravelSquared = 0;
+  bool longPressHandled = false;
+};
+
+OverlayTouchGesture overlayTouchGesture;
 #if STACKCHAN_DEVICE_STOPWATCH
 bool usbSerialDeferredIdlePending = false;
 unsigned long usbSerialDeferredIdleRequestedMs = 0;
@@ -303,6 +324,11 @@ unsigned long streetPassBleSettleUntilMs = 0;
 unsigned long streetPassResumeAfterCameraMs = 0;
 bool streetPassAppWasConnected = false;
 bool streetPassNtpConfigured = false;
+bool streetPassNtpAwaitingResponse = false;
+volatile bool streetPassNtpResyncRequested = false;
+volatile bool streetPassNtpTimeAvailable = false;
+volatile uint32_t streetPassNtpSyncedUnix = 0;
+portMUX_TYPE streetPassNtpMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t streetPassAdvertisedCardSeq = 0;
 uint32_t streetPassAdvertisedPeerToken = 0;
 bool streetPassAdvertisedEnabled = false;
@@ -404,6 +430,15 @@ StreetPassBleCandidate streetPassCandidates[kStreetPassCandidateCount];
 void sendAffectionState(const char* requestId = nullptr);
 void sendInteractionEvent(const char* event, const char* phase, unsigned long now);
 bool sendCameraButtonEvent(unsigned long now);
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+bool sendPhoneCameraShutterRequest(unsigned long now);
+bool sendPhoneCameraLensRequest(unsigned long now);
+void handlePhoneCameraStateCommand(JsonDocument& doc, SpeechBubbleTransport transport);
+void handlePhoneCameraResultCommand(JsonDocument& doc, SpeechBubbleTransport transport);
+void handlePhoneCameraLensResultCommand(JsonDocument& doc, SpeechBubbleTransport transport);
+void disconnectPhoneCameraTransport(PhoneCameraTransport transport, const char* reason);
+void updatePhoneCameraRemote(unsigned long now);
+#endif
 bool appClientConnected();
 void updateUsbSerial(unsigned long now);
 void updateWiFi(unsigned long now);
@@ -415,6 +450,7 @@ void updateStreetPassBle(unsigned long now);
 void updateStreetPassInboundEvents(unsigned long now, bool processWrites);
 void restoreStreetPassTimeFromRtc(unsigned long now);
 void writeStreetPassRtcTime(uint32_t unixTime);
+void requestStreetPassNtpResync();
 void updateClockOverlay(unsigned long now);
 void updateSharedImuSample(unsigned long now);
 void updateStepCounter(unsigned long now);
@@ -493,6 +529,7 @@ void logDeviceAudioConfig();
 void applyStopwatchStatusLedSetting();
 void pulseHaptic(uint8_t level, unsigned long durationMs, unsigned long now);
 void updateHaptic(unsigned long now);
+void resetOverlayTouchGesture();
 void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch);
 #if STACKCHAN_GURUGURU_FACE_ENABLED
 void setGuruguruFaceMode(bool enabled, unsigned long now);
@@ -827,11 +864,18 @@ uint32_t unixFromUtcParts(int year, int month, int day, int hour, int minute, in
   value.tm_isdst = 0;
   setenv("TZ", "UTC", 1);
   tzset();
-  return static_cast<uint32_t>(mktime(&value));
+  const uint32_t unixTime = static_cast<uint32_t>(mktime(&value));
+  setenv("TZ", STACKCHAN_TIMEZONE_POSIX, 1);
+  tzset();
+  return unixTime;
 }
 
 bool validStreetPassUnix(uint32_t unixTime) {
   return unixTime >= STREETPASS_VALID_UNIX_MIN;
+}
+
+bool streetPassTimeDeadlineReached(unsigned long now, unsigned long deadline) {
+  return static_cast<int32_t>(now - deadline) >= 0;
 }
 
 unsigned long streetPassScanDurationMs() {
@@ -1156,12 +1200,27 @@ bool readStreetPassRtcUnix(uint32_t& unixTime) {
   return validStreetPassUnix(unixTime);
 }
 
+bool setSystemUnixTime(uint32_t unixTime) {
+  if (!validStreetPassUnix(unixTime)) {
+    return false;
+  }
+  timeval value = {};
+  value.tv_sec = static_cast<time_t>(unixTime);
+  if (settimeofday(&value, nullptr) != 0) {
+    Serial.printf("[time] system clock write failed unix=%lu\n",
+                  static_cast<unsigned long>(unixTime));
+    return false;
+  }
+  return true;
+}
+
 void restoreStreetPassTimeFromRtc(unsigned long now) {
   uint32_t unixTime = 0;
   if (!readStreetPassRtcUnix(unixTime)) {
     return;
   }
-  if (streetPassController.syncTime(unixTime, "UTC", now)) {
+  setSystemUnixTime(unixTime);
+  if (streetPassController.syncTime(unixTime, STACKCHAN_TIMEZONE_NAME, now)) {
     Serial.printf("[streetpass] rtc time restored unix=%lu\n", static_cast<unsigned long>(unixTime));
   }
 }
@@ -1177,27 +1236,95 @@ void writeStreetPassRtcTime(uint32_t unixTime) {
   Serial.printf("[streetpass] rtc time written unix=%lu\n", static_cast<unsigned long>(unixTime));
 }
 
-void updateStreetPassNetworkTime(unsigned long now) {
-  if (networkMode != NetworkMode::Sta || WiFi.status() != WL_CONNECTED || now < nextStreetPassNtpSyncMs) {
+void onStreetPassNtpTimeSync(timeval* syncedTime) {
+  if (syncedTime == nullptr ||
+      syncedTime->tv_sec < static_cast<time_t>(STREETPASS_VALID_UNIX_MIN) ||
+      static_cast<uint64_t>(syncedTime->tv_sec) > 0xFFFFFFFFULL) {
     return;
   }
+  portENTER_CRITICAL(&streetPassNtpMux);
+  streetPassNtpSyncedUnix = static_cast<uint32_t>(syncedTime->tv_sec);
+  streetPassNtpTimeAvailable = true;
+  portEXIT_CRITICAL(&streetPassNtpMux);
+}
 
-  if (!streetPassNtpConfigured) {
-    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
-    streetPassNtpConfigured = true;
+void requestStreetPassNtpResync() {
+  portENTER_CRITICAL(&streetPassNtpMux);
+  streetPassNtpResyncRequested = true;
+  portEXIT_CRITICAL(&streetPassNtpMux);
+}
+
+void updateStreetPassNetworkTime(unsigned long now) {
+  bool resyncRequested = false;
+  bool timeAvailable = false;
+  uint32_t syncedUnix = 0;
+  portENTER_CRITICAL(&streetPassNtpMux);
+  resyncRequested = streetPassNtpResyncRequested;
+  streetPassNtpResyncRequested = false;
+  timeAvailable = streetPassNtpTimeAvailable;
+  if (timeAvailable) {
+    syncedUnix = streetPassNtpSyncedUnix;
+    streetPassNtpTimeAvailable = false;
+  }
+  portEXIT_CRITICAL(&streetPassNtpMux);
+
+  if (resyncRequested) {
+    if (!timeAvailable) {
+      streetPassNtpConfigured = false;
+      streetPassNtpAwaitingResponse = false;
+      nextStreetPassNtpSyncMs = now;
+    }
   }
 
-  const time_t unixTime = time(nullptr);
-  if (unixTime >= static_cast<time_t>(STREETPASS_VALID_UNIX_MIN)) {
-    const uint32_t syncedUnix = static_cast<uint32_t>(unixTime);
-    if (streetPassController.syncTime(syncedUnix, "UTC", now)) {
-      Serial.printf("[streetpass] ntp time synced unix=%lu\n", static_cast<unsigned long>(unixTime));
+  if (timeAvailable && validStreetPassUnix(syncedUnix)) {
+    const uint32_t previousUnix = streetPassController.estimatedUnix(now);
+    if (streetPassController.syncTime(syncedUnix, STACKCHAN_TIMEZONE_NAME, now)) {
+      const long correctionSeconds =
+        validStreetPassUnix(previousUnix)
+          ? static_cast<long>(static_cast<int64_t>(syncedUnix) - static_cast<int64_t>(previousUnix))
+          : 0;
+      Serial.printf("[streetpass] ntp time synced unix=%lu correction=%ld sec timezone=%s\n",
+                    static_cast<unsigned long>(syncedUnix),
+                    correctionSeconds,
+                    STACKCHAN_TIMEZONE_NAME);
       writeStreetPassRtcTime(syncedUnix);
     }
+    streetPassNtpAwaitingResponse = false;
     nextStreetPassNtpSyncMs = now + STREETPASS_NTP_REFRESH_MS;
     return;
   }
 
+  if (networkMode != NetworkMode::Sta || WiFi.status() != WL_CONNECTED ||
+      !streetPassTimeDeadlineReached(now, nextStreetPassNtpSyncMs)) {
+    return;
+  }
+
+  if (!streetPassNtpConfigured) {
+    sntp_set_time_sync_notification_cb(onStreetPassNtpTimeSync);
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    sntp_set_sync_interval(STREETPASS_NTP_REFRESH_MS);
+    configTzTime(STACKCHAN_TIMEZONE_POSIX,
+                 "pool.ntp.org",
+                 "time.google.com",
+                 "time.cloudflare.com");
+    streetPassNtpConfigured = true;
+    streetPassNtpAwaitingResponse = true;
+    nextStreetPassNtpSyncMs = now + STREETPASS_NTP_RETRY_MS;
+    Serial.printf("[streetpass] ntp sync requested timezone=%s\n", STACKCHAN_TIMEZONE_NAME);
+    return;
+  }
+
+  const bool retrying = streetPassNtpAwaitingResponse;
+  if (sntp_restart()) {
+    streetPassNtpAwaitingResponse = true;
+    nextStreetPassNtpSyncMs = now + STREETPASS_NTP_RETRY_MS;
+    Serial.printf("[streetpass] ntp %s requested\n",
+                  retrying ? "retry" : "refresh");
+    return;
+  }
+
+  streetPassNtpConfigured = false;
+  streetPassNtpAwaitingResponse = false;
   nextStreetPassNtpSyncMs = now + STREETPASS_NTP_RETRY_MS;
 }
 
@@ -2593,6 +2720,15 @@ void suspendAppCommsForDisplayOff(unsigned long now) {
   resetInteractionStateForDisplayOff(now);
   cancelListeningNod(true);
   clearCameraButtonPending("display_off");
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  const PhoneCameraState previousPhoneCameraState = phoneCameraRemoteController.state();
+  resetOverlayTouchGesture();
+  if (phoneCameraRemoteController.reset()) {
+    faceController.setPhoneCameraState(phoneCameraRemoteController.state());
+    Serial.printf("[phone_camera] reset display_off previous=%u\n",
+                  static_cast<unsigned>(previousPhoneCameraState));
+  }
+#endif
   slowStreetPassBleForDisplayOff(now);
 
   disconnectUsbSerialForDisplayOff();
@@ -4493,15 +4629,29 @@ bool touchStartedInCircle(const m5::touch_detail_t& touch, int32_t cx, int32_t c
 }
 
 int32_t roundMicButtonCenterX() {
+  return roundCenterX() - min(M5.Display.width(), M5.Display.height()) * 36 / 100;
+}
+
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+int32_t roundPhoneCameraButtonCenterX() {
   return roundCenterX() + min(M5.Display.width(), M5.Display.height()) * 36 / 100;
 }
+
+int32_t roundPhoneCameraButtonCenterY() {
+  return roundCenterY() + min(M5.Display.width(), M5.Display.height()) * 17 / 100;
+}
+
+int32_t roundPhoneCameraButtonRadius() {
+  return STOPWATCH_OVERLAY_BUTTON_TOUCH_RADIUS_PX;
+}
+#endif
 
 int32_t roundMicButtonCenterY() {
   return roundCenterY() + min(M5.Display.width(), M5.Display.height()) * 17 / 100;
 }
 
 int32_t roundMicButtonRadius() {
-  return 34;
+  return STOPWATCH_OVERLAY_BUTTON_TOUCH_RADIUS_PX;
 }
 
 void drawRoundSmallButton(int32_t cx, int32_t cy, int32_t radius, const char* label, bool active = false) {
@@ -5562,6 +5712,225 @@ bool touchIn(const m5::touch_detail_t& touch, int32_t x, int32_t y, int32_t w, i
   return touch.x >= x && touch.x < x + w && touch.y >= y && touch.y < y + h;
 }
 
+struct OverlayTouchBounds {
+  int32_t x;
+  int32_t y;
+  int32_t w;
+  int32_t h;
+};
+
+bool overlayPointInBounds(int32_t x, int32_t y, const OverlayTouchBounds& bounds, int32_t slop = 0) {
+  return x >= bounds.x - slop && x < bounds.x + bounds.w + slop &&
+         y >= bounds.y - slop && y < bounds.y + bounds.h + slop;
+}
+
+OverlayTouchBounds coreCameraButtonTouchBounds() {
+  return {
+    M5.Display.width() - CORES3_OVERLAY_BUTTON_TOUCH_WIDTH_PX,
+    M5.Display.height() - 148,
+    CORES3_OVERLAY_BUTTON_TOUCH_WIDTH_PX,
+    74,
+  };
+}
+
+OverlayTouchBounds coreMicButtonTouchBounds() {
+  return {
+    M5.Display.width() - CORES3_OVERLAY_BUTTON_TOUCH_WIDTH_PX,
+    M5.Display.height() - 74,
+    CORES3_OVERLAY_BUTTON_TOUCH_WIDTH_PX,
+    74,
+  };
+}
+
+void resetOverlayTouchGesture() {
+  overlayTouchGesture = OverlayTouchGesture();
+}
+
+OverlayTouchTarget overlayTouchTargetAtStart(const m5::touch_detail_t& touch) {
+  if (infoScreenVisible) {
+    return OverlayTouchTarget::None;
+  }
+
+#if STACKCHAN_DEVICE_STOPWATCH
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  if ((phoneCameraRemoteController.canRequest() || phoneCameraRemoteController.canSwitchLens()) &&
+      touchStartedInCircle(touch,
+                           roundPhoneCameraButtonCenterX(),
+                           roundPhoneCameraButtonCenterY(),
+                           roundPhoneCameraButtonRadius())) {
+    return OverlayTouchTarget::PhoneCamera;
+  }
+#endif
+  if (appClientConnected() &&
+      touchStartedInCircle(touch,
+                           roundMicButtonCenterX(),
+                           roundMicButtonCenterY(),
+                           roundMicButtonRadius())) {
+    return OverlayTouchTarget::Microphone;
+  }
+#endif
+
+#if STACKCHAN_DEVICE_CORES3
+  if (appClientConnected() &&
+      overlayPointInBounds(touch.base_x, touch.base_y, coreCameraButtonTouchBounds())) {
+    return OverlayTouchTarget::DeviceCamera;
+  }
+  if (appClientConnected() &&
+      overlayPointInBounds(touch.base_x, touch.base_y, coreMicButtonTouchBounds())) {
+    return OverlayTouchTarget::Microphone;
+  }
+#endif
+
+  return OverlayTouchTarget::None;
+}
+
+bool overlayTouchReleasedNearTarget(OverlayTouchTarget target,
+                                    const m5::touch_detail_t& touch,
+                                    int32_t slop) {
+  switch (target) {
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+    case OverlayTouchTarget::PhoneCamera:
+      return touchInCircle(touch,
+                           roundPhoneCameraButtonCenterX(),
+                           roundPhoneCameraButtonCenterY(),
+                           roundPhoneCameraButtonRadius() + slop);
+#endif
+#if STACKCHAN_DEVICE_STOPWATCH
+    case OverlayTouchTarget::Microphone:
+      return touchInCircle(touch,
+                           roundMicButtonCenterX(),
+                           roundMicButtonCenterY(),
+                           roundMicButtonRadius() + slop);
+#elif STACKCHAN_DEVICE_CORES3
+    case OverlayTouchTarget::Microphone:
+      return overlayPointInBounds(touch.x, touch.y, coreMicButtonTouchBounds(), slop);
+#endif
+#if STACKCHAN_DEVICE_CORES3
+    case OverlayTouchTarget::DeviceCamera:
+      return overlayPointInBounds(touch.x, touch.y, coreCameraButtonTouchBounds(), slop);
+#endif
+    case OverlayTouchTarget::None:
+    default:
+      return false;
+  }
+}
+
+void updateOverlayTouchTravel(const m5::touch_detail_t& touch) {
+  const int32_t dx = touch.x - overlayTouchGesture.startX;
+  const int32_t dy = touch.y - overlayTouchGesture.startY;
+  const uint32_t travelSquared = static_cast<uint32_t>(dx * dx + dy * dy);
+  if (travelSquared > overlayTouchGesture.maxTravelSquared) {
+    overlayTouchGesture.maxTravelSquared = travelSquared;
+  }
+}
+
+bool updateOverlayButtonTouch(unsigned long now, const m5::touch_detail_t& touch) {
+  if (overlayTouchGesture.target == OverlayTouchTarget::None) {
+    if (!touch.wasPressed()) {
+      return false;
+    }
+    const OverlayTouchTarget target = overlayTouchTargetAtStart(touch);
+    if (target == OverlayTouchTarget::None) {
+      return false;
+    }
+    overlayTouchGesture.target = target;
+    overlayTouchGesture.startedMs = now;
+    overlayTouchGesture.startX = touch.base_x;
+    overlayTouchGesture.startY = touch.base_y;
+    overlayTouchGesture.maxTravelSquared = 0;
+    overlayTouchGesture.longPressHandled = false;
+    return true;
+  }
+
+  updateOverlayTouchTravel(touch);
+  const unsigned long pressedMs = now - overlayTouchGesture.startedMs;
+
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  if (overlayTouchGesture.target == OverlayTouchTarget::PhoneCamera &&
+      !overlayTouchGesture.longPressHandled &&
+      touch.isPressed() &&
+      pressedMs >= PHONE_CAMERA_LONG_PRESS_MS) {
+    const uint32_t longMoveLimitSquared =
+      static_cast<uint32_t>(PHONE_CAMERA_LONG_PRESS_MOVE_PX * PHONE_CAMERA_LONG_PRESS_MOVE_PX);
+    if (overlayTouchGesture.maxTravelSquared <= longMoveLimitSquared &&
+        overlayTouchReleasedNearTarget(overlayTouchGesture.target,
+                                       touch,
+                                       OVERLAY_BUTTON_RELEASE_SLOP_PX) &&
+        phoneCameraRemoteController.canSwitchLens()) {
+      overlayTouchGesture.longPressHandled = true;
+      sendPhoneCameraLensRequest(now);
+    }
+  }
+#endif
+
+  if (touch.isPressed()) {
+    return true;
+  }
+
+  if (!touch.wasReleased()) {
+    resetOverlayTouchGesture();
+    return true;
+  }
+
+  const OverlayTouchTarget target = overlayTouchGesture.target;
+  const bool longPressHandled = overlayTouchGesture.longPressHandled;
+  const uint32_t maxTravelSquared = overlayTouchGesture.maxTravelSquared;
+  const bool releasedNearTarget =
+    overlayTouchReleasedNearTarget(target, touch, OVERLAY_BUTTON_RELEASE_SLOP_PX);
+  resetOverlayTouchGesture();
+
+  if (longPressHandled) {
+    return true;
+  }
+
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  if (target == OverlayTouchTarget::PhoneCamera && pressedMs >= PHONE_CAMERA_LONG_PRESS_MS) {
+    const uint32_t longMoveLimitSquared =
+      static_cast<uint32_t>(PHONE_CAMERA_LONG_PRESS_MOVE_PX * PHONE_CAMERA_LONG_PRESS_MOVE_PX);
+    if (maxTravelSquared <= longMoveLimitSquared && releasedNearTarget &&
+        phoneCameraRemoteController.canSwitchLens()) {
+      sendPhoneCameraLensRequest(now);
+    }
+    return true;
+  }
+#endif
+
+  const uint32_t moveLimitSquared =
+    static_cast<uint32_t>(OVERLAY_BUTTON_MOVE_LIMIT_PX * OVERLAY_BUTTON_MOVE_LIMIT_PX);
+  if (pressedMs >= OVERLAY_BUTTON_SHORT_PRESS_MAX_MS ||
+      maxTravelSquared > moveLimitSquared ||
+      !releasedNearTarget) {
+    return true;
+  }
+
+  switch (target) {
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+    case OverlayTouchTarget::PhoneCamera:
+      if (phoneCameraRemoteController.canRequest()) {
+        sendPhoneCameraShutterRequest(now);
+      }
+      break;
+#endif
+#if STACKCHAN_DEVICE_CORES3
+    case OverlayTouchTarget::DeviceCamera:
+      if (appClientConnected()) {
+        sendCameraButtonEvent(now);
+      }
+      break;
+#endif
+    case OverlayTouchTarget::Microphone:
+      if (appClientConnected()) {
+        audioController.setMicMuted(!audioController.micMuted());
+        updateMicStatusOverlay();
+      }
+      break;
+    case OverlayTouchTarget::None:
+    default:
+      break;
+  }
+  return true;
+}
+
 bool isSettingsSwipe(const m5::touch_detail_t& touch) {
   if (!touch.wasFlicked()) {
     return false;
@@ -6360,6 +6729,311 @@ bool sendUsbSerialJson(const char* payload) {
 #endif
 }
 
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+PhoneCameraTransport phoneCameraTransportFromCommand(SpeechBubbleTransport transport) {
+  if (transport == SpeechBubbleTransport::WebSocket) {
+    return PhoneCameraTransport::WebSocket;
+  }
+  if (transport == SpeechBubbleTransport::UsbSerial) {
+    return PhoneCameraTransport::UsbSerial;
+  }
+  return PhoneCameraTransport::None;
+}
+
+const char* phoneCameraTransportName(PhoneCameraTransport transport) {
+  switch (transport) {
+    case PhoneCameraTransport::WebSocket:
+      return "websocket";
+    case PhoneCameraTransport::UsbSerial:
+      return "usb_serial";
+    case PhoneCameraTransport::None:
+    default:
+      return "none";
+  }
+}
+
+const char* phoneCameraStateName(PhoneCameraState state) {
+  switch (state) {
+    case PhoneCameraState::Ready:
+      return "ready";
+    case PhoneCameraState::Pending:
+      return "pending";
+    case PhoneCameraState::Success:
+      return "success";
+    case PhoneCameraState::Failure:
+      return "failure";
+    case PhoneCameraState::Unavailable:
+    default:
+      return "unavailable";
+  }
+}
+
+const char* phoneCameraLensName(PhoneCameraLens lens) {
+  switch (lens) {
+    case PhoneCameraLens::Front:
+      return "front";
+    case PhoneCameraLens::Back:
+      return "back";
+    case PhoneCameraLens::Unknown:
+    default:
+      return "unknown";
+  }
+}
+
+PhoneCameraLens parsePhoneCameraLens(const char* lens) {
+  if (lens != nullptr && strcmp(lens, "front") == 0) {
+    return PhoneCameraLens::Front;
+  }
+  if (lens != nullptr && strcmp(lens, "back") == 0) {
+    return PhoneCameraLens::Back;
+  }
+  return PhoneCameraLens::Unknown;
+}
+
+void applyPhoneCameraPresentation(PhoneCameraState previousState, unsigned long now) {
+  const PhoneCameraState state = phoneCameraRemoteController.state();
+  faceController.setPhoneCameraState(state,
+                                     phoneCameraRemoteController.lens(),
+                                     phoneCameraRemoteController.pendingOperation());
+  if (state != previousState) {
+    if (state == PhoneCameraState::Success) {
+      pulseHaptic(PHONE_CAMERA_HAPTIC_SUCCESS_LEVEL,
+                  PHONE_CAMERA_HAPTIC_SUCCESS_MS,
+                  now);
+    } else if (state == PhoneCameraState::Failure) {
+      pulseHaptic(PHONE_CAMERA_HAPTIC_FAILURE_LEVEL,
+                  PHONE_CAMERA_HAPTIC_FAILURE_MS,
+                  now);
+    }
+    Serial.printf("[phone_camera] state %s -> %s ready=%s pending=%s\n",
+                  phoneCameraStateName(previousState),
+                  phoneCameraStateName(state),
+                  phoneCameraTransportName(phoneCameraRemoteController.readyTransport()),
+                  phoneCameraTransportName(phoneCameraRemoteController.pendingTransport()));
+  }
+}
+
+bool sendPhoneCameraJson(PhoneCameraTransport transport, const char* payload) {
+  if (payload == nullptr) {
+    return false;
+  }
+  if (transport == PhoneCameraTransport::WebSocket) {
+    return wsServer.hasClient() && wsServer.sendText(payload);
+  }
+  if (transport == PhoneCameraTransport::UsbSerial) {
+    return sendUsbSerialJson(payload);
+  }
+  return false;
+}
+
+bool sendPhoneCameraShutterRequest(unsigned long now) {
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  if (!phoneCameraRemoteController.beginShutterRequest(now)) {
+    return false;
+  }
+
+  const PhoneCameraTransport transport = phoneCameraRemoteController.pendingTransport();
+  const String requestId(phoneCameraRemoteController.pendingRequestId());
+  JsonDocument request;
+  request["type"] = "phone_camera.shutter.request";
+  request["version"] = PHONE_CAMERA_PROTOCOL_VERSION;
+  request["requestId"] = requestId;
+  request["mode"] = "photo";
+
+  String body;
+  serializeJson(request, body);
+  if (!sendPhoneCameraJson(transport, body.c_str())) {
+    phoneCameraRemoteController.disconnectTransport(transport);
+    applyPhoneCameraPresentation(previousState, now);
+    Serial.printf("[phone_camera] request send failed id=%s transport=%s\n",
+                  requestId.c_str(),
+                  phoneCameraTransportName(transport));
+    return false;
+  }
+
+  applyPhoneCameraPresentation(previousState, now);
+  Serial.printf("[phone_camera] request sent id=%s transport=%s\n",
+                requestId.c_str(),
+                phoneCameraTransportName(transport));
+  return true;
+}
+
+bool sendPhoneCameraLensRequest(unsigned long now) {
+  const PhoneCameraLens currentLens = phoneCameraRemoteController.lens();
+  const PhoneCameraLens requestedLens =
+    currentLens == PhoneCameraLens::Front
+      ? PhoneCameraLens::Back
+      : PhoneCameraLens::Front;
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  if (!phoneCameraRemoteController.beginLensRequest(requestedLens, now)) {
+    return false;
+  }
+
+  const PhoneCameraTransport transport = phoneCameraRemoteController.pendingTransport();
+  const String requestId(phoneCameraRemoteController.pendingRequestId());
+  JsonDocument request;
+  request["type"] = "phone_camera.lens.set.request";
+  request["version"] = PHONE_CAMERA_PROTOCOL_VERSION;
+  request["requestId"] = requestId;
+  request["lens"] = phoneCameraLensName(requestedLens);
+
+  String body;
+  serializeJson(request, body);
+  if (!sendPhoneCameraJson(transport, body.c_str())) {
+    phoneCameraRemoteController.disconnectTransport(transport);
+    applyPhoneCameraPresentation(previousState, now);
+    Serial.printf("[phone_camera] lens request send failed id=%s lens=%s transport=%s\n",
+                  requestId.c_str(),
+                  phoneCameraLensName(requestedLens),
+                  phoneCameraTransportName(transport));
+    return false;
+  }
+
+  applyPhoneCameraPresentation(previousState, now);
+  Serial.printf("[phone_camera] lens request sent id=%s lens=%s transport=%s\n",
+                requestId.c_str(),
+                phoneCameraLensName(requestedLens),
+                phoneCameraTransportName(transport));
+  return true;
+}
+
+void handlePhoneCameraStateCommand(JsonDocument& doc, SpeechBubbleTransport commandTransport) {
+  const uint32_t version = doc["version"] | 0U;
+  if (version != PHONE_CAMERA_PROTOCOL_VERSION) {
+    Serial.printf("[phone_camera] state ignored: unsupported version=%lu\n",
+                  static_cast<unsigned long>(version));
+    return;
+  }
+  if (!doc["ready"].is<bool>()) {
+    Serial.println("[phone_camera] state ignored: missing ready");
+    return;
+  }
+  const PhoneCameraTransport transport = phoneCameraTransportFromCommand(commandTransport);
+  if (transport == PhoneCameraTransport::None) {
+    return;
+  }
+
+  const bool available = doc["available"] | true;
+  const bool ready = available && doc["ready"].as<bool>();
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  const bool readyChanged = phoneCameraRemoteController.setReady(transport, ready, millis());
+
+  bool lensChanged = false;
+  bool frontSupported = false;
+  bool backSupported = false;
+  const PhoneCameraLens lens = parsePhoneCameraLens(doc["lens"] | "");
+  if (ready && lens != PhoneCameraLens::Unknown &&
+      doc["supportedLenses"].is<JsonArrayConst>()) {
+    for (JsonVariantConst item : doc["supportedLenses"].as<JsonArrayConst>()) {
+      const PhoneCameraLens supportedLens = parsePhoneCameraLens(item.as<const char*>());
+      frontSupported = frontSupported || supportedLens == PhoneCameraLens::Front;
+      backSupported = backSupported || supportedLens == PhoneCameraLens::Back;
+    }
+    lensChanged = phoneCameraRemoteController.setLensInfo(transport,
+                                                           lens,
+                                                           frontSupported,
+                                                           backSupported);
+  }
+
+  if (readyChanged || lensChanged) {
+    applyPhoneCameraPresentation(previousState, millis());
+  }
+  Serial.printf("[phone_camera] ready=%d lens=%s front=%d back=%d transport=%s changed=%d\n",
+                ready ? 1 : 0,
+                phoneCameraLensName(phoneCameraRemoteController.lens()),
+                frontSupported ? 1 : 0,
+                backSupported ? 1 : 0,
+                phoneCameraTransportName(transport),
+                (readyChanged || lensChanged) ? 1 : 0);
+}
+
+void handlePhoneCameraResultCommand(JsonDocument& doc, SpeechBubbleTransport commandTransport) {
+  const uint32_t version = doc["version"] | 0U;
+  if (version != PHONE_CAMERA_PROTOCOL_VERSION) {
+    Serial.printf("[phone_camera] result ignored: unsupported version=%lu\n",
+                  static_cast<unsigned long>(version));
+    return;
+  }
+  const char* requestId = doc["requestId"] | "";
+  const char* status = doc["status"] | "";
+  const bool success = strcmp(status, "captured") == 0;
+  if (requestId[0] == '\0' || status[0] == '\0') {
+    Serial.printf("[phone_camera] result ignored id=%s status=%s\n", requestId, status);
+    return;
+  }
+
+  const PhoneCameraTransport transport = phoneCameraTransportFromCommand(commandTransport);
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  const bool accepted = phoneCameraRemoteController.completeShutterRequest(transport,
+                                                                            requestId,
+                                                                            success,
+                                                                            millis());
+  if (accepted) {
+    applyPhoneCameraPresentation(previousState, millis());
+  }
+  Serial.printf("[phone_camera] result id=%s status=%s transport=%s accepted=%d\n",
+                requestId,
+                status,
+                phoneCameraTransportName(transport),
+                accepted ? 1 : 0);
+}
+
+void handlePhoneCameraLensResultCommand(JsonDocument& doc,
+                                        SpeechBubbleTransport commandTransport) {
+  const uint32_t version = doc["version"] | 0U;
+  if (version != PHONE_CAMERA_PROTOCOL_VERSION) {
+    Serial.printf("[phone_camera] lens result ignored: unsupported version=%lu\n",
+                  static_cast<unsigned long>(version));
+    return;
+  }
+  const char* requestId = doc["requestId"] | "";
+  const char* status = doc["status"] | "";
+  const PhoneCameraLens lens = parsePhoneCameraLens(doc["lens"] | "");
+  if (requestId[0] == '\0' || status[0] == '\0') {
+    Serial.printf("[phone_camera] lens result ignored id=%s status=%s\n",
+                  requestId,
+                  status);
+    return;
+  }
+
+  const bool applied = strcmp(status, "applied") == 0;
+  const PhoneCameraTransport transport = phoneCameraTransportFromCommand(commandTransport);
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  const bool accepted = phoneCameraRemoteController.completeLensRequest(transport,
+                                                                        requestId,
+                                                                        applied,
+                                                                        lens,
+                                                                        millis());
+  if (accepted) {
+    applyPhoneCameraPresentation(previousState, millis());
+  }
+  Serial.printf("[phone_camera] lens result id=%s status=%s lens=%s transport=%s accepted=%d\n",
+                requestId,
+                status,
+                phoneCameraLensName(lens),
+                phoneCameraTransportName(transport),
+                accepted ? 1 : 0);
+}
+
+void disconnectPhoneCameraTransport(PhoneCameraTransport transport, const char* reason) {
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  if (!phoneCameraRemoteController.disconnectTransport(transport)) {
+    return;
+  }
+  applyPhoneCameraPresentation(previousState, millis());
+  Serial.printf("[phone_camera] transport disconnected transport=%s reason=%s\n",
+                phoneCameraTransportName(transport),
+                reason != nullptr ? reason : "unknown");
+}
+
+void updatePhoneCameraRemote(unsigned long now) {
+  const PhoneCameraState previousState = phoneCameraRemoteController.state();
+  if (phoneCameraRemoteController.update(now)) {
+    applyPhoneCameraPresentation(previousState, now);
+  }
+}
+#endif
+
 void sendJsonDocument(JsonDocument& doc) {
   String body;
   serializeJson(doc, body);
@@ -6404,6 +7078,10 @@ void writeDeviceInfo(JsonDocument& response, const char* requestId) {
   capabilities.add(SPEECH_BUBBLE_CAPABILITY);
 #if STEP_COUNTER_ENABLED
   capabilities.add("steps.sync");
+#endif
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  capabilities.add("phone_camera.remote_shutter.v1");
+  capabilities.add("phone_camera.remote_lens.v1");
 #endif
   JsonObject display = response["display"].to<JsonObject>();
   display["width"] = M5.Display.width();
@@ -6769,13 +7447,31 @@ void handleAffectionDebugSetCommand(JsonDocument& doc) {
 
 bool handleStreetPassCommand(JsonDocument& doc) {
   const char* commandType = doc["type"] | "";
+  const bool isTimeSet = strcmp(commandType, "streetpass.time.set") == 0;
+  const unsigned long now = millis();
+  const uint32_t previousUnix =
+    isTimeSet ? streetPassController.estimatedUnix(now) : 0;
+  if (isTimeSet) {
+    doc["timezone"] = STACKCHAN_TIMEZONE_NAME;
+  }
   const uint16_t beforeProfileNameHash = streetPassNameHash(streetPassController.profile().name);
   JsonDocument response;
-  if (!streetPassController.handleJsonCommand(doc, response, millis())) {
+  if (!streetPassController.handleJsonCommand(doc, response, now)) {
     return false;
   }
-  if (strcmp(commandType, "streetpass.time.set") == 0 && (response["ok"] | false)) {
-    writeStreetPassRtcTime(doc["unixTime"] | 0);
+  if (isTimeSet && (response["ok"] | false)) {
+    const uint32_t syncedUnix = doc["unixTime"] | 0;
+    setSystemUnixTime(syncedUnix);
+    writeStreetPassRtcTime(syncedUnix);
+    lastClockOverlayUpdateMs = 0;
+    const long correctionSeconds =
+      validStreetPassUnix(previousUnix)
+        ? static_cast<long>(static_cast<int64_t>(syncedUnix) - static_cast<int64_t>(previousUnix))
+        : 0;
+    Serial.printf("[streetpass] app time synced unix=%lu correction=%ld sec timezone=%s\n",
+                  static_cast<unsigned long>(syncedUnix),
+                  correctionSeconds,
+                  STACKCHAN_TIMEZONE_NAME);
   }
   if (strcmp(commandType, "streetpass.profile.set") == 0 &&
       beforeProfileNameHash != streetPassNameHash(streetPassController.profile().name)) {
@@ -6969,6 +7665,14 @@ void handleJsonCommand(const uint8_t* payload,
     sendPongResponse(doc);
   } else if (strcmp(type, "device.info.get") == 0) {
     handleDeviceInfoGetCommand(doc);
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  } else if (strcmp(type, "phone_camera.state") == 0) {
+    handlePhoneCameraStateCommand(doc, transport);
+  } else if (strcmp(type, "phone_camera.shutter.result") == 0) {
+    handlePhoneCameraResultCommand(doc, transport);
+  } else if (strcmp(type, "phone_camera.lens.set.result") == 0) {
+    handlePhoneCameraLensResultCommand(doc, transport);
+#endif
   } else if (strcmp(type, "steps.get") == 0) {
     handleStepsGetCommand(doc);
   } else if (strcmp(type, "audio.speaker_test") == 0) {
@@ -7427,6 +8131,9 @@ void updateUsbSerial(unsigned long now) {
     }
     updateMicStatusOverlay();
     clearCameraButtonPending("usb_timeout");
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+    disconnectPhoneCameraTransport(PhoneCameraTransport::UsbSerial, "timeout");
+#endif
   }
 
   uint8_t rxDiagFirstBytes[16] = {};
@@ -7636,6 +8343,9 @@ void onWsConnection(uint8_t clientId, bool connected) {
       speechBubbleController.reset("websocket_disconnect");
     }
     clearCameraButtonPending("disconnect");
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+    disconnectPhoneCameraTransport(PhoneCameraTransport::WebSocket, "disconnect");
+#endif
   }
   if (infoScreenVisible && displayOn) {
     drawInfoScreen();
@@ -7653,6 +8363,7 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     wifiGotIpReady = true;
     wifiDisconnectExpected = false;
+    requestStreetPassNtpResync();
     return;
   }
   if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
@@ -7815,6 +8526,20 @@ void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
   }
 
 #if STACKCHAN_DEVICE_STOPWATCH
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  if (touchStartedInCircle(touch,
+                           roundPhoneCameraButtonCenterX(),
+                           roundPhoneCameraButtonCenterY(),
+                           roundPhoneCameraButtonRadius())) {
+    screenPettingCandidate = false;
+    screenPettingTouchActive = false;
+    screenPettingCandidateSinceMs = 0;
+    screenPettingReleaseSinceMs = 0;
+    screenPettingTravelPx = 0;
+    setPettingActive(false, now);
+    return;
+  }
+#endif
   if (appClientConnected() &&
       touchStartedInCircle(touch,
                            roundMicButtonCenterX(),
@@ -8568,11 +9293,17 @@ void updateTouch(unsigned long now) {
   return;
 #endif
   if (!interactionsReady(now)) {
+    resetOverlayTouchGesture();
     return;
   }
 
   auto touch = M5.Touch.getDetail();
   if (!displayOn) {
+    resetOverlayTouchGesture();
+    return;
+  }
+
+  if (updateOverlayButtonTouch(now, touch)) {
     return;
   }
 
@@ -8591,32 +9322,6 @@ void updateTouch(unsigned long now) {
   }
 
   if (touch.wasClicked()) {
-#if STACKCHAN_DEVICE_STOPWATCH
-    if (!infoScreenVisible && appClientConnected() &&
-        touchInCircle(touch,
-                      roundMicButtonCenterX(),
-                      roundMicButtonCenterY(),
-                      roundMicButtonRadius())) {
-      audioController.setMicMuted(!audioController.micMuted());
-      updateMicStatusOverlay();
-      return;
-    }
-#endif
-#if STACKCHAN_HAS_CAMERA
-    if (!infoScreenVisible && appClientConnected() &&
-        touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 144, 40, 72)) {
-      sendCameraButtonEvent(now);
-      return;
-    }
-#endif
-#if !STACKCHAN_ROUND_DISPLAY
-    if (!infoScreenVisible && appClientConnected() &&
-        touchIn(touch, M5.Display.width() - 40, M5.Display.height() - 80, 40, 80)) {
-      audioController.setMicMuted(!audioController.micMuted());
-      updateMicStatusOverlay();
-      return;
-    }
-#endif
     if (!infoScreenVisible && thermalStatus.suggestLowPower && !deviceSettings.lowPowerMode &&
         touchIn(touch, M5.Display.width() - 132, M5.Display.height() - 44, 66, 30)) {
       applyLowPowerMode(true, true);
@@ -9043,6 +9748,9 @@ void setup() {
   applyStopwatchStatusLedSetting();
 
   randomSeed(esp_random());
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  phoneCameraRemoteController.begin(esp_random());
+#endif
   ensureDeviceId();
   networkMode = loadNetworkMode();
   loadWifiCredentials();
@@ -9195,6 +9903,9 @@ void loop() {
 #endif
   }
   updateCameraButtonPending(now);
+#if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
+  updatePhoneCameraRemote(now);
+#endif
   updateStreetPassBle(now);
   // State/pose commands are processed by USB and WebSocket earlier in this
   // loop. Re-evaluate here so a freshly started listening mic is stopped and

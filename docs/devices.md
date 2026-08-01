@@ -60,6 +60,7 @@ and manifest status in `faceAssetManifestPresent` / `faceAssetManifestValid`.
 | Microphone / speaker | yes | yes | Atomic Echo Base |
 | Camera capture `/capture` | yes | no | no |
 | `camera_button` UI | yes | no | no |
+| Phone camera remote shutter | no | yes | no |
 | Servo motion | yes | no | no |
 | Back-touch petting | yes | no | no |
 | Screen-touch petting | no | yes | no |
@@ -98,7 +99,7 @@ settings screen is visible, or while the display is off.
 | Device | Normal/voice screen | Guruguru face mode | Settings screens |
 | --- | --- | --- | --- |
 | CoreS3 + Stack-chan | Power short-press toggles display. Power double-click turns guruguru on. Back touch triggers petting. Edge flick opens settings | Power double-click turns guruguru off. Triple-click or more switches touch/IMU input. Touch input uses screen touch/drag for 16 directions plus center. IMU input uses device tilt; screen hold resets the baseline | Hold Network to switch STA/SoftAP. Servo screen saves/restores home |
-| StopWatch | BtnA short-press opens settings. BtnA double-click turns guruguru on. BtnB/power short-press toggles display. Center touch/drag triggers petting. While connected, tapping the lower-right mic overlay toggles mute | BtnA double-click turns guruguru off. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
+| StopWatch | BtnA short-press opens settings. BtnA double-click turns guruguru on. BtnB/power short-press toggles display. Center touch/drag triggers petting. While connected, tapping the lower-left mic overlay toggles mute. When a compatible app reports camera readiness, short-press the lower-right camera overlay to take a phone photo or hold it for about 0.8 seconds to switch front/rear cameras | BtnA double-click turns guruguru off. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
 | AtomS3R Chatbot | BtnA short-press opens Network. BtnA double-click mutes mic. BtnA hold triggers petting. BtnA triple-click turns guruguru on | BtnA triple-click turns guruguru off. IMU input only. BtnA hold resets the baseline. BtnA short-press still advances pages, and opening Network stops guruguru display. BtnA double-click is ignored | BtnA short-press changes pages. Hold Network to switch STA/SoftAP. Double-click Audio to enter volume adjust mode |
 
 Turning the display off ends the audio state and app connection, then stops
@@ -216,7 +217,7 @@ Release asset generation uses the `m5stack-stopwatch-release` environment.
 - Double-click BtnB while guruguru face mode is active: switch between touch input and IMU input.
 - Hold BtnB while guruguru face mode is active: reset the IMU baseline.
 - Briefly hold near the center of the normal face screen, or drag from near the center: petting interaction. This is disabled while the display is off or the settings screen is visible.
-- While a WebSocket or USB Serial client is connected, tap the microphone overlay on the lower-right rim of the normal face screen: mute or unmute mic streaming. This tap target is excluded from petting detection.
+- While a WebSocket or USB Serial client is connected, tap the microphone overlay on the lower-left rim of the normal face screen: mute or unmute mic streaming. This tap target is excluded from petting detection.
 - Touch or drag the normal face screen while guruguru face mode is active: in touch input mode, this selects one of 8 directions plus center. In IMU input mode, device tilt controls the face direction.
 - Tap the `<` / `>` buttons at the top of the settings screen: move to the previous or next settings page.
 - Flick left or right on the settings screen: move to the previous or next settings page. A left flick moves forward, and a right flick moves backward.
@@ -230,7 +231,12 @@ Release asset generation uses the `m5stack-stopwatch-release` environment.
 - StreetPass screen: tap `Turn On` / `Turn Off` to toggle StreetPass, and tap `Profile` / `History` to switch between the local profile and latest history view.
 
 StopWatch has no camera or servo. HTTP `/capture`, USB Serial `capture.request`,
-servo home calibration, and camera-overlay operation are unavailable.
+servo home calibration, and on-device camera capture are unavailable. A
+compatible phone app can advertise readiness and the current lens with
+`phone_camera.state`; the lower-right camera overlay then requests a
+phone-camera capture. Its `IN` / `OUT` badge shows the selected lens, and
+holding it for about 0.8 seconds switches lenses. See the
+[Phone Camera Remote Protocol](phone_camera_remote_protocol.md).
 
 ## M5Stack AtomS3R Chatbot
 

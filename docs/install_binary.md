@@ -257,7 +257,7 @@ Common:
 - `Pwr` shows battery, temperature, and low-power mode controls.
 - Low-power mode caps display brightness and reduces idle face updates.
   Audio playback and lip-sync during speech continue.
-- CoreS3 mutes or unmutes mic streaming from its right-side mic overlay, StopWatch from its lower-right rim overlay, and AtomS3R Chatbot by double-clicking BtnA on the normal face screen.
+- CoreS3 mutes or unmutes mic streaming from its right-side mic overlay, StopWatch from its lower-left rim overlay, and AtomS3R Chatbot by double-clicking BtnA on the normal face screen.
 
 Normal/voice screen and guruguru mode:
 
@@ -288,6 +288,10 @@ StopWatch:
 - Press BtnB or the power button to turn the display on or off.
 - While guruguru is active, double-click BtnB to switch between touch input and IMU input, and hold BtnB to reset the IMU baseline.
 - Touch or drag near the center of the normal face screen to trigger petting.
+- While a compatible phone app reports camera readiness, short-press the
+  lower-right camera overlay to request a phone photo, or hold it for about
+  0.8 seconds to request a front/rear lens change. See the
+  [Phone Camera Remote Protocol](phone_camera_remote_protocol.md).
 - The settings screen order is Network, Display, Audio, Power, Steps, and StreetPass. Use the top `<` / `>` buttons or left/right flicks to switch pages.
 - On Display and Audio, tap `-` / `+` to adjust brightness or volume in 20-point steps.
 - Steps shows today's count, the 04:00 reset, and stored daily history.

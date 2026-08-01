@@ -8,31 +8,29 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 
 このリポジトリはデバイス本体側のファームウェアです。外部クライアントの実装は含みません。
 
-## 最新リリース: v0.4.0
+## 最新リリース: v0.4.1
 
-### 顔表示・リアクション
+### StopWatchスマホカメラ
 
-- 3機種の顔表示を、4×4口パク／瞬き、なでなで、方向、クラクラに対応した顔画像v2へ移行。
-- 配布画像をCoreS3／AtomS3Rは65 JPG、StopWatchは57 JPGに整理し、`good_*`、`bad_*`、
-  `photo_*`、好感度・温度・低電力別の旧静止顔を削除。
-- 旧画像だけが残る端末向けに限定fallbackを維持し、温度・低電力・撮影状態では顔画像を切り替えない構成へ変更。
-- なでなでが3秒未満なら不満、3秒以上なら喜びを表示し、クラクラ後は閉じ目から通常顔へ段階的に復帰。
-- 画像を使わないclassic顔を機種別のsource buildとして追加。program描画の口パク、瞬き、吹き出しに対応。
+- WebSocket／USB Serialで接続した対応スマホアプリへ、撮影とイン／アウトカメラ切替を要求。
+- 通常画面右下のカメラ表示を短押しで撮影、約0.8秒長押しでレンズ切替。
+- 現在のレンズを`IN`／`OUT`で表示し、処理中・成功・失敗を画面と振動で通知。
+- transport、request ID、処理種別を照合し、タイムアウトや切断、画面OFFを安全に処理。
 
-### デバイス機能・安定性
+### タッチ操作と時刻同期
 
-- CoreS3カメラを640×480 JPEGへ変更し、I2C競合とUSB／HTTP転送を修正。
-- CoreS3の起動時サーボ、発話中の不要動作、機械音によるマイク再反応、上向き過ぎるなでなで動作を修正。
-- StopWatchに歩数計、午前4時区切りの30日履歴、好感度報酬、アプリ同期を追加。
-- 画面OFF時にWi-Fi／HTTP／WebSocket／USB Serialを休止し、StreetPass BLEは低頻度で継続。
+- カメラ／マイク表示のタッチを共通gesture管理へ移行し、長押しやdragによる誤操作を抑制。
+- StopWatchのマイク表示を左下へ移動し、StopWatch／CoreS3の操作領域を拡大。
+- 時刻を`Asia/Tokyo`へ統一し、RTC、アプリ、NTPからシステム時計へ即時反映。
+- NTP応答確認、Wi-Fi再接続時の再同期、失敗時のretry、6時間ごとの更新に対応。
 
-### 通信・画像作成・配布
+### 通信仕様と配布
 
-- WebSocket／USB Serial共通の発話吹き出しprotocolと、音声・マイク・StreetPassなどの診断情報を追加。
-- 基本顔／なでなで用4×4スプライトシートの作成・分割・変換・manifest生成・検証toolとsampleを追加。
-- 3機種の画像顔／classic顔をCIでbuildし、各機種の更新用`firmware`と初回導入用`factory`バイナリを生成。
+- `phone_camera.remote_shutter.v1`／`phone_camera.remote_lens.v1` capabilityを追加。
+- スマホカメラ遠隔操作protocolを日本語／英語で公開。
+- 3機種の更新用`firmware`と初回導入用`factory`バイナリを配布。
 
-詳細は[0.4.0リリースノート](docs/release_notes_0.4.0.ja.md)、全versionの履歴は
+詳細は[0.4.1リリースノート](docs/release_notes_0.4.1.ja.md)、全versionの履歴は
 [日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。
 
 ## 対応デバイス
@@ -57,6 +55,7 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 - なでなで、ふりふり、接続、カメラなどのinteraction event
 - 好感度管理と状態overlay
 - StopWatchの歩数計、30日履歴、同期
+- StopWatchから対応スマホアプリへのカメラ撮影／レンズ切替要求
 - CoreS3のサーボreaction
 
 ## 導入方法
@@ -124,6 +123,7 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 - [StreetPass protocol](docs/streetpass_protocol.ja.md)
 - [好感度API](docs/device_affection_api.ja.md)
 - [StopWatch歩数同期protocol](docs/step_counter_protocol.ja.md)
+- [StopWatchスマホカメラ・リモート撮影仕様](docs/phone_camera_remote_protocol.ja.md)
 
 ## ドキュメント
 
@@ -131,7 +131,8 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 | --- | --- |
 | 機種別のbuild・操作 | [対応デバイス別ガイド](docs/devices.ja.md) |
 | binary導入・復旧 | [バイナリ版インストール手順](docs/install_binary.ja.md) |
-| v0.4.0更新・移行 | [0.4.0リリースノート](docs/release_notes_0.4.0.ja.md) |
+| v0.4.1更新 | [0.4.1リリースノート](docs/release_notes_0.4.1.ja.md) |
+| v0.4.0顔画像v2移行 | [0.4.0リリースノート](docs/release_notes_0.4.0.ja.md) |
 | 全versionの変更 | [CHANGELOG](CHANGELOG.ja.md) |
 | 顔画像の作成 | [顔画像ビルダー](tools/face_image_builder/README.md) |
 | 開発時の確認事項 | [CONTRIBUTING](CONTRIBUTING.md#日本語) |
@@ -153,7 +154,7 @@ build pathがbinaryへ残っていないことも検査します。
 ## ライセンス
 
 現在のfirmware source、同梱自作画像、sampleは[MIT License](LICENSE)です。
-現在のsource treeとv0.4.0配布物には第三者のcharacter素材を含みません。
+現在のsource treeとv0.4.1配布物には第三者のcharacter素材を含みません。
 
 つくよみちゃん画像を含む過去の配布binaryには現行MITを適用せず、当時のrelease通知と
 素材提供元の規約に従ってください。依存関係は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を
