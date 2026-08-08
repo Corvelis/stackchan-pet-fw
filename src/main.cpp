@@ -19,6 +19,7 @@
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
+#include <esp_timer.h>
 #include <math.h>
 #include <qrcodegen.h>
 #include <sys/time.h>
@@ -35,6 +36,7 @@
 #include "StepCounterController.h"
 #include "StreetPassController.h"
 #include "StreetPassProtocol.h"
+#include "TimekeeperController.h"
 #include "UsbSerialProtocol.h"
 #include "Utf8Utils.h"
 #include "WebSocketServerController.h"
@@ -54,6 +56,7 @@ PhoneCameraRemoteController phoneCameraRemoteController;
 WebServer httpServer(HTTP_PORT);
 Preferences preferences;
 String deviceId;
+String bootId;
 
 enum class NetworkMode : uint8_t {
   Sta = 0,
@@ -123,6 +126,10 @@ struct VoicePerfStats {
 };
 
 ChanState currentState = ChanState::Idle;
+ExperienceMode experienceMode = ExperienceMode::Conversation;
+uint32_t experienceModeRevision = 0;
+bool pendingExperienceModeValid = false;
+ExperienceMode pendingExperienceMode = ExperienceMode::Conversation;
 AuthFaceMode currentAuthFaceMode = AuthFaceMode::Unknown;
 NetworkMode networkMode = NetworkMode::Sta;
 SettingsPage settingsPage = SettingsPage::Network;
@@ -200,6 +207,18 @@ bool backTouchReady = false;
 unsigned long backTouchReleasedSinceMs = 0;
 unsigned long backTouchCandidateSinceMs = 0;
 unsigned long backTouchClearSinceMs = 0;
+#if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_TIMEKEEPER_ENABLED
+bool backTouchTimekeeperArmed = false;
+bool backTouchTimekeeperPressed = false;
+unsigned long backTouchTimekeeperPressSinceMs = 0;
+unsigned long backTouchTimekeeperLastDetectedMs = 0;
+unsigned long backTouchTimekeeperReleasedSinceMs = 0;
+bool backTouchTravelArmed = false;
+bool backTouchTravelPressed = false;
+unsigned long backTouchTravelPressSinceMs = 0;
+unsigned long backTouchTravelLastDetectedMs = 0;
+unsigned long backTouchTravelReleasedSinceMs = 0;
+#endif
 #if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
 bool backTouchGuruguruPressed = false;
 bool backTouchGuruguruHoldFired = false;
@@ -216,6 +235,50 @@ bool guruguruFaceMode = false;
 bool guruguruFaceEffective = false;
 bool guruguruFaceAssetsChecked = false;
 bool guruguruFaceAssetsReady = false;
+#endif
+#if STACKCHAN_TIMEKEEPER_ENABLED
+TimekeeperController timekeeperController;
+bool experienceModeMenuVisible = false;
+bool timekeeperDurationMenuVisible = false;
+TimekeeperActivity timekeeperTimerSubmode = TimekeeperActivity::Countdown;
+ExperienceMode experienceModeMenuSelection = ExperienceMode::Conversation;
+bool stopwatchYellowButtonPressed = false;
+bool stopwatchYellowButtonLongHandled = false;
+uint64_t stopwatchYellowButtonPressedAtMs = 0;
+int8_t travelPhotoFaceIndex = -1;
+bool travelFacePickerVisible = false;
+uint8_t travelFacePickerPage = 0;
+#if STACKCHAN_DEVICE_CORES3
+unsigned long travelScreenFirstTapMs = 0;
+int32_t travelScreenFirstTapX = 0;
+int32_t travelScreenFirstTapY = 0;
+#endif
+uint64_t lastTimekeeperUiDrawMs = 0;
+uint64_t lastTimekeeperUiValueMs = UINT64_MAX;
+uint32_t timekeeperEventSequence = 0;
+uint32_t communicationSuspendSequence = 0;
+
+struct PendingTimekeeperAnnouncement {
+  bool active = false;
+  TimekeeperEvent event;
+  String eventId;
+  uint64_t expiresAtMs = 0;
+  bool sentAfterLastDeviceInfo = false;
+};
+
+PendingTimekeeperAnnouncement pendingTimekeeperAnnouncement;
+
+struct PendingTimekeeperSmileResult {
+  bool active = false;
+  bool animationStarted = false;
+  bool prefetchSent = false;
+  TimekeeperEvent event;
+  String eventId;
+  bool allowAnnouncement = false;
+  uint64_t startDeadlineMs = 0;
+};
+
+PendingTimekeeperSmileResult pendingTimekeeperSmileResult;
 #endif
 #if STACKCHAN_GURUGURU_IMU_ENABLED && STACKCHAN_GURUGURU_FACE_ENABLED
 #if STACKCHAN_DEVICE_ATOMS3R_CHATBOT
@@ -482,6 +545,11 @@ bool sendUsbSerialJson(const char* payload);
 bool sendUsbSerialFrame(uint8_t type, const uint8_t* payload, size_t length, uint8_t flags = 0);
 bool sendUsbSerialMicPacket(const uint8_t* payload, size_t length, void* context);
 void setState(ChanState state);
+uint64_t monotonicMs();
+const char* experienceModeName(ExperienceMode mode);
+void requestExperienceMode(ExperienceMode mode, unsigned long now);
+void updatePendingExperienceMode(unsigned long now);
+void sendExperienceModeChanged(ExperienceMode previousMode);
 void writePongResponse(JsonDocument& response, JsonDocument& request);
 void sendPongResponse(JsonDocument& request);
 void sendJsonDocument(JsonDocument& doc);
@@ -554,6 +622,46 @@ bool updateGuruguruImuDizzyShakeDetection(unsigned long now, float sampleDelta);
 bool updateGuruguruFaceImu(unsigned long now, const m5::imu_data_t& data, bool imuUpdated);
 #endif
 #endif
+#if STACKCHAN_TIMEKEEPER_ENABLED
+void drawExperienceModeMenu();
+void showExperienceModeMenu();
+void hideExperienceModeMenu();
+bool updateExperienceModeMenuTouch(const m5::touch_detail_t& touch, unsigned long now);
+void resetTravelPhotoFace();
+void advanceTravelPhotoFace();
+void handleTravelYellowClickCount(uint8_t clickCount);
+void drawTravelFacePicker();
+void showTravelFacePicker();
+void hideTravelFacePicker(bool redrawFace = true);
+bool updateTravelFacePickerTouch(const m5::touch_detail_t& touch, unsigned long now);
+#if STACKCHAN_DEVICE_CORES3
+bool handleTravelScreenDoubleTap(const m5::touch_detail_t& touch,
+                                 unsigned long now);
+#endif
+void drawTimekeeperDurationMenu();
+void showTimekeeperDurationMenu();
+void hideTimekeeperDurationMenu(bool redrawTimekeeper = true);
+bool updateTimekeeperDurationMenuTouch(const m5::touch_detail_t& touch, uint64_t nowMs);
+void drawTimekeeperFrameOverlay(M5Canvas& target);
+void drawTimekeeperOverlay(uint64_t nowMs, bool force = false);
+bool updateTimekeeperTouch(const m5::touch_detail_t& touch, uint64_t nowMs);
+void handleTimekeeperEvent(const TimekeeperEvent& event, bool allowAnnouncement = true);
+void sendTimekeeperAnnouncementPrefetch(const TimekeeperEvent& event,
+                                        const String& eventId,
+                                        bool allowAnnouncement);
+void updatePendingTimekeeperSmileResult();
+void flushPendingTimekeeperSmileResult(bool allowAnnouncement);
+void updateTimekeeper(uint64_t nowMs);
+void prepareTimekeeperForDisplayOff(uint64_t nowMs);
+void sendCommunicationSuspending(const char* reason);
+void handleTimekeeperAnnouncementResult(JsonDocument& doc);
+void maybeResendPendingTimekeeperAnnouncement();
+void loadTimekeeperSettings();
+void saveTimekeeperCycles();
+void saveTimekeeperTimerSubmode();
+void handlePomodoroConfigGet(JsonDocument& doc);
+void handlePomodoroConfigSet(JsonDocument& doc);
+#endif
 void redrawNetworkSettingsIfVisible();
 #if STACKCHAN_SMALL_DISPLAY
 void adjustSmallDisplayVolume(int delta);
@@ -569,6 +677,24 @@ const char* chanStateName(ChanState state) {
       return "Speaking";
   }
   return "Unknown";
+}
+
+uint64_t monotonicMs() {
+  return static_cast<uint64_t>(esp_timer_get_time()) / 1000ULL;
+}
+
+const char* experienceModeName(ExperienceMode mode) {
+  switch (mode) {
+    case ExperienceMode::Conversation:
+      return "conversation";
+    case ExperienceMode::Guruguru:
+      return "guruguru";
+    case ExperienceMode::Timekeeper:
+      return "timekeeper";
+    case ExperienceMode::Travel:
+      return "travel";
+  }
+  return "conversation";
 }
 
 void beginDevice() {
@@ -768,6 +894,20 @@ void ensureDeviceId() {
   Serial.printf("[device] id=%s\n", deviceId.c_str());
 }
 
+void ensureBootId() {
+  if (!bootId.isEmpty()) {
+    return;
+  }
+  char buffer[24];
+  snprintf(buffer,
+           sizeof(buffer),
+           "b%08lx%08lx",
+           static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()));
+  bootId = buffer;
+  Serial.printf("[device] boot_id=%s\n", bootId.c_str());
+}
+
 bool isWifiCredentialConfigured(size_t index) {
   return index < wifiCredentialCount &&
          wifiCredentials[index].ssid.length() > 0;
@@ -835,9 +975,11 @@ bool streetPassBusyForExchange() {
 }
 
 const char* streetPassBusyReason() {
+#if !STACKCHAN_DEVICE_STOPWATCH
   if (appClientConnected()) {
     return "app_client";
   }
+#endif
   const bool activelyListening = (currentState == ChanState::Listening ||
                                   audioController.state() == ChanState::Listening) &&
                                  audioController.isMicStreaming();
@@ -2700,6 +2842,18 @@ void suspendAppCommsForDisplayOff(unsigned long now) {
   if (appCommsSuspendedForDisplayOff) {
     return;
   }
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  prepareTimekeeperForDisplayOff(monotonicMs());
+  sendCommunicationSuspending("display_off");
+  // WebSocket transmission is asynchronous. Give the server a small bounded
+  // flush window, but never wait for an app ACK before entering low power.
+  if (appClientConnected()) {
+    delay(150);
+  }
+  if (pendingTimekeeperAnnouncement.active) {
+    pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo = false;
+  }
+#endif
   appCommsSuspendedForDisplayOff = true;
 
   pendingStateAfterPlayback = false;
@@ -2766,7 +2920,12 @@ void setDisplayOn(bool on) {
     return;
   }
   displayOn = on;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  faceController.setEnabled(on && !infoScreenVisible && !experienceModeMenuVisible &&
+                            !timekeeperDurationMenuVisible && !travelFacePickerVisible);
+#else
   faceController.setEnabled(on && !infoScreenVisible);
+#endif
 #if STACKCHAN_GURUGURU_FACE_ENABLED
   updateGuruguruFaceAvailability(millis());
 #endif
@@ -2919,6 +3078,12 @@ void setPettingActive(bool active, unsigned long now, unsigned long releaseGrace
   if (active && !displayOn) {
     return;
   }
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (active && (experienceMode == ExperienceMode::Timekeeper ||
+                 experienceMode == ExperienceMode::Travel)) {
+    return;
+  }
+#endif
 
   if (active) {
     pettingEndMs = now + releaseGraceMs;
@@ -3149,6 +3314,12 @@ void setShakeActive(bool active, unsigned long now) {
   if (active && !displayOn) {
     return;
   }
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (active && (experienceMode == ExperienceMode::Timekeeper ||
+                 experienceMode == ExperienceMode::Travel)) {
+    return;
+  }
+#endif
 
   if (active) {
     shakeEndMs = now + SHAKE_FACE_HOLD_MS;
@@ -3231,6 +3402,18 @@ void updateShake(unsigned long now) {
     nextShakeMotionMs = 0;
     return;
   }
+
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (experienceMode == ExperienceMode::Timekeeper ||
+      experienceMode == ExperienceMode::Travel) {
+    if (shakeActive) {
+      setShakeActive(false, now);
+    }
+    shakeStrongSamples = 0;
+    nextShakeMotionMs = 0;
+    return;
+  }
+#endif
 
   if (!shakeActive && pettingActive) {
     shakeStrongSamples = 0;
@@ -5613,7 +5796,15 @@ void setInfoScreenVisible(bool visible) {
     settingsPage = SettingsPage::Network;
   }
 #endif
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (visible) {
+    travelFacePickerVisible = false;
+  }
+  faceController.setEnabled(displayOn && !visible && !experienceModeMenuVisible &&
+                            !timekeeperDurationMenuVisible && !travelFacePickerVisible);
+#else
   faceController.setEnabled(displayOn && !visible);
+#endif
 #if STACKCHAN_GURUGURU_FACE_ENABLED
   updateGuruguruFaceAvailability(millis());
 #endif
@@ -5747,7 +5938,7 @@ void resetOverlayTouchGesture() {
 }
 
 OverlayTouchTarget overlayTouchTargetAtStart(const m5::touch_detail_t& touch) {
-  if (infoScreenVisible) {
+  if (infoScreenVisible || experienceMode != ExperienceMode::Conversation) {
     return OverlayTouchTarget::None;
   }
 
@@ -5931,13 +6122,25 @@ bool updateOverlayButtonTouch(unsigned long now, const m5::touch_detail_t& touch
   return true;
 }
 
-bool isSettingsSwipe(const m5::touch_detail_t& touch) {
+bool isLeftEdgeModeSwipe(const m5::touch_detail_t& touch) {
   if (!touch.wasFlicked()) {
     return false;
   }
-  const int32_t edge = 44;
-  return touch.x <= edge || touch.x >= M5.Display.width() - edge ||
-         touch.y <= edge || touch.y >= M5.Display.height() - edge;
+  constexpr int32_t edge = 44;
+  constexpr int32_t minimumTravel = 56;
+  return touch.base_x <= edge && touch.distanceX() >= minimumTravel &&
+         abs(touch.distanceX()) > abs(touch.distanceY());
+}
+
+bool isRightEdgeSettingsSwipe(const m5::touch_detail_t& touch) {
+  if (!touch.wasFlicked()) {
+    return false;
+  }
+  constexpr int32_t edge = 44;
+  constexpr int32_t minimumTravel = 56;
+  return touch.base_x >= M5.Display.width() - edge &&
+         touch.distanceX() <= -minimumTravel &&
+         abs(touch.distanceX()) > abs(touch.distanceY());
 }
 
 void adjustBrightness(int delta) {
@@ -6557,6 +6760,16 @@ void handleStateCommand(const char* value) {
   const ChanState stateBefore = currentState;
   const ChanState audioBefore = audioController.state();
 #endif
+  if (strcmp(value, "listening") == 0 && experienceMode != ExperienceMode::Conversation) {
+    Serial.printf("[state] listening suppressed mode=%s\n", experienceModeName(experienceMode));
+    return;
+  }
+  if (strcmp(value, "speaking") == 0 &&
+      (experienceMode == ExperienceMode::Guruguru ||
+       experienceMode == ExperienceMode::Travel)) {
+    Serial.printf("[state] speaking suppressed mode=%s\n", experienceModeName(experienceMode));
+    return;
+  }
   if (strcmp(value, "idle") == 0) {
 #if USB_SERIAL_TTS_DIAG_LOG_ENABLED
     Serial.printf("USB JSON state idle received state before=%s audio_before=%s\n",
@@ -7043,13 +7256,868 @@ void sendJsonDocument(JsonDocument& doc) {
   sendUsbSerialJson(body.c_str());
 }
 
+#if STACKCHAN_TIMEKEEPER_ENABLED
+namespace {
+constexpr const char* kTimekeeperPrefsNamespace = "timekeeper";
+constexpr const char* kPomodoroWorkKey = "p_work";
+constexpr const char* kPomodoroBreakKey = "p_break";
+constexpr const char* kPomodoroRevisionKey = "p_rev";
+constexpr const char* kPomodoroCyclesKey = "p_cycles";
+constexpr const char* kTimerSubmodeKey = "timer_mode";
+
+bool pomodoroSessionActive() {
+  return timekeeperController.activity() == TimekeeperActivity::Pomodoro &&
+         (timekeeperController.state() == TimekeeperState::Running ||
+          timekeeperController.state() == TimekeeperState::Paused);
+}
+
+bool persistPomodoroConfig(uint64_t workDurationMs,
+                           uint64_t breakDurationMs,
+                           uint32_t revision) {
+  preferences.begin(kTimekeeperPrefsNamespace, false);
+  const bool workSaved = preferences.putUInt(
+    kPomodoroWorkKey, static_cast<uint32_t>(workDurationMs)) == sizeof(uint32_t);
+  const bool breakSaved = preferences.putUInt(
+    kPomodoroBreakKey, static_cast<uint32_t>(breakDurationMs)) == sizeof(uint32_t);
+  const bool revisionSaved = preferences.putUInt(
+    kPomodoroRevisionKey, revision) == sizeof(uint32_t);
+  preferences.end();
+  return workSaved && breakSaved && revisionSaved;
+}
+}  // namespace
+
+void loadTimekeeperSettings() {
+  preferences.begin(kTimekeeperPrefsNamespace, true);
+  const uint64_t workDurationMs = preferences.getUInt(
+    kPomodoroWorkKey,
+    static_cast<uint32_t>(TimekeeperController::kDefaultPomodoroWorkDurationMs));
+  const uint64_t breakDurationMs = preferences.getUInt(
+    kPomodoroBreakKey,
+    static_cast<uint32_t>(TimekeeperController::kDefaultPomodoroBreakDurationMs));
+  uint32_t revision = preferences.getUInt(kPomodoroRevisionKey, 1);
+  const uint8_t cycles = preferences.getUChar(
+    kPomodoroCyclesKey, TimekeeperController::kDefaultPomodoroCycles);
+  const uint8_t timerMode = preferences.getUChar(kTimerSubmodeKey, 0);
+  preferences.end();
+
+  if (revision == 0 ||
+      !timekeeperController.configurePomodoro(workDurationMs,
+                                              breakDurationMs,
+                                              revision)) {
+    revision = 1;
+    timekeeperController.configurePomodoro(
+      TimekeeperController::kDefaultPomodoroWorkDurationMs,
+      TimekeeperController::kDefaultPomodoroBreakDurationMs,
+      revision);
+  }
+  timekeeperController.setPomodoroCycles(
+    constrain(cycles,
+              TimekeeperController::kMinPomodoroCycles,
+              TimekeeperController::kMaxPomodoroCycles),
+    monotonicMs());
+  timekeeperTimerSubmode = timerMode == 1
+                             ? TimekeeperActivity::Pomodoro
+                             : TimekeeperActivity::Countdown;
+  Serial.printf("[timekeeper] settings work_ms=%llu break_ms=%llu cycles=%u revision=%lu timer_mode=%s\n",
+                static_cast<unsigned long long>(timekeeperController.pomodoroWorkDurationMs()),
+                static_cast<unsigned long long>(timekeeperController.pomodoroBreakDurationMs()),
+                static_cast<unsigned>(timekeeperController.pomodoroCycles()),
+                static_cast<unsigned long>(timekeeperController.pomodoroConfigRevision()),
+                timekeeperTimerSubmode == TimekeeperActivity::Pomodoro
+                  ? "pomodoro"
+                  : "countdown");
+}
+
+void saveTimekeeperCycles() {
+  preferences.begin(kTimekeeperPrefsNamespace, false);
+  preferences.putUChar(kPomodoroCyclesKey, timekeeperController.pomodoroCycles());
+  preferences.end();
+}
+
+void saveTimekeeperTimerSubmode() {
+  preferences.begin(kTimekeeperPrefsNamespace, false);
+  preferences.putUChar(kTimerSubmodeKey,
+                       timekeeperTimerSubmode == TimekeeperActivity::Pomodoro ? 1 : 0);
+  preferences.end();
+}
+
+void sendPomodoroConfigResult(const char* requestId,
+                               const char* result,
+                               const char* appliesTo,
+                               const char* reason = nullptr) {
+  ensureDeviceId();
+  ensureBootId();
+  JsonDocument response;
+  response["type"] = "timekeeper.pomodoro.config.result";
+  response["version"] = 1;
+  response["deviceId"] = deviceId;
+  response["bootId"] = bootId;
+  if (requestId != nullptr && requestId[0] != '\0') {
+    response["requestId"] = requestId;
+  }
+  response["result"] = result;
+  if (appliesTo != nullptr && appliesTo[0] != '\0') {
+    response["appliesTo"] = appliesTo;
+  }
+  if (reason != nullptr && reason[0] != '\0') {
+    response["reason"] = reason;
+  }
+  response["workDurationMs"] = timekeeperController.pomodoroWorkDurationMs();
+  response["breakDurationMs"] = timekeeperController.pomodoroBreakDurationMs();
+  response["configRevision"] = timekeeperController.pomodoroConfigRevision();
+  sendJsonDocument(response);
+}
+
+void handlePomodoroConfigGet(JsonDocument& doc) {
+  if ((doc["version"] | 0U) != 1U) {
+    sendPomodoroConfigResult(doc["requestId"] | "",
+                             "rejected",
+                             "",
+                             "unsupported_version");
+    return;
+  }
+  sendPomodoroConfigResult(doc["requestId"] | "",
+                           "current",
+                           pomodoroSessionActive() ? "next_session" : "next_start");
+}
+
+void handlePomodoroConfigSet(JsonDocument& doc) {
+  const char* requestId = doc["requestId"] | "";
+  if ((doc["version"] | 0U) != 1U) {
+    sendPomodoroConfigResult(requestId,
+                             "rejected",
+                             "",
+                             "unsupported_version");
+    return;
+  }
+  if (requestId[0] == '\0' || !doc["workDurationMs"].is<uint64_t>() ||
+      !doc["breakDurationMs"].is<uint64_t>()) {
+    sendPomodoroConfigResult(requestId,
+                             "rejected",
+                             "",
+                             "invalid_request");
+    return;
+  }
+  const uint64_t workDurationMs = doc["workDurationMs"].as<uint64_t>();
+  const uint64_t breakDurationMs = doc["breakDurationMs"].as<uint64_t>();
+  const bool valid =
+    workDurationMs >= TimekeeperController::kMinPomodoroWorkDurationMs &&
+    workDurationMs <= TimekeeperController::kMaxPomodoroWorkDurationMs &&
+    breakDurationMs >= TimekeeperController::kMinPomodoroBreakDurationMs &&
+    breakDurationMs <= TimekeeperController::kMaxPomodoroBreakDurationMs &&
+    workDurationMs % (60ULL * 1000ULL) == 0 &&
+    breakDurationMs % (60ULL * 1000ULL) == 0;
+  if (!valid) {
+    sendPomodoroConfigResult(requestId,
+                             "rejected",
+                             "",
+                             "duration_out_of_range");
+    return;
+  }
+  uint32_t revision = timekeeperController.pomodoroConfigRevision() + 1U;
+  if (revision == 0) {
+    revision = 1;
+  }
+  if (!persistPomodoroConfig(workDurationMs, breakDurationMs, revision) ||
+      !timekeeperController.configurePomodoro(workDurationMs,
+                                              breakDurationMs,
+                                              revision)) {
+    sendPomodoroConfigResult(requestId,
+                             "rejected",
+                             "",
+                             "storage_failed");
+    return;
+  }
+  sendPomodoroConfigResult(requestId,
+                           "saved",
+                           pomodoroSessionActive() ? "next_session" : "next_start");
+  lastTimekeeperUiValueMs = UINT64_MAX;
+  if (experienceMode == ExperienceMode::Timekeeper &&
+      timekeeperController.activity() == TimekeeperActivity::Pomodoro) {
+    drawTimekeeperOverlay(monotonicMs(), true);
+  }
+  Serial.printf("[timekeeper] pomodoro config saved work_ms=%llu break_ms=%llu revision=%lu applies=%s\n",
+                static_cast<unsigned long long>(workDurationMs),
+                static_cast<unsigned long long>(breakDurationMs),
+                static_cast<unsigned long>(revision),
+                pomodoroSessionActive() ? "next_session" : "next_start");
+}
+
+const char* timekeeperActivityName(TimekeeperActivity activity) {
+  switch (activity) {
+    case TimekeeperActivity::Stopwatch:
+      return "stopwatch";
+    case TimekeeperActivity::Countdown:
+      return "countdown";
+    case TimekeeperActivity::TenSecondChallenge:
+      return "ten_second_challenge";
+    case TimekeeperActivity::Pomodoro:
+      return "pomodoro";
+  }
+  return "stopwatch";
+}
+
+const char* timekeeperChallengeDifficultyName(TimekeeperChallengeDifficulty difficulty) {
+  switch (difficulty) {
+    case TimekeeperChallengeDifficulty::Low:
+      return "low";
+    case TimekeeperChallengeDifficulty::Medium:
+      return "medium";
+    case TimekeeperChallengeDifficulty::High:
+      return "high";
+  }
+  return "medium";
+}
+
+const char* timekeeperStateName(TimekeeperState state) {
+  switch (state) {
+    case TimekeeperState::Ready:
+      return "ready";
+    case TimekeeperState::Running:
+      return "running";
+    case TimekeeperState::Paused:
+      return "paused";
+    case TimekeeperState::Finished:
+      return "finished";
+    case TimekeeperState::Aborted:
+      return "aborted";
+    case TimekeeperState::Completed:
+      return "completed";
+  }
+  return "ready";
+}
+
+const char* timekeeperEventName(TimekeeperEventType type) {
+  switch (type) {
+    case TimekeeperEventType::Started:
+      return "started";
+    case TimekeeperEventType::Paused:
+      return "paused";
+    case TimekeeperEventType::Resumed:
+      return "resumed";
+    case TimekeeperEventType::Reset:
+      return "reset";
+    case TimekeeperEventType::Lap:
+      return "lap";
+    case TimekeeperEventType::Milestone:
+      return "milestone";
+    case TimekeeperEventType::Finished:
+      return "finished";
+    case TimekeeperEventType::Result:
+      return "result";
+    case TimekeeperEventType::Aborted:
+      return "aborted";
+    case TimekeeperEventType::Transition:
+      return "transition";
+    case TimekeeperEventType::Completed:
+      return "completed";
+    case TimekeeperEventType::None:
+      break;
+  }
+  return "unknown";
+}
+
+const char* timekeeperMilestoneName(TimekeeperMilestone milestone) {
+  switch (milestone) {
+    case TimekeeperMilestone::Remaining30Seconds:
+      return "remaining_30_seconds";
+    case TimekeeperMilestone::Remaining10Seconds:
+      return "remaining_10_seconds";
+    case TimekeeperMilestone::PomodoroWorkHalf:
+      return "work_half";
+    case TimekeeperMilestone::PomodoroWorkRemaining5Minutes:
+      return "work_remaining_5_minutes";
+    case TimekeeperMilestone::PomodoroWorkFinishingSoon:
+      return "work_finishing_soon";
+    case TimekeeperMilestone::PomodoroBreakRemaining1Minute:
+      return "break_remaining_1_minute";
+    case TimekeeperMilestone::PomodoroBreakFinishingSoon:
+      return "break_finishing_soon";
+    case TimekeeperMilestone::None:
+    case TimekeeperMilestone::Halfway:
+    case TimekeeperMilestone::Remaining5Minutes:
+    case TimekeeperMilestone::Remaining1Minute:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+const char* timekeeperPomodoroPhaseName(TimekeeperPomodoroPhase phase) {
+  switch (phase) {
+    case TimekeeperPomodoroPhase::Work:
+      return "work";
+    case TimekeeperPomodoroPhase::Break:
+      return "break";
+    case TimekeeperPomodoroPhase::None:
+      break;
+  }
+  return nullptr;
+}
+
+const char* timekeeperTransitionName(TimekeeperTransition transition) {
+  switch (transition) {
+    case TimekeeperTransition::WorkToBreak:
+      return "work_to_break";
+    case TimekeeperTransition::BreakToWork:
+      return "break_to_work";
+    case TimekeeperTransition::None:
+      break;
+  }
+  return nullptr;
+}
+
+String makeTimekeeperSessionId(const TimekeeperEvent& event) {
+  const char* prefix = "sw";
+  switch (event.activity) {
+    case TimekeeperActivity::Stopwatch:
+      prefix = "sw";
+      break;
+    case TimekeeperActivity::Countdown:
+      prefix = "cd";
+      break;
+    case TimekeeperActivity::TenSecondChallenge:
+      prefix = "challenge";
+      break;
+    case TimekeeperActivity::Pomodoro:
+      prefix = "pomodoro";
+      break;
+  }
+  return String(prefix) + "-" + String(event.sessionSequence);
+}
+
+String timekeeperAnnouncementKey(const TimekeeperEvent& event) {
+  if (event.activity != TimekeeperActivity::Pomodoro) {
+    return String(timekeeperActivityName(event.activity)) + "." +
+           timekeeperEventName(event.type);
+  }
+  if (event.type == TimekeeperEventType::Started) {
+    return "pomodoro.session.started";
+  }
+  if (event.type == TimekeeperEventType::Completed) {
+    return "pomodoro.session.completed";
+  }
+  if (event.type == TimekeeperEventType::Transition) {
+    return event.transition == TimekeeperTransition::WorkToBreak
+             ? "pomodoro.transition.work_to_break"
+             : "pomodoro.transition.break_to_work";
+  }
+  if (event.type == TimekeeperEventType::Milestone) {
+    switch (event.milestone) {
+      case TimekeeperMilestone::PomodoroWorkHalf:
+        return "pomodoro.work.half";
+      case TimekeeperMilestone::PomodoroWorkRemaining5Minutes:
+        return "pomodoro.work.remaining_5_minutes";
+      case TimekeeperMilestone::PomodoroWorkFinishingSoon:
+        return "pomodoro.work.finishing_soon";
+      case TimekeeperMilestone::PomodoroBreakRemaining1Minute:
+        return "pomodoro.break.remaining_1_minute";
+      case TimekeeperMilestone::PomodoroBreakFinishingSoon:
+        return "pomodoro.break.finishing_soon";
+      default:
+        break;
+    }
+  }
+  return String("pomodoro.") + timekeeperEventName(event.type);
+}
+
+bool timekeeperEventRequiresResult(const TimekeeperEvent& event) {
+  return (event.type == TimekeeperEventType::Finished &&
+          event.activity == TimekeeperActivity::Countdown) ||
+         (event.type == TimekeeperEventType::Completed &&
+          event.activity == TimekeeperActivity::Pomodoro);
+}
+
+String makeTimekeeperEventId() {
+  ensureBootId();
+  ++timekeeperEventSequence;
+  if (timekeeperEventSequence == 0) {
+    ++timekeeperEventSequence;
+  }
+  return bootId + "-e" + String(timekeeperEventSequence);
+}
+
+bool timekeeperEventHasAnnouncement(const TimekeeperEvent& event, bool allowAnnouncement) {
+  if (!allowAnnouncement || event.reason != nullptr) {
+    return false;
+  }
+  if (event.activity == TimekeeperActivity::Pomodoro) {
+    return event.type == TimekeeperEventType::Started ||
+           event.type == TimekeeperEventType::Milestone ||
+           event.type == TimekeeperEventType::Transition ||
+           event.type == TimekeeperEventType::Completed;
+  }
+  switch (event.type) {
+    case TimekeeperEventType::Started:
+    case TimekeeperEventType::Paused:
+    case TimekeeperEventType::Resumed:
+    case TimekeeperEventType::Lap:
+    case TimekeeperEventType::Milestone:
+    case TimekeeperEventType::Finished:
+    case TimekeeperEventType::Result:
+      return true;
+    case TimekeeperEventType::Reset:
+    case TimekeeperEventType::Aborted:
+    case TimekeeperEventType::Transition:
+    case TimekeeperEventType::Completed:
+    case TimekeeperEventType::None:
+      return false;
+  }
+  return false;
+}
+
+uint32_t timekeeperAnnouncementMaxAgeMs(const TimekeeperEvent& event) {
+  if (timekeeperEventRequiresResult(event)) {
+    return 120000;
+  }
+  if (event.type == TimekeeperEventType::Paused || event.type == TimekeeperEventType::Result) {
+    return 30000;
+  }
+  return 10000;
+}
+
+const char* timekeeperAnnouncementImportance(const TimekeeperEvent& event) {
+  if (timekeeperEventRequiresResult(event)) {
+    return "critical";
+  }
+  if (event.type == TimekeeperEventType::Result ||
+      event.type == TimekeeperEventType::Paused ||
+      event.type == TimekeeperEventType::Transition) {
+    return "high";
+  }
+  return "normal";
+}
+
+int timekeeperChallengeAffectionDelta(const TimekeeperEvent& event) {
+  if (event.activity != TimekeeperActivity::TenSecondChallenge ||
+      event.type != TimekeeperEventType::Result) {
+    return 0;
+  }
+  uint8_t accuracyIndex = 5;
+  if (event.absoluteErrorMs == 0) {
+    accuracyIndex = 0;
+  } else if (event.absoluteErrorMs <= 50) {
+    accuracyIndex = 1;
+  } else if (event.absoluteErrorMs <= 200) {
+    accuracyIndex = 2;
+  } else if (event.absoluteErrorMs <= 500) {
+    accuracyIndex = 3;
+  } else if (event.absoluteErrorMs <= 1000) {
+    accuracyIndex = 4;
+  }
+
+  uint8_t difficultyIndex = 1;
+  switch (event.challengeDifficulty) {
+    case TimekeeperChallengeDifficulty::Low:
+      difficultyIndex = 0;
+      break;
+    case TimekeeperChallengeDifficulty::Medium:
+      difficultyIndex = 1;
+      break;
+    case TimekeeperChallengeDifficulty::High:
+      difficultyIndex = 2;
+      break;
+  }
+
+  const uint8_t durationIndex = event.durationMs <= 10000ULL
+                                  ? 0
+                                  : (event.durationMs <= 30000ULL ? 1 : 2);
+  // [duration: 10/30/60 s][difficulty: low/medium/high]
+  // [accuracy: perfect/50 ms/200 ms/500 ms/1 s/over 1 s]
+  static constexpr uint8_t kReward[3][3][6] = {
+    {
+      {10, 8, 6, 4, 2, 1},
+      {14, 11, 8, 5, 3, 1},
+      {18, 14, 10, 7, 4, 2},
+    },
+    {
+      {15, 12, 9, 6, 3, 1},
+      {20, 16, 12, 8, 5, 2},
+      {25, 20, 15, 10, 6, 3},
+    },
+    {
+      {20, 16, 12, 8, 5, 2},
+      {25, 20, 15, 10, 6, 3},
+      {30, 24, 18, 12, 8, 4},
+    },
+  };
+  return kReward[durationIndex][difficultyIndex][accuracyIndex];
+}
+
+void sendTimekeeperAnnouncementPrefetch(const TimekeeperEvent& event,
+                                        const String& eventId,
+                                        bool allowAnnouncement) {
+  if (!event.valid() || !appClientConnected() ||
+      !timekeeperEventHasAnnouncement(event, allowAnnouncement)) {
+    return;
+  }
+  ensureDeviceId();
+  ensureBootId();
+  const uint64_t nowMs = monotonicMs();
+  const uint64_t ageMs = nowMs >= event.createdAtMs ? nowMs - event.createdAtMs : 0;
+
+  JsonDocument doc;
+  doc["type"] = "timekeeper.announcement.prefetch";
+  doc["version"] = 1;
+  doc["deviceId"] = deviceId;
+  doc["bootId"] = bootId;
+  doc["eventId"] = eventId;
+  doc["sessionId"] = makeTimekeeperSessionId(event);
+  doc["activity"] = timekeeperActivityName(event.activity);
+  doc["event"] = timekeeperEventName(event.type);
+  doc["ageMs"] = ageMs;
+  doc["elapsedMs"] = event.elapsedMs;
+  if (event.activity == TimekeeperActivity::TenSecondChallenge) {
+    doc["targetMs"] = event.durationMs;
+    doc["difficulty"] =
+      timekeeperChallengeDifficultyName(event.challengeDifficulty);
+  }
+  if (event.type == TimekeeperEventType::Result) {
+    doc["signedErrorMs"] = event.signedErrorMs;
+    doc["absoluteErrorMs"] = event.absoluteErrorMs;
+    doc["rank"] = event.rank != nullptr ? event.rank : "try_again";
+    doc["affectionDelta"] = timekeeperChallengeAffectionDelta(event);
+  }
+
+  JsonObject announcement = doc["announcement"].to<JsonObject>();
+  announcement["key"] = timekeeperAnnouncementKey(event);
+  announcement["importance"] = timekeeperAnnouncementImportance(event);
+  announcement["maxAgeMs"] = timekeeperAnnouncementMaxAgeMs(event);
+  announcement["delivery"] = "best_effort";
+  announcement["playbackGate"] = "matching_timekeeper_event";
+  sendJsonDocument(doc);
+}
+
+void sendTimekeeperEventJson(const TimekeeperEvent& event,
+                             const String& eventId,
+                             bool allowAnnouncement) {
+  if (!event.valid()) {
+    return;
+  }
+  const bool connected = appClientConnected();
+  const bool hasAnnouncement =
+    timekeeperEventHasAnnouncement(event, allowAnnouncement);
+  if (!connected) {
+    Serial.printf("[timekeeper.tx] dropped event_id=%s activity=%s event=%s app_connected=0 announcement=%d\n",
+                  eventId.c_str(),
+                  timekeeperActivityName(event.activity),
+                  timekeeperEventName(event.type),
+                  hasAnnouncement ? 1 : 0);
+    return;
+  }
+  ensureDeviceId();
+  ensureBootId();
+  const uint64_t nowMs = monotonicMs();
+  const uint64_t ageMs = nowMs >= event.createdAtMs ? nowMs - event.createdAtMs : 0;
+
+  JsonDocument doc;
+  doc["type"] = "timekeeper.event";
+  doc["version"] = 1;
+  doc["deviceId"] = deviceId;
+  doc["bootId"] = bootId;
+  doc["eventId"] = eventId;
+  doc["sessionId"] = makeTimekeeperSessionId(event);
+  doc["activity"] = timekeeperActivityName(event.activity);
+  doc["event"] = timekeeperEventName(event.type);
+  doc["state"] = timekeeperStateName(event.state);
+  doc["ageMs"] = ageMs;
+  doc["elapsedMs"] = event.elapsedMs;
+  if (event.activity == TimekeeperActivity::Countdown) {
+    doc["remainingMs"] = event.remainingMs;
+    doc["durationMs"] = event.durationMs;
+  } else if (event.activity == TimekeeperActivity::TenSecondChallenge) {
+    doc["targetMs"] = event.durationMs;
+    doc["difficulty"] =
+      timekeeperChallengeDifficultyName(event.challengeDifficulty);
+  } else if (event.activity == TimekeeperActivity::Pomodoro) {
+    const char* phase = timekeeperPomodoroPhaseName(event.pomodoroPhase);
+    if (phase != nullptr) {
+      doc["phase"] = phase;
+    }
+    const char* transition = timekeeperTransitionName(event.transition);
+    if (transition != nullptr) {
+      doc["transition"] = transition;
+    }
+    doc["cycleIndex"] = event.cycleIndex;
+    doc["totalCycles"] = event.totalCycles;
+    doc["remainingCycles"] = event.remainingCycles;
+    doc["isFinalCycle"] = event.isFinalCycle;
+    doc["workDurationMs"] = event.workDurationMs;
+    doc["breakDurationMs"] = event.breakDurationMs;
+    if (event.phaseDurationMs != 0) {
+      doc["phaseDurationMs"] = event.phaseDurationMs;
+    }
+    doc["remainingMs"] = event.remainingMs;
+    doc["configRevision"] = event.configRevision;
+  }
+  if (event.type == TimekeeperEventType::Milestone) {
+    const char* milestone = timekeeperMilestoneName(event.milestone);
+    if (milestone != nullptr) {
+      doc["milestone"] = milestone;
+    }
+  }
+  if (event.reason != nullptr && event.reason[0] != '\0') {
+    doc["reason"] = event.reason;
+  }
+  if (event.type == TimekeeperEventType::Lap) {
+    doc["lapIndex"] = event.lapIndex;
+    doc["lapDurationMs"] = event.lapDurationMs;
+    if (event.previousLapDurationMs != 0) {
+      doc["previousLapDurationMs"] = event.previousLapDurationMs;
+      doc["lapDeltaMs"] = event.lapDeltaMs;
+    }
+    doc["isBestLap"] = event.isBestLap;
+  }
+  if (event.type == TimekeeperEventType::Result) {
+    doc["signedErrorMs"] = event.signedErrorMs;
+    doc["absoluteErrorMs"] = event.absoluteErrorMs;
+    doc["rank"] = event.rank != nullptr ? event.rank : "try_again";
+    doc["affectionDelta"] = timekeeperChallengeAffectionDelta(event);
+  }
+
+  if (hasAnnouncement) {
+    JsonObject announcement = doc["announcement"].to<JsonObject>();
+    announcement["key"] = timekeeperAnnouncementKey(event);
+    announcement["importance"] = timekeeperAnnouncementImportance(event);
+    announcement["maxAgeMs"] = timekeeperAnnouncementMaxAgeMs(event);
+    announcement["delivery"] = timekeeperEventRequiresResult(event)
+                                   ? "until_result"
+                                   : "best_effort";
+  }
+  sendJsonDocument(doc);
+  Serial.printf("[timekeeper.tx] sent event_id=%s activity=%s event=%s announcement=%d remaining_ms=%llu\n",
+                eventId.c_str(),
+                timekeeperActivityName(event.activity),
+                timekeeperEventName(event.type),
+                hasAnnouncement ? 1 : 0,
+                static_cast<unsigned long long>(event.remainingMs));
+}
+
+void handleTimekeeperEvent(const TimekeeperEvent& event, bool allowAnnouncement) {
+  if (!event.valid()) {
+    return;
+  }
+  const int affectionDelta = timekeeperChallengeAffectionDelta(event);
+  if (affectionDelta > 0) {
+    const unsigned long affectionNow = millis();
+    const AffectionApplyResult affectionResult =
+      affectionController.debugAdjust(affectionDelta);
+    if (affectionResult.applied) {
+      applyAffectionResult(affectionResult, affectionNow, true);
+    } else {
+      // At the affection cap the stored value cannot change, but the player
+      // still earned the Timekeeper reward. Keep the reward presentation even
+      // when the persisted value remains capped at 1000.
+      faceController.showAffectionDelta(affectionDelta, affectionNow);
+    }
+    Serial.printf("[timekeeper] challenge affection reward=+%d applied=%d value=%d error_ms=%llu\n",
+                  affectionDelta,
+                  affectionResult.applied ? 1 : 0,
+                  affectionResult.state.affection,
+                  static_cast<unsigned long long>(event.absoluteErrorMs));
+  }
+  const String eventId = makeTimekeeperEventId();
+
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  const bool shouldSmile =
+    event.activity == TimekeeperActivity::TenSecondChallenge &&
+    event.type == TimekeeperEventType::Result &&
+    event.absoluteErrorMs <= 200;
+  if (shouldSmile && !pendingTimekeeperSmileResult.active) {
+    pendingTimekeeperSmileResult.active = true;
+    pendingTimekeeperSmileResult.animationStarted = false;
+    pendingTimekeeperSmileResult.prefetchSent = false;
+    pendingTimekeeperSmileResult.event = event;
+    pendingTimekeeperSmileResult.eventId = eventId;
+    pendingTimekeeperSmileResult.allowAnnouncement = allowAnnouncement;
+    pendingTimekeeperSmileResult.startDeadlineMs = monotonicMs() + 5000ULL;
+    if (!audioBusyForUiEffects()) {
+      pendingTimekeeperSmileResult.animationStarted =
+        faceController.startTimekeeperSmileAnimation(millis());
+      if (!pendingTimekeeperSmileResult.animationStarted) {
+        pendingTimekeeperSmileResult.startDeadlineMs = monotonicMs();
+      }
+    }
+    lastTimekeeperUiValueMs = UINT64_MAX;
+    Serial.printf("[timekeeper] result smile queued event_id=%s error_ms=%llu started=%d\n",
+                  eventId.c_str(),
+                  static_cast<unsigned long long>(event.absoluteErrorMs),
+                  pendingTimekeeperSmileResult.animationStarted ? 1 : 0);
+    return;
+  }
+#endif
+
+  if (timekeeperEventRequiresResult(event)) {
+    pendingTimekeeperAnnouncement.active = true;
+    pendingTimekeeperAnnouncement.event = event;
+    pendingTimekeeperAnnouncement.eventId = eventId;
+    pendingTimekeeperAnnouncement.expiresAtMs = event.createdAtMs + 120000ULL;
+    pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo = appClientConnected();
+  }
+  sendTimekeeperEventJson(event, eventId, allowAnnouncement);
+  lastTimekeeperUiValueMs = UINT64_MAX;
+}
+
+void updatePendingTimekeeperSmileResult() {
+  if (!pendingTimekeeperSmileResult.active) {
+    return;
+  }
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  if (!pendingTimekeeperSmileResult.animationStarted) {
+    if (!audioBusyForUiEffects()) {
+      if (faceController.startTimekeeperSmileAnimation(millis())) {
+        pendingTimekeeperSmileResult.animationStarted = true;
+        Serial.printf("[timekeeper] deferred result smile started event_id=%s\n",
+                      pendingTimekeeperSmileResult.eventId.c_str());
+        return;
+      }
+      pendingTimekeeperSmileResult.startDeadlineMs = monotonicMs();
+    }
+    if (monotonicMs() < pendingTimekeeperSmileResult.startDeadlineMs) {
+      return;
+    }
+    Serial.printf("[timekeeper] result smile start timeout event_id=%s\n",
+                  pendingTimekeeperSmileResult.eventId.c_str());
+  }
+  if (pendingTimekeeperSmileResult.animationStarted &&
+      !pendingTimekeeperSmileResult.prefetchSent && appClientConnected()) {
+    sendTimekeeperAnnouncementPrefetch(pendingTimekeeperSmileResult.event,
+                                       pendingTimekeeperSmileResult.eventId,
+                                       pendingTimekeeperSmileResult.allowAnnouncement);
+    pendingTimekeeperSmileResult.prefetchSent = true;
+    Serial.printf("[timekeeper] result speech prefetch sent event_id=%s\n",
+                  pendingTimekeeperSmileResult.eventId.c_str());
+  }
+  if (faceController.timekeeperSmileAnimationActive()) {
+    return;
+  }
+#endif
+  const PendingTimekeeperSmileResult completed = pendingTimekeeperSmileResult;
+  pendingTimekeeperSmileResult = PendingTimekeeperSmileResult();
+  sendTimekeeperEventJson(completed.event,
+                          completed.eventId,
+                          completed.allowAnnouncement);
+  Serial.printf("[timekeeper] result smile finished event_id=%s announcement=%d\n",
+                completed.eventId.c_str(),
+                completed.allowAnnouncement ? 1 : 0);
+}
+
+void flushPendingTimekeeperSmileResult(bool allowAnnouncement) {
+  if (!pendingTimekeeperSmileResult.active) {
+    return;
+  }
+  const PendingTimekeeperSmileResult pending = pendingTimekeeperSmileResult;
+  pendingTimekeeperSmileResult = PendingTimekeeperSmileResult();
+  sendTimekeeperEventJson(pending.event,
+                          pending.eventId,
+                          allowAnnouncement && pending.allowAnnouncement);
+}
+
+void maybeResendPendingTimekeeperAnnouncement() {
+  if (!pendingTimekeeperAnnouncement.active) {
+    return;
+  }
+  const uint64_t nowMs = monotonicMs();
+  if (nowMs >= pendingTimekeeperAnnouncement.expiresAtMs) {
+    Serial.printf("[timekeeper] pending expired event_id=%s\n",
+                  pendingTimekeeperAnnouncement.eventId.c_str());
+    pendingTimekeeperAnnouncement = PendingTimekeeperAnnouncement();
+    return;
+  }
+  if (!appClientConnected() || pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo) {
+    return;
+  }
+  sendTimekeeperEventJson(pendingTimekeeperAnnouncement.event,
+                          pendingTimekeeperAnnouncement.eventId,
+                          true);
+  pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo = true;
+  Serial.printf("[timekeeper] pending resent event_id=%s\n",
+                pendingTimekeeperAnnouncement.eventId.c_str());
+}
+
+void handleTimekeeperAnnouncementResult(JsonDocument& doc) {
+  if (!pendingTimekeeperAnnouncement.active || (doc["version"] | 0U) != 1U) {
+    return;
+  }
+  ensureDeviceId();
+  ensureBootId();
+  const char* resultDeviceId = doc["deviceId"] | "";
+  const char* resultBootId = doc["bootId"] | "";
+  const char* resultEventId = doc["eventId"] | "";
+  const char* result = doc["result"] | "";
+  if (deviceId != resultDeviceId || bootId != resultBootId ||
+      pendingTimekeeperAnnouncement.eventId != resultEventId) {
+    Serial.println("[timekeeper] announcement result ignored: identity mismatch");
+    return;
+  }
+  if (strcmp(result, "queued") == 0) {
+    Serial.printf("[timekeeper] announcement queued event_id=%s\n", resultEventId);
+    return;
+  }
+  if (strcmp(result, "sent") == 0 || strcmp(result, "suppressed") == 0 ||
+      strcmp(result, "expired") == 0 || strcmp(result, "failed") == 0) {
+    Serial.printf("[timekeeper] announcement terminal event_id=%s result=%s\n",
+                  resultEventId,
+                  result);
+    pendingTimekeeperAnnouncement = PendingTimekeeperAnnouncement();
+  }
+}
+
+void prepareTimekeeperForDisplayOff(uint64_t nowMs) {
+  experienceModeMenuVisible = false;
+  timekeeperDurationMenuVisible = false;
+  travelFacePickerVisible = false;
+  stopwatchYellowButtonPressed = false;
+  stopwatchYellowButtonLongHandled = false;
+  stopwatchYellowButtonPressedAtMs = 0;
+  if (experienceMode != ExperienceMode::Timekeeper) {
+    return;
+  }
+  flushPendingTimekeeperSmileResult(false);
+  const TimekeeperEvent event = timekeeperController.suspend(nowMs, "display_off");
+  // The state event is useful to the app, but it must never enqueue speech
+  // immediately before communication is suspended.
+  handleTimekeeperEvent(event, false);
+}
+
+void sendCommunicationSuspending(const char* reason) {
+  if (!appClientConnected()) {
+    return;
+  }
+  ensureDeviceId();
+  ensureBootId();
+  ++communicationSuspendSequence;
+  if (communicationSuspendSequence == 0) {
+    ++communicationSuspendSequence;
+  }
+  JsonDocument doc;
+  doc["type"] = "device.communication.suspending";
+  doc["version"] = 1;
+  doc["deviceId"] = deviceId;
+  doc["bootId"] = bootId;
+  doc["sequence"] = communicationSuspendSequence;
+  doc["reason"] = reason != nullptr ? reason : "unknown";
+  sendJsonDocument(doc);
+}
+#endif
+
 void writeDeviceInfo(JsonDocument& response, const char* requestId) {
   ensureDeviceId();
+  ensureBootId();
   response["type"] = "device.info";
   if (requestId != nullptr && requestId[0] != '\0') {
     response["requestId"] = requestId;
   }
   response["deviceId"] = deviceId;
+  response["bootId"] = bootId;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  response["experienceMode"] = experienceModeName(experienceMode);
+  response["experienceModeRevision"] = experienceModeRevision;
+  JsonObject pomodoro = response["pomodoro"].to<JsonObject>();
+  pomodoro["workDurationMs"] = timekeeperController.pomodoroWorkDurationMs();
+  pomodoro["breakDurationMs"] = timekeeperController.pomodoroBreakDurationMs();
+  pomodoro["totalCycles"] = timekeeperController.pomodoroCycles();
+  pomodoro["configRevision"] = timekeeperController.pomodoroConfigRevision();
+#endif
   response["displayName"] = STACKCHAN_DEVICE_DISPLAY_NAME;
   response["firmwareName"] = STACKCHAN_FIRMWARE_NAME;
   response["firmwareVersion"] = STACKCHAN_FIRMWARE_VERSION;
@@ -7073,6 +8141,12 @@ void writeDeviceInfo(JsonDocument& response, const char* requestId) {
   }
   JsonArray capabilities = response["capabilities"].to<JsonArray>();
   capabilities.add("device.info");
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  capabilities.add("experience.mode.v1");
+  capabilities.add("device.communication.suspending.v1");
+  capabilities.add("timekeeper.v1");
+  capabilities.add("timekeeper.pomodoro.v1");
+#endif
   capabilities.add("affection.get");
   capabilities.add("affection.sync");
   capabilities.add(SPEECH_BUBBLE_CAPABILITY);
@@ -7196,6 +8270,9 @@ void handleDeviceInfoGetCommand(JsonDocument& doc) {
   JsonDocument response;
   writeDeviceInfo(response, doc["requestId"] | "");
   sendJsonDocument(response);
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  maybeResendPendingTimekeeperAnnouncement();
+#endif
 }
 
 void sendAffectionState(const char* requestId) {
@@ -7600,6 +8677,20 @@ void handleSpeechBubbleCommand(JsonDocument& doc,
     return;
   }
 
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (experienceMode == ExperienceMode::Timekeeper ||
+      experienceMode == ExperienceMode::Travel) {
+    // Timekeeper owns the available screen space. Treat bubble commands as
+    // intentionally hidden so common app sequences cannot cover its clock.
+    if (speechBubbleController.active() || faceController.speechBubbleVisible()) {
+      speechBubbleController.reset(
+        experienceMode == ExperienceMode::Travel ? "travel_mode" :
+        "timekeeper_mode");
+    }
+    return;
+  }
+#endif
+
   const char* sequenceId = doc["sequenceId"] | "";
   const char* commandError = nullptr;
   bool ok = false;
@@ -7665,6 +8756,14 @@ void handleJsonCommand(const uint8_t* payload,
     sendPongResponse(doc);
   } else if (strcmp(type, "device.info.get") == 0) {
     handleDeviceInfoGetCommand(doc);
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  } else if (strcmp(type, "timekeeper.announcement.result") == 0) {
+    handleTimekeeperAnnouncementResult(doc);
+  } else if (strcmp(type, "timekeeper.pomodoro.config.get") == 0) {
+    handlePomodoroConfigGet(doc);
+  } else if (strcmp(type, "timekeeper.pomodoro.config.set") == 0) {
+    handlePomodoroConfigSet(doc);
+#endif
 #if STACKCHAN_PHONE_CAMERA_REMOTE_ENABLED
   } else if (strcmp(type, "phone_camera.state") == 0) {
     handlePhoneCameraStateCommand(doc, transport);
@@ -8125,6 +9224,11 @@ void updateUsbSerial(unsigned long now) {
     usbSerialDeferredIdlePending = false;
     usbSerialDeferredIdleRequestedMs = 0;
 #endif
+#if STACKCHAN_TIMEKEEPER_ENABLED
+    if (pendingTimekeeperAnnouncement.active) {
+      pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo = false;
+    }
+#endif
     audioController.setUsbSerialClientConnected(false);
     if (speechBubbleController.activeForTransport(SpeechBubbleTransport::UsbSerial)) {
       speechBubbleController.reset("usb_timeout");
@@ -8339,6 +9443,11 @@ void onWsConnection(uint8_t clientId, bool connected) {
     sendInteractionEvent("session_start", "instant", now);
   } else {
     wsAudioSettleUntilMs = 0;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+    if (pendingTimekeeperAnnouncement.active) {
+      pendingTimekeeperAnnouncement.sentAfterLastDeviceInfo = false;
+    }
+#endif
     if (speechBubbleController.activeForTransport(SpeechBubbleTransport::WebSocket)) {
       speechBubbleController.reset("websocket_disconnect");
     }
@@ -8515,7 +9624,12 @@ void updateWiFi(unsigned long now) {
 
 void updateScreenPetting(unsigned long now, const m5::touch_detail_t& touch) {
 #if STACKCHAN_HAS_SCREEN_TOUCH_PETTING
-  if (!displayOn || infoScreenVisible) {
+  if (!displayOn || infoScreenVisible
+#if STACKCHAN_DEVICE_STOPWATCH
+      || experienceMode == ExperienceMode::Timekeeper
+      || experienceMode == ExperienceMode::Travel
+#endif
+  ) {
     screenPettingCandidate = false;
     screenPettingTouchActive = false;
     screenPettingCandidateSinceMs = 0;
@@ -8654,7 +9768,9 @@ bool guruguruFaceCanRun() {
          currentState == ChanState::Idle &&
          audioController.state() == ChanState::Idle &&
          !audioController.isPlaybackDraining() &&
+#if !STACKCHAN_DEVICE_STOPWATCH
          !appClientConnected() &&
+#endif
          guruguruFaceAssetsAvailable();
 }
 
@@ -8695,11 +9811,13 @@ void toggleGuruguruFaceInput() {
 #endif
 
 void updateGuruguruFaceAvailability(unsigned long now) {
+#if !STACKCHAN_DEVICE_STOPWATCH
   if (guruguruFaceMode && appClientConnected()) {
     Serial.println("[guruguru] disabled: client connected");
     setGuruguruFaceMode(false, now);
     return;
   }
+#endif
 
   const bool effective = guruguruFaceCanRun();
   if (guruguruFaceEffective == effective) {
@@ -8714,9 +9832,11 @@ void updateGuruguruFaceAvailability(unsigned long now) {
 }
 
 void setGuruguruFaceMode(bool enabled, unsigned long now) {
+#if !STACKCHAN_DEVICE_STOPWATCH
   if (enabled && appClientConnected()) {
     enabled = false;
   }
+#endif
   if (enabled && !guruguruFaceAssetsAvailable()) {
     enabled = false;
     Serial.println("[guruguru] disabled: assets missing");
@@ -9287,6 +10407,2073 @@ bool updateGuruguruFaceImu(unsigned long now, const m5::imu_data_t& data, bool i
 #endif
 #endif
 
+void sendExperienceModeChanged(ExperienceMode previousMode) {
+  if (!appClientConnected()) {
+    return;
+  }
+  ensureDeviceId();
+  ensureBootId();
+  JsonDocument doc;
+  doc["type"] = "experience.mode.changed";
+  doc["version"] = 1;
+  doc["deviceId"] = deviceId;
+  doc["bootId"] = bootId;
+  doc["mode"] = experienceModeName(experienceMode);
+  doc["previousMode"] = experienceModeName(previousMode);
+  doc["revision"] = experienceModeRevision;
+  sendJsonDocument(doc);
+}
+
+void requestExperienceMode(ExperienceMode mode, unsigned long now) {
+  if (mode == experienceMode) {
+    pendingExperienceModeValid = false;
+    return;
+  }
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  if (mode == ExperienceMode::Guruguru && !guruguruFaceAssetsAvailable()) {
+    Serial.println("[mode] guruguru rejected: assets missing");
+    return;
+  }
+#else
+  if (mode == ExperienceMode::Guruguru) {
+    return;
+  }
+#endif
+
+  if (audioBusyForUiEffects()) {
+    pendingExperienceMode = mode;
+    pendingExperienceModeValid = true;
+    Serial.printf("[mode] deferred target=%s until playback drains\n", experienceModeName(mode));
+    return;
+  }
+
+  pendingExperienceModeValid = false;
+  const ExperienceMode previousMode = experienceMode;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  travelFacePickerVisible = false;
+  if (previousMode == ExperienceMode::Timekeeper) {
+    flushPendingTimekeeperSmileResult(false);
+    const TimekeeperEvent event = timekeeperController.suspend(monotonicMs(), "mode_changed");
+    handleTimekeeperEvent(event, false);
+  }
+  lastTimekeeperUiValueMs = UINT64_MAX;
+#endif
+  if (infoScreenVisible) {
+    setInfoScreenVisible(false);
+  }
+  if (currentState == ChanState::Listening ||
+      (mode == ExperienceMode::Travel && currentState != ChanState::Idle)) {
+    setState(ChanState::Idle);
+  }
+
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (previousMode == ExperienceMode::Travel || mode == ExperienceMode::Travel) {
+    resetTravelPhotoFace();
+  }
+  if (mode == ExperienceMode::Travel) {
+    setPettingActive(false, now);
+    setShakeActive(false, now);
+    speechBubbleController.reset("travel_mode_enter");
+  }
+#endif
+
+#if STACKCHAN_GURUGURU_FACE_ENABLED
+  setGuruguruFaceMode(mode == ExperienceMode::Guruguru, now);
+#endif
+  experienceMode = mode;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (experienceMode == ExperienceMode::Timekeeper) {
+    // Do not carry a conversation-mode bubble into the Timekeeper screen.
+    speechBubbleController.reset("timekeeper_mode_enter");
+    setPettingActive(false, now);
+    setShakeActive(false, now);
+  }
+#endif
+  faceController.setTimekeeperPresentationMode(
+    experienceMode == ExperienceMode::Timekeeper ||
+    experienceMode == ExperienceMode::Travel);
+  faceController.setAffectionDeltaYOffset(
+    experienceMode == ExperienceMode::Timekeeper
+#if STACKCHAN_DEVICE_STOPWATCH
+      ? 64
+#else
+      ? 0
+#endif
+      : 0);
+  ++experienceModeRevision;
+  if (experienceModeRevision == 0) {
+    ++experienceModeRevision;
+  }
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  faceController.setEnabled(displayOn && !infoScreenVisible && !experienceModeMenuVisible &&
+                            !timekeeperDurationMenuVisible && !travelFacePickerVisible);
+  if (previousMode == ExperienceMode::Travel ||
+      experienceMode == ExperienceMode::Travel) {
+    faceController.redrawNow();
+  }
+#else
+  faceController.setEnabled(displayOn && !infoScreenVisible);
+#endif
+  sendExperienceModeChanged(previousMode);
+  Serial.printf("[mode] changed previous=%s current=%s revision=%lu\n",
+                experienceModeName(previousMode),
+                experienceModeName(experienceMode),
+                static_cast<unsigned long>(experienceModeRevision));
+}
+
+void updatePendingExperienceMode(unsigned long now) {
+  if (!displayOn || !pendingExperienceModeValid || audioBusyForUiEffects()) {
+    return;
+  }
+  const ExperienceMode target = pendingExperienceMode;
+  pendingExperienceModeValid = false;
+  requestExperienceMode(target, now);
+}
+
+#if STACKCHAN_TIMEKEEPER_ENABLED
+struct TravelPhotoFaceOption {
+  const char* path;
+  const char* label;
+};
+
+constexpr TravelPhotoFaceOption kTravelPhotoFaceOptions[] = {
+  // Page 1: expressions that work especially well for travel photos.
+  {"/pet_anim_8.jpg", "ハート"},
+  {"/pet_anim_10.jpg", "にっこり"},
+  {"/travel_wink.jpg", "ウインク"},
+  {"/travel_sparkle.jpg", "キラキラ"},
+  {"/travel_surprised.jpg", "びっくり"},
+  {"/travel_shy.jpg", "照れ顔"},
+  {"/travel_delicious.jpg", "おいしい"},
+  {"/travel_peace.jpg", "ピース"},
+  // Page 2: mood and playful expressions.
+  {"/dizzy_01.jpg", "クラクラ"},
+  {"/dizzy_09.jpg", "ふらふら"},
+  {"/pet_anim_13.jpg", "むすっ"},
+  {"/pet_anim_14.jpg", "ぷんぷん"},
+  {"/travel_mischief.jpg", "いたずら"},
+  {"/travel_teary.jpg", "うるうる"},
+  {"/travel_yawn.jpg", "あくび"},
+};
+constexpr uint8_t kTravelPhotoFaceCount =
+  static_cast<uint8_t>(sizeof(kTravelPhotoFaceOptions) /
+                       sizeof(kTravelPhotoFaceOptions[0]));
+constexpr uint8_t kTravelFacePickerPageSize = 8;
+constexpr uint8_t kTravelFacePickerPageCount =
+  static_cast<uint8_t>((kTravelPhotoFaceCount + kTravelFacePickerPageSize - 1) /
+                       kTravelFacePickerPageSize);
+
+bool selectTravelPhotoFace(uint8_t index) {
+  if (experienceMode != ExperienceMode::Travel ||
+      index >= kTravelPhotoFaceCount) {
+    return false;
+  }
+  const char* path = kTravelPhotoFaceOptions[index].path;
+  if (!LittleFS.exists(path)) {
+    Serial.printf("[travel] face missing index=%u path=%s\n",
+                  static_cast<unsigned>(index),
+                  path);
+    return false;
+  }
+  travelPhotoFaceIndex = static_cast<int8_t>(index);
+  faceController.setTravelPhotoFace(path);
+  Serial.printf("[travel] face_index=%d path=%s label=%s\n",
+                static_cast<int>(travelPhotoFaceIndex),
+                path,
+                kTravelPhotoFaceOptions[index].label);
+  return true;
+}
+
+void resetTravelPhotoFace() {
+  travelPhotoFaceIndex = -1;
+  faceController.setTravelPhotoFace(nullptr);
+  Serial.println("[travel] face=normal");
+}
+
+void advanceTravelPhotoFace() {
+  if (experienceMode != ExperienceMode::Travel) {
+    return;
+  }
+  int16_t candidate = travelPhotoFaceIndex;
+  for (uint8_t attempts = 0; attempts < kTravelPhotoFaceCount; ++attempts) {
+    candidate = candidate < 0
+                  ? 0
+                  : (candidate + 1) % kTravelPhotoFaceCount;
+    if (selectTravelPhotoFace(static_cast<uint8_t>(candidate))) {
+      return;
+    }
+  }
+  resetTravelPhotoFace();
+}
+
+void drawJapaneseCentered(const String& text,
+                          int32_t x,
+                          int32_t y,
+                          uint16_t color,
+                          uint16_t background = TFT_BLACK) {
+  M5.Display.setFont(&fonts::efontJA_12);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(color, background);
+  M5.Display.drawString(text, x, y);
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextDatum(top_left);
+}
+
+constexpr const char* kTravelFacePickerPagePaths[] = {
+  "/travel_picker_page_0.jpg",
+  "/travel_picker_page_1.jpg",
+};
+
+int32_t travelFacePickerDrawSize() {
+  return min(M5.Display.width(), M5.Display.height());
+}
+
+int32_t travelFacePickerDrawX() {
+  return (M5.Display.width() - travelFacePickerDrawSize()) / 2;
+}
+
+int32_t travelFacePickerDrawY() {
+  return (M5.Display.height() - travelFacePickerDrawSize()) / 2;
+}
+
+int32_t travelFacePickerThumbSize() {
+#if STACKCHAN_DEVICE_CORES3
+  return min(M5.Display.width() * 66 / 320,
+             M5.Display.height() * 66 / 240);
+#else
+  return travelFacePickerDrawSize() * 74 / 386;
+#endif
+}
+
+void travelFacePickerSlotCenter(uint8_t slot, int32_t& x, int32_t& y) {
+#if STACKCHAN_DEVICE_CORES3
+  constexpr int16_t kSlotX[] = {44, 121, 198, 275, 44, 121, 198, 275};
+  constexpr int16_t kSlotY[] = {62, 62, 62, 62, 140, 140, 140, 140};
+  slot %= kTravelFacePickerPageSize;
+  x = static_cast<int32_t>(kSlotX[slot]) * M5.Display.width() / 320;
+  y = static_cast<int32_t>(kSlotY[slot]) * M5.Display.height() / 240;
+#else
+  constexpr int16_t kSlotX[] = {193, 292, 334, 292, 193, 94, 52, 94};
+  constexpr int16_t kSlotY[] = {52, 92, 193, 294, 334, 294, 193, 92};
+  slot %= kTravelFacePickerPageSize;
+  const int32_t drawSize = travelFacePickerDrawSize();
+  x = travelFacePickerDrawX() +
+      static_cast<int32_t>(kSlotX[slot]) * drawSize / 386;
+  y = travelFacePickerDrawY() +
+      static_cast<int32_t>(kSlotY[slot]) * drawSize / 386;
+#endif
+}
+
+void drawTravelFacePicker() {
+  if (!displayOn || !travelFacePickerVisible) {
+    return;
+  }
+
+  if (travelFacePickerPage >= kTravelFacePickerPageCount) {
+    travelFacePickerPage = 0;
+  }
+  M5.Display.fillScreen(TFT_BLACK);
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_CORES3
+  const char* pagePath = kTravelFacePickerPagePaths[travelFacePickerPage];
+  File pageFile = LittleFS.open(pagePath, "r");
+  if (pageFile) {
+#if STACKCHAN_DEVICE_CORES3
+    const float drawScaleX = static_cast<float>(M5.Display.width()) / 320.0f;
+    const float drawScaleY = static_cast<float>(M5.Display.height()) / 240.0f;
+    const bool pageDrawn = M5.Display.drawJpg(&pageFile,
+                                               0,
+                                               0,
+                                               M5.Display.width(),
+                                               M5.Display.height(),
+                                               0,
+                                               0,
+                                               drawScaleX,
+                                               drawScaleY,
+                                               datum_t::top_left);
+#else
+    const int32_t drawSize = travelFacePickerDrawSize();
+    const float drawScale = static_cast<float>(drawSize) / 386.0f;
+    const bool pageDrawn = M5.Display.drawJpg(&pageFile,
+                                               travelFacePickerDrawX(),
+                                               travelFacePickerDrawY(),
+                                               drawSize,
+                                               drawSize,
+                                               0,
+                                               0,
+                                               drawScale,
+                                               drawScale,
+                                               datum_t::top_left);
+#endif
+    pageFile.close();
+    if (!pageDrawn) {
+      Serial.printf("[travel.picker] page decode failed path=%s\n", pagePath);
+    }
+  } else {
+    Serial.printf("[travel.picker] page open failed path=%s\n", pagePath);
+  }
+#endif
+
+  const int32_t thumbSize = travelFacePickerThumbSize();
+  const int32_t halfThumb = thumbSize / 2;
+  const uint8_t firstIndex = travelFacePickerPage * kTravelFacePickerPageSize;
+  for (uint8_t slot = 0; slot < kTravelFacePickerPageSize; ++slot) {
+    const uint8_t faceIndex = firstIndex + slot;
+    if (faceIndex >= kTravelPhotoFaceCount) {
+      break;
+    }
+    int32_t x = 0;
+    int32_t y = 0;
+    travelFacePickerSlotCenter(slot, x, y);
+    const bool selected = travelPhotoFaceIndex == static_cast<int8_t>(faceIndex);
+    const uint16_t borderColor = selected
+                                   ? M5.Display.color565(255, 210, 32)
+                                   : M5.Display.color565(112, 116, 122);
+    M5.Display.drawRoundRect(x - halfThumb - 3,
+                             y - halfThumb - 3,
+                             thumbSize + 6,
+                             thumbSize + 6,
+                             11,
+                             borderColor);
+    if (selected) {
+      M5.Display.drawRoundRect(x - halfThumb - 5,
+                               y - halfThumb - 5,
+                               thumbSize + 10,
+                               thumbSize + 10,
+                               13,
+                               borderColor);
+    }
+  }
+
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  const bool normalSelected = travelPhotoFaceIndex < 0;
+  const uint16_t centerBorder = normalSelected
+                                  ? M5.Display.color565(255, 210, 32)
+                                  : M5.Display.color565(96, 100, 106);
+#if STACKCHAN_DEVICE_CORES3
+  const int32_t normalW = M5.Display.width() * 78 / 320;
+  const int32_t normalH = M5.Display.height() * 26 / 240;
+  const int32_t normalX = cx - normalW / 2;
+  const int32_t normalY = M5.Display.height() * 190 / 240;
+  M5.Display.fillRoundRect(normalX,
+                           normalY,
+                           normalW,
+                           normalH,
+                           8,
+                           M5.Display.color565(28, 30, 34));
+  M5.Display.drawRoundRect(normalX,
+                           normalY,
+                           normalW,
+                           normalH,
+                           8,
+                           centerBorder);
+  if (normalSelected) {
+    M5.Display.drawRoundRect(normalX - 2,
+                             normalY - 2,
+                             normalW + 4,
+                             normalH + 4,
+                             10,
+                             centerBorder);
+  }
+  drawJapaneseCentered(travelFacePickerPage == 0 ? "写真向け" : "気分・ネタ",
+                       cx,
+                       M5.Display.height() * 12 / 240,
+                       M5.Display.color565(156, 162, 170));
+  drawJapaneseCentered("通常",
+                       cx,
+                       normalY + normalH / 2,
+                       TFT_WHITE,
+                       M5.Display.color565(28, 30, 34));
+  const int32_t pageDotY = M5.Display.height() * 229 / 240;
+#else
+  M5.Display.fillCircle(cx, cy, 49, TFT_BLACK);
+  M5.Display.drawCircle(cx, cy, 48, centerBorder);
+  if (normalSelected) {
+    M5.Display.drawCircle(cx, cy, 46, centerBorder);
+  }
+  drawJapaneseCentered(travelFacePickerPage == 0 ? "写真向け" : "気分・ネタ",
+                       cx,
+                       cy - 22,
+                       M5.Display.color565(156, 162, 170));
+  drawJapaneseCentered("通常", cx, cy + 1, TFT_WHITE);
+  const int32_t pageDotY = cy + 27;
+#endif
+  for (uint8_t page = 0; page < kTravelFacePickerPageCount; ++page) {
+    const int32_t dotX = cx +
+      (static_cast<int32_t>(page) * 14) -
+      (static_cast<int32_t>(kTravelFacePickerPageCount - 1) * 7);
+    M5.Display.fillCircle(dotX,
+                          pageDotY,
+                          page == travelFacePickerPage ? 4 : 3,
+                          page == travelFacePickerPage
+                            ? TFT_WHITE
+                            : M5.Display.color565(76, 80, 86));
+  }
+}
+
+void showTravelFacePicker() {
+#if STACKCHAN_DEVICE_STOPWATCH || STACKCHAN_DEVICE_CORES3
+  if (!displayOn || experienceMode != ExperienceMode::Travel ||
+      infoScreenVisible || experienceModeMenuVisible ||
+      timekeeperDurationMenuVisible || travelFacePickerVisible) {
+    return;
+  }
+  const uint8_t requestedPage = travelPhotoFaceIndex < 0
+                                  ? 0
+                                  : static_cast<uint8_t>(travelPhotoFaceIndex) /
+                                      kTravelFacePickerPageSize;
+  const char* pagePath = kTravelFacePickerPagePaths[requestedPage];
+  if (!LittleFS.exists(pagePath)) {
+    Serial.printf("[travel.picker] unavailable path=%s; falling back to next face\n",
+                  pagePath);
+    advanceTravelPhotoFace();
+    return;
+  }
+  travelFacePickerPage = requestedPage;
+  travelFacePickerVisible = true;
+  faceController.setEnabled(false);
+  drawTravelFacePicker();
+  Serial.printf("[travel.picker] show page=%u\n",
+                static_cast<unsigned>(travelFacePickerPage));
+#else
+  advanceTravelPhotoFace();
+#endif
+}
+
+void hideTravelFacePicker(bool redrawFace) {
+  if (!travelFacePickerVisible) {
+    return;
+  }
+  travelFacePickerVisible = false;
+  faceController.setEnabled(displayOn && !infoScreenVisible &&
+                            !experienceModeMenuVisible &&
+                            !timekeeperDurationMenuVisible);
+  if (redrawFace && displayOn && !infoScreenVisible &&
+      !experienceModeMenuVisible && !timekeeperDurationMenuVisible) {
+    faceController.redrawNow();
+  }
+  Serial.println("[travel.picker] hide");
+}
+
+bool updateTravelFacePickerTouch(const m5::touch_detail_t& touch,
+                                 unsigned long now) {
+  (void)now;
+  if (!travelFacePickerVisible) {
+    return false;
+  }
+  if (touch.wasFlicked()) {
+    const int32_t distanceX = touch.distanceX();
+    const int32_t distanceY = touch.distanceY();
+    if (abs(distanceX) > abs(distanceY) && abs(distanceX) >= 48 &&
+        kTravelFacePickerPageCount > 1) {
+      const int32_t direction = distanceX < 0 ? 1 : -1;
+      travelFacePickerPage = static_cast<uint8_t>(
+        (static_cast<int32_t>(travelFacePickerPage) + direction +
+         kTravelFacePickerPageCount) % kTravelFacePickerPageCount);
+      drawTravelFacePicker();
+      Serial.printf("[travel.picker] swipe page=%u\n",
+                    static_cast<unsigned>(travelFacePickerPage));
+    }
+    return true;
+  }
+  if (!touch.wasClicked()) {
+    return true;
+  }
+
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+#if STACKCHAN_DEVICE_CORES3
+  const int32_t normalW = M5.Display.width() * 78 / 320;
+  const int32_t normalH = M5.Display.height() * 26 / 240;
+  const int32_t normalX = cx - normalW / 2;
+  const int32_t normalY = M5.Display.height() * 190 / 240;
+  const bool normalTapped = touchIn(touch,
+                                    normalX - 6,
+                                    normalY - 5,
+                                    normalW + 12,
+                                    normalH + 10);
+#else
+  const int32_t centerDx = touch.x - cx;
+  const int32_t centerDy = touch.y - cy;
+  const bool normalTapped = centerDx * centerDx + centerDy * centerDy <= 49 * 49;
+#endif
+  if (normalTapped) {
+    resetTravelPhotoFace();
+    hideTravelFacePicker(true);
+    Serial.println("[travel.picker] selected normal");
+    return true;
+  }
+
+  const int32_t hitRadius = travelFacePickerThumbSize() / 2 + 8;
+  const int32_t hitRadiusSquared = hitRadius * hitRadius;
+  for (uint8_t slot = 0; slot < kTravelFacePickerPageSize; ++slot) {
+    const uint8_t faceIndex = travelFacePickerPage * kTravelFacePickerPageSize + slot;
+    if (faceIndex >= kTravelPhotoFaceCount) {
+      break;
+    }
+    int32_t x = 0;
+    int32_t y = 0;
+    travelFacePickerSlotCenter(slot, x, y);
+    const int32_t dx = touch.x - x;
+    const int32_t dy = touch.y - y;
+    if (dx * dx + dy * dy > hitRadiusSquared) {
+      continue;
+    }
+    if (selectTravelPhotoFace(faceIndex)) {
+      hideTravelFacePicker(true);
+    }
+    return true;
+  }
+  return true;
+}
+
+void handleTravelYellowClickCount(uint8_t clickCount) {
+  if (experienceMode != ExperienceMode::Travel || infoScreenVisible ||
+      experienceModeMenuVisible || clickCount == 0) {
+    return;
+  }
+  if (clickCount == 1) {
+    if (travelFacePickerVisible) {
+      hideTravelFacePicker(true);
+      Serial.println("[button] yellow travel_picker_close");
+    } else {
+      showTravelFacePicker();
+      Serial.println("[button] yellow travel_picker_open");
+    }
+    return;
+  }
+  resetTravelPhotoFace();
+  if (travelFacePickerVisible) {
+    hideTravelFacePicker(true);
+  }
+  Serial.printf("[button] yellow travel_reset clicks=%u\n",
+                static_cast<unsigned>(clickCount));
+}
+
+#if STACKCHAN_DEVICE_CORES3
+bool handleTravelScreenDoubleTap(const m5::touch_detail_t& touch,
+                                 unsigned long now) {
+  if (experienceMode != ExperienceMode::Travel || !displayOn ||
+      infoScreenVisible || experienceModeMenuVisible ||
+      timekeeperDurationMenuVisible || travelFacePickerVisible) {
+    travelScreenFirstTapMs = 0;
+    return false;
+  }
+
+  if (travelScreenFirstTapMs != 0 &&
+      now - travelScreenFirstTapMs > TRAVEL_SCREEN_DOUBLE_TAP_MS) {
+    travelScreenFirstTapMs = 0;
+  }
+  if (!touch.wasClicked()) {
+    return false;
+  }
+
+  if (travelScreenFirstTapMs != 0) {
+    const int32_t dx = touch.x - travelScreenFirstTapX;
+    const int32_t dy = touch.y - travelScreenFirstTapY;
+    const int32_t maxDistanceSquared =
+      TRAVEL_SCREEN_DOUBLE_TAP_DISTANCE_PX *
+      TRAVEL_SCREEN_DOUBLE_TAP_DISTANCE_PX;
+    if (dx * dx + dy * dy <= maxDistanceSquared) {
+      travelScreenFirstTapMs = 0;
+      resetTravelPhotoFace();
+      faceController.redrawNow();
+      Serial.println("[travel.input] screen double tap expression_reset");
+      return true;
+    }
+  }
+
+  travelScreenFirstTapMs = now;
+  travelScreenFirstTapX = touch.x;
+  travelScreenFirstTapY = touch.y;
+  return false;
+}
+#endif
+
+uint16_t experienceModeSectorColor(ExperienceMode mode, bool selected) {
+  (void)mode;
+  return selected ? M5.Display.color565(48, 48, 48)
+                  : M5.Display.color565(104, 104, 104);
+}
+
+void fillExperienceModeSector(float startAngle,
+                              float endAngle,
+                              ExperienceMode mode) {
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  const int32_t radius = min(M5.Display.width(), M5.Display.height()) / 2 - 2;
+  const bool selected = experienceModeMenuSelection == mode;
+  M5.Display.fillArc(cx,
+                     cy,
+                     radius,
+                     0,
+                     startAngle,
+                     endAngle,
+                     experienceModeSectorColor(mode, selected));
+}
+
+void drawExperienceModeLabel(const char* label,
+                             int32_t x,
+                             int32_t y,
+                             ExperienceMode mode) {
+  const bool selected = experienceModeMenuSelection == mode;
+  M5.Display.setFont(&fonts::efontJA_12);
+  M5.Display.setTextSize(selected ? 1.9f : 1.7f);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE);
+  if (selected) {
+    // The pressed face sits slightly lower. Repeating the transparent glyph
+    // one pixel either side gives the selected label a clear bold weight.
+    y += 4;
+    M5.Display.drawString(label, x - 1, y);
+    M5.Display.drawString(label, x + 1, y);
+  }
+  M5.Display.drawString(label, x, y);
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(top_left);
+}
+
+void experienceModeSectorGeometry(ExperienceMode mode,
+                                  float& boundaryAngleA,
+                                  float& boundaryAngleB,
+                                  float& arcStart,
+                                  float& arcEnd) {
+  boundaryAngleA = 315.0f;
+  boundaryAngleB = 45.0f;
+  arcStart = 225.0f;
+  arcEnd = 315.0f;
+  if (mode == ExperienceMode::Guruguru) {
+    boundaryAngleA = 45.0f;
+    boundaryAngleB = 135.0f;
+    arcStart = 315.0f;
+    arcEnd = 45.0f;
+  } else if (mode == ExperienceMode::Timekeeper) {
+    boundaryAngleA = 135.0f;
+    boundaryAngleB = 225.0f;
+    arcStart = 45.0f;
+    arcEnd = 135.0f;
+  } else if (mode == ExperienceMode::Travel) {
+    boundaryAngleA = 225.0f;
+    boundaryAngleB = 315.0f;
+    arcStart = 135.0f;
+    arcEnd = 225.0f;
+  }
+}
+
+void drawExperienceModeArc(int32_t cx,
+                           int32_t cy,
+                           int32_t outerRadius,
+                           int32_t innerRadius,
+                           ExperienceMode mode,
+                           uint16_t color) {
+  float boundaryAngleA = 315.0f;
+  float boundaryAngleB = 45.0f;
+  float arcStart = 225.0f;
+  float arcEnd = 315.0f;
+  experienceModeSectorGeometry(mode,
+                               boundaryAngleA,
+                               boundaryAngleB,
+                               arcStart,
+                               arcEnd);
+  if (arcStart > arcEnd) {
+    M5.Display.fillArc(cx, cy, outerRadius, innerRadius, arcStart, 360.0f, color);
+    M5.Display.fillArc(cx, cy, outerRadius, innerRadius, 0.0f, arcEnd, color);
+  } else {
+    M5.Display.fillArc(cx, cy, outerRadius, innerRadius, arcStart, arcEnd, color);
+  }
+}
+
+void drawExperienceModeBevel(int32_t cx,
+                             int32_t cy,
+                             int32_t radius,
+                             ExperienceMode mode) {
+  const bool selected = experienceModeMenuSelection == mode;
+  if (!selected) {
+    // A bright outer lip makes an unpressed sector appear raised.
+    drawExperienceModeArc(cx,
+                          cy,
+                          radius,
+                          radius - 6,
+                          mode,
+                          M5.Display.color565(214, 214, 214));
+    drawExperienceModeArc(cx,
+                          cy,
+                          radius - 7,
+                          radius - 10,
+                          mode,
+                          M5.Display.color565(142, 142, 142));
+    return;
+  }
+
+  // The selected sector loses the bright lip and gains an inset black rim,
+  // like a physical button pushed below the surrounding surface.
+  drawExperienceModeArc(cx, cy, radius, radius - 12, mode, TFT_BLACK);
+  drawExperienceModeArc(cx,
+                        cy,
+                        radius - 12,
+                        radius - 16,
+                        mode,
+                        M5.Display.color565(92, 92, 92));
+
+  float boundaryAngleA = 0.0f;
+  float boundaryAngleB = 0.0f;
+  float arcStart = 0.0f;
+  float arcEnd = 0.0f;
+  experienceModeSectorGeometry(mode,
+                               boundaryAngleA,
+                               boundaryAngleB,
+                               arcStart,
+                               arcEnd);
+  const float boundaries[] = {boundaryAngleA, boundaryAngleB};
+  for (float angle : boundaries) {
+    const float radians = angle * DEG_TO_RAD;
+    const int32_t x = cx + static_cast<int32_t>(sinf(radians) * radius);
+    const int32_t y = cy - static_cast<int32_t>(cosf(radians) * radius);
+    M5.Display.drawWideLine(cx, cy, x, y, 3.5f, TFT_BLACK);
+  }
+}
+
+void drawExperienceModeMenu() {
+  if (!displayOn || !experienceModeMenuVisible) {
+    return;
+  }
+#if STACKCHAN_DEVICE_CORES3
+  {
+  // Use the entire rectangular display as four pizza-like buttons. Lines from
+  // the center to each corner form top/right/bottom/left triangular sectors.
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+  const int32_t cx = width / 2;
+  const int32_t cy = height / 2;
+  const auto sectorFill = [](ExperienceMode mode) {
+    return experienceModeSectorColor(
+      mode,
+      experienceModeMenuSelection == mode);
+  };
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.fillTriangle(0, 0, width - 1, 0, cx, cy,
+                          sectorFill(ExperienceMode::Conversation));
+  M5.Display.fillTriangle(width - 1, 0, width - 1, height - 1, cx, cy,
+                          sectorFill(ExperienceMode::Guruguru));
+  M5.Display.fillTriangle(width - 1, height - 1, 0, height - 1, cx, cy,
+                          sectorFill(ExperienceMode::Timekeeper));
+  M5.Display.fillTriangle(0, height - 1, 0, 0, cx, cy,
+                          sectorFill(ExperienceMode::Travel));
+
+  const uint16_t separator = M5.Display.color565(28, 28, 28);
+  const uint16_t highlight = M5.Display.color565(200, 200, 200);
+  M5.Display.drawWideLine(cx, cy, 0, 0, 3.0f, separator);
+  M5.Display.drawWideLine(cx, cy, width - 1, 0, 3.0f, separator);
+  M5.Display.drawWideLine(cx, cy, width - 1, height - 1, 3.0f, separator);
+  M5.Display.drawWideLine(cx, cy, 0, height - 1, 3.0f, separator);
+  // A bright top/left lip and dark bottom/right lip preserve the raised-button
+  // appearance used by the round StopWatch selector.
+  M5.Display.drawFastHLine(1, 1, width - 2, highlight);
+  M5.Display.drawFastVLine(1, 1, height - 2, highlight);
+  M5.Display.drawFastHLine(1, height - 2, width - 2, TFT_BLACK);
+  M5.Display.drawFastVLine(width - 2, 1, height - 2, TFT_BLACK);
+  M5.Display.fillCircle(cx, cy, 6, separator);
+
+  drawExperienceModeLabel("音声対話", cx, height / 6,
+                          ExperienceMode::Conversation);
+  drawExperienceModeLabel("ぐるぐる", width * 5 / 6, cy,
+                          ExperienceMode::Guruguru);
+  drawExperienceModeLabel("ストップ", cx, height * 4 / 5 - 12,
+                          ExperienceMode::Timekeeper);
+  drawExperienceModeLabel("ウォッチ", cx, height * 4 / 5 + 14,
+                          ExperienceMode::Timekeeper);
+  drawExperienceModeLabel("旅モード", width / 6, cy,
+                          ExperienceMode::Travel);
+  return;
+  }
+#endif
+  M5.Display.fillScreen(TFT_BLACK);
+  // M5GFX arc angles use zero at 3 o'clock and advance clockwise. Match the
+  // four touch quadrants: top, right, bottom, and left.
+  fillExperienceModeSector(225.0f, 315.0f, ExperienceMode::Conversation);
+  fillExperienceModeSector(315.0f, 360.0f, ExperienceMode::Guruguru);
+  fillExperienceModeSector(0.0f, 45.0f, ExperienceMode::Guruguru);
+  fillExperienceModeSector(45.0f, 135.0f, ExperienceMode::Timekeeper);
+  fillExperienceModeSector(135.0f, 225.0f, ExperienceMode::Travel);
+
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  const int32_t radius = min(M5.Display.width(), M5.Display.height()) / 2 - 2;
+  const uint16_t separator = M5.Display.color565(28, 28, 28);
+  const float boundaryAngles[] = {45.0f, 135.0f, 225.0f, 315.0f};
+  for (float angle : boundaryAngles) {
+    const float radians = angle * DEG_TO_RAD;
+    const int32_t x = cx + static_cast<int32_t>(sinf(radians) * radius);
+    const int32_t y = cy - static_cast<int32_t>(cosf(radians) * radius);
+    M5.Display.drawWideLine(cx, cy, x, y, 2.0f, separator);
+  }
+  drawExperienceModeBevel(cx, cy, radius, ExperienceMode::Conversation);
+  drawExperienceModeBevel(cx, cy, radius, ExperienceMode::Guruguru);
+  drawExperienceModeBevel(cx, cy, radius, ExperienceMode::Timekeeper);
+  drawExperienceModeBevel(cx, cy, radius, ExperienceMode::Travel);
+  M5.Display.drawCircle(cx, cy, radius, TFT_BLACK);
+  M5.Display.fillCircle(cx, cy, 6, separator);
+
+  drawExperienceModeLabel("音声対話", cx, cy - 91, ExperienceMode::Conversation);
+  drawExperienceModeLabel("ぐるぐる", cx + 88, cy, ExperienceMode::Guruguru);
+  drawExperienceModeLabel("ストップ", cx, cy + 75, ExperienceMode::Timekeeper);
+  drawExperienceModeLabel("ウォッチ", cx, cy + 99, ExperienceMode::Timekeeper);
+  drawExperienceModeLabel("旅モード", cx - 88, cy, ExperienceMode::Travel);
+}
+
+void showExperienceModeMenu() {
+  if (!displayOn || experienceModeMenuVisible) {
+    return;
+  }
+  if (travelFacePickerVisible) {
+    travelFacePickerVisible = false;
+    Serial.println("[travel.picker] close for mode menu");
+  }
+  timekeeperDurationMenuVisible = false;
+  experienceModeMenuVisible = true;
+  experienceModeMenuSelection = pendingExperienceModeValid
+                                  ? pendingExperienceMode
+                                  : experienceMode;
+  faceController.setEnabled(false);
+  if (infoScreenVisible) {
+    setInfoScreenVisible(false);
+  }
+  drawExperienceModeMenu();
+}
+
+void hideExperienceModeMenu() {
+  if (!experienceModeMenuVisible) {
+    return;
+  }
+  experienceModeMenuVisible = false;
+  faceController.setEnabled(displayOn && !infoScreenVisible &&
+                            !timekeeperDurationMenuVisible &&
+                            !travelFacePickerVisible);
+  if (displayOn && !infoScreenVisible) {
+    faceController.redrawNow();
+    if (experienceMode == ExperienceMode::Timekeeper) {
+      drawTimekeeperOverlay(monotonicMs(), true);
+    }
+  }
+}
+
+bool updateExperienceModeMenuTouch(const m5::touch_detail_t& touch, unsigned long now) {
+  if (!experienceModeMenuVisible) {
+    return false;
+  }
+  if (!touch.wasClicked()) {
+    return true;
+  }
+#if STACKCHAN_DEVICE_CORES3
+  {
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+  const int32_t dx = touch.x - width / 2;
+  const int32_t dy = touch.y - height / 2;
+  // Compare aspect-ratio-normalized distances. This makes the boundaries the
+  // exact center-to-corner diagonals of the rectangular screen.
+  const int64_t horizontalWeight =
+    static_cast<int64_t>(abs(dx)) * static_cast<int64_t>(height);
+  const int64_t verticalWeight =
+    static_cast<int64_t>(abs(dy)) * static_cast<int64_t>(width);
+  ExperienceMode selected;
+  if (horizontalWeight > verticalWeight) {
+    selected = dx >= 0 ? ExperienceMode::Guruguru : ExperienceMode::Travel;
+  } else {
+    selected = dy >= 0 ? ExperienceMode::Timekeeper
+                       : ExperienceMode::Conversation;
+  }
+  experienceModeMenuSelection = selected;
+  requestExperienceMode(selected, now);
+  hideExperienceModeMenu();
+  return true;
+  }
+#endif
+  const int32_t cx = M5.Display.width() / 2;
+  const int32_t cy = M5.Display.height() / 2;
+  const int32_t radius = min(M5.Display.width(), M5.Display.height()) / 2;
+  const int32_t dx = touch.x - cx;
+  const int32_t dy = touch.y - cy;
+  if (dx * dx + dy * dy > radius * radius) {
+#if STACKCHAN_DEVICE_CORES3
+    hideExperienceModeMenu();
+#endif
+    return true;
+  }
+
+  float angle = atan2f(static_cast<float>(dx), static_cast<float>(-dy)) * 180.0f / PI;
+  if (angle < 0.0f) {
+    angle += 360.0f;
+  }
+  ExperienceMode selected;
+  if (angle >= 315.0f || angle < 45.0f) {
+    selected = ExperienceMode::Conversation;
+  } else if (angle < 135.0f) {
+    selected = ExperienceMode::Guruguru;
+  } else if (angle < 225.0f) {
+    selected = ExperienceMode::Timekeeper;
+  } else {
+    selected = ExperienceMode::Travel;
+  }
+
+  experienceModeMenuSelection = selected;
+  requestExperienceMode(selected, now);
+#if STACKCHAN_DEVICE_CORES3
+  // The CoreS3 menu was opened by a completed edge swipe, so a sector tap
+  // selects immediately and returns to the chosen experience.
+  hideExperienceModeMenu();
+#else
+  // Keep the selector visible until the physical yellow button is released.
+  // Repaint only when the selection changes; the face renderer remains paused.
+  drawExperienceModeMenu();
+#endif
+  return true;
+}
+
+String formatTimekeeperMs(uint64_t valueMs) {
+  const uint64_t totalMinutes = valueMs / 60000ULL;
+  const uint32_t seconds = static_cast<uint32_t>((valueMs / 1000ULL) % 60ULL);
+  const uint32_t milliseconds = static_cast<uint32_t>(valueMs % 1000ULL);
+  char text[28];
+  if (totalMinutes < 100ULL) {
+    snprintf(text,
+             sizeof(text),
+             "%02lu:%02lu.%03lu",
+             static_cast<unsigned long>(totalMinutes),
+             static_cast<unsigned long>(seconds),
+             static_cast<unsigned long>(milliseconds));
+  } else {
+    const uint64_t hours = totalMinutes / 60ULL;
+    const uint32_t minutes = static_cast<uint32_t>(totalMinutes % 60ULL);
+    snprintf(text,
+             sizeof(text),
+             "%02llu:%02lu:%02lu.%03lu",
+             static_cast<unsigned long long>(hours),
+             static_cast<unsigned long>(minutes),
+             static_cast<unsigned long>(seconds),
+             static_cast<unsigned long>(milliseconds));
+  }
+  return String(text);
+}
+
+struct TimekeeperLayout {
+  int32_t tabY = 0;
+  int32_t tabH = 0;
+  int32_t tabW = 0;
+  int32_t tabGap = 0;
+  int32_t tabX = 0;
+  int32_t panelX = 0;
+  int32_t panelY = 0;
+  int32_t panelW = 0;
+  int32_t panelH = 0;
+  int32_t buttonY = 0;
+  int32_t buttonH = 0;
+  int32_t adjustButtonY = 0;
+  int32_t adjustButtonRadius = 0;
+  int32_t adjustButtonLeftX = 0;
+  int32_t adjustButtonRightX = 0;
+  int32_t twoButtonX = 0;
+  int32_t twoButtonW = 0;
+  int32_t twoButtonGap = 0;
+  int32_t threeButtonX = 0;
+  int32_t threeButtonW = 0;
+  int32_t threeButtonGap = 0;
+};
+
+TimekeeperLayout makeTimekeeperLayout(bool speechBubbleVisible) {
+  TimekeeperLayout layout;
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+  const int32_t size = min(width, height);
+  const int32_t cx = width / 2;
+
+#if STACKCHAN_DEVICE_CORES3
+  (void)speechBubbleVisible;
+  layout.tabH = 32;
+  layout.tabW = 82;
+  layout.tabGap = 6;
+  layout.tabY = 6;
+  const int32_t coreTabsW = layout.tabW * 3 + layout.tabGap * 2;
+  layout.tabX = cx - coreTabsW / 2;
+  layout.panelW = min<int32_t>(232, width - 72);
+  // Keep the clock and optional latest-lap line together below the mouth.
+  // The CoreS3 face fills the 240 px display height, so a separate middle
+  // lap banner would cover the character's mouth/neck area.
+  layout.panelH = 48;
+  layout.panelX = cx - layout.panelW / 2;
+  layout.panelY = height - layout.panelH - 8;
+  layout.buttonH = 36;
+  layout.buttonY = layout.panelY - layout.buttonH - 5;
+  layout.adjustButtonRadius = 24;
+  layout.adjustButtonY = height * 51 / 100;
+  layout.adjustButtonLeftX = layout.adjustButtonRadius + 4;
+  layout.adjustButtonRightX = width - layout.adjustButtonRadius - 4;
+  layout.twoButtonW = 92;
+  layout.twoButtonGap = 16;
+  layout.twoButtonX = cx - (layout.twoButtonW * 2 + layout.twoButtonGap) / 2;
+  layout.threeButtonW = 72;
+  layout.threeButtonGap = 8;
+  layout.threeButtonX = cx - (layout.threeButtonW * 3 + layout.threeButtonGap * 2) / 2;
+  return layout;
+#endif
+
+  layout.tabH = max<int32_t>(38, size * 9 / 100);
+  layout.tabW = max<int32_t>(82, size * 19 / 100);
+  layout.tabGap = max<int32_t>(8, size * 2 / 100);
+  layout.tabY = max<int32_t>(24, size * 8 / 100);
+  const int32_t tabsW = layout.tabW * 3 + layout.tabGap * 2;
+  layout.tabX = cx - tabsW / 2;
+
+  layout.panelW = min<int32_t>(360, width - 80);
+  layout.panelH = 64;
+  layout.panelX = cx - layout.panelW / 2;
+  const int32_t faceTop = (height - FACE_IMAGE_HEIGHT) / 2;
+  const int32_t belowMouthY = faceTop + FACE_IMAGE_HEIGHT * 3 / 4;
+  layout.panelY = speechBubbleVisible
+                    ? max<int32_t>(layout.tabY + layout.tabH + 14, height / 5)
+                    : max<int32_t>(height - 135, belowMouthY);
+
+  layout.buttonH = 42;
+  layout.buttonY = height - 58;
+  layout.adjustButtonRadius = max<int32_t>(28, size * 7 / 100);
+  layout.adjustButtonY = height * 60 / 100;
+  layout.adjustButtonLeftX = layout.adjustButtonRadius + 14;
+  layout.adjustButtonRightX = width - layout.adjustButtonRadius - 14;
+  layout.twoButtonW = min<int32_t>(112, size * 24 / 100);
+  layout.twoButtonGap = max<int32_t>(24, size * 6 / 100);
+  layout.twoButtonX = cx - (layout.twoButtonW * 2 + layout.twoButtonGap) / 2;
+  layout.threeButtonW = min<int32_t>(76, size * 17 / 100);
+  layout.threeButtonGap = max<int32_t>(10, size * 2 / 100);
+  layout.threeButtonX = cx - (layout.threeButtonW * 3 + layout.threeButtonGap * 2) / 2;
+  return layout;
+}
+
+bool ensureTimekeeperCanvas(M5Canvas& canvas,
+                            int32_t& allocatedW,
+                            int32_t& allocatedH,
+                            int32_t width,
+                            int32_t height) {
+  if (allocatedW == width && allocatedH == height && canvas.getBuffer() != nullptr) {
+    return true;
+  }
+  if (canvas.getBuffer() != nullptr) {
+    canvas.deleteSprite();
+  }
+  canvas.setPsram(true);
+  canvas.setColorDepth(16);
+  if (canvas.createSprite(width, height) == nullptr) {
+    allocatedW = 0;
+    allocatedH = 0;
+    Serial.printf("[timekeeper.ui] canvas allocation failed size=%ldx%ld\n",
+                  static_cast<long>(width),
+                  static_cast<long>(height));
+    return false;
+  }
+  allocatedW = width;
+  allocatedH = height;
+  return true;
+}
+
+enum class TimekeeperButtonLayer : uint8_t {
+  None = 0,
+  CountdownAdjust = 1,
+  LatestLap = 2,
+  ChallengeControls = 3,
+  PomodoroCycles = 4,
+};
+
+struct TimekeeperUiCanvasCache {
+  M5Canvas tabCanvas;
+  M5Canvas panelCanvas;
+  M5Canvas buttonCanvas;
+  int32_t tabCanvasW = 0;
+  int32_t tabCanvasH = 0;
+  int32_t panelCanvasW = 0;
+  int32_t panelCanvasH = 0;
+  int32_t buttonCanvasW = 0;
+  int32_t buttonCanvasH = 0;
+  TimekeeperLayout layout;
+  int32_t buttonX = 0;
+  int32_t buttonY = 0;
+  TimekeeperButtonLayer buttonLayer = TimekeeperButtonLayer::None;
+  bool speechBubbleVisible = false;
+  bool ready = false;
+
+  TimekeeperUiCanvasCache()
+    : tabCanvas(&M5.Display),
+      panelCanvas(&M5.Display),
+      buttonCanvas(&M5.Display) {}
+};
+
+TimekeeperUiCanvasCache& timekeeperUiCanvasCache() {
+  static TimekeeperUiCanvasCache cache;
+  return cache;
+}
+
+void drawTimekeeperJapaneseText(M5Canvas& target,
+                                const String& text,
+                                int32_t x,
+                                int32_t y,
+                                uint16_t foreground,
+                                uint16_t background,
+                                float scale) {
+  target.setFont(&fonts::efontJA_12);
+  target.setTextSize(scale);
+  target.setTextDatum(middle_center);
+  target.setTextColor(foreground, background);
+  target.drawString(text, x, y);
+  target.setFont(&fonts::Font0);
+  target.setTextSize(1);
+  target.setTextDatum(top_left);
+}
+
+constexpr uint16_t kTimekeeperCountdownPresetsMinutes[] = {1, 3, 5, 10, 30, 60, 120};
+constexpr size_t kTimekeeperCountdownPresetCount =
+  sizeof(kTimekeeperCountdownPresetsMinutes) /
+  sizeof(kTimekeeperCountdownPresetsMinutes[0]);
+
+void timekeeperDurationOptionCenter(size_t index, int32_t& x, int32_t& y) {
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+#if STACKCHAN_DEVICE_CORES3
+  if (index < 4) {
+    x = width * static_cast<int32_t>(index * 2 + 1) / 8;
+    y = height * 54 / 100;
+  } else {
+    const size_t lowerIndex = index - 4;
+    x = width * static_cast<int32_t>(lowerIndex * 2 + 1) / 6;
+    y = height * 79 / 100;
+  }
+  return;
+#endif
+  if (index < 4) {
+    x = width * static_cast<int32_t>(index * 2 + 1) / 8;
+    y = height * 48 / 100;
+  } else {
+    const size_t lowerIndex = index - 4;
+    x = width * static_cast<int32_t>(lowerIndex * 2 + 1) / 6;
+    y = height * 72 / 100;
+  }
+}
+
+void timekeeperTimerModeButtonBounds(TimekeeperActivity mode,
+                                     int32_t& x,
+                                     int32_t& y,
+                                     int32_t& w,
+                                     int32_t& h) {
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+#if STACKCHAN_DEVICE_CORES3
+  w = min<int32_t>(124, width * 39 / 100);
+  h = 42;
+  const int32_t coreGap = 10;
+  const int32_t coreTotalW = w * 2 + coreGap;
+  x = (width - coreTotalW) / 2 +
+      (mode == TimekeeperActivity::Pomodoro ? w + coreGap : 0);
+  y = 36;
+  return;
+#endif
+  w = min<int32_t>(170, width * 34 / 100);
+  h = max<int32_t>(48, height * 10 / 100);
+  const int32_t gap = max<int32_t>(12, width * 3 / 100);
+  const int32_t totalW = w * 2 + gap;
+  x = (width - totalW) / 2 +
+      (mode == TimekeeperActivity::Pomodoro ? w + gap : 0);
+  y = height * 17 / 100;
+}
+
+bool selectTimekeeperTimerSubmode(TimekeeperActivity mode, uint64_t nowMs) {
+  if (mode != TimekeeperActivity::Countdown && mode != TimekeeperActivity::Pomodoro) {
+    return false;
+  }
+  if (timekeeperController.activity() != mode) {
+    if (timekeeperController.state() != TimekeeperState::Ready) {
+      handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+    }
+    if (!timekeeperController.selectActivity(mode, nowMs)) {
+      return false;
+    }
+  }
+  timekeeperTimerSubmode = mode;
+  saveTimekeeperTimerSubmode();
+  lastTimekeeperUiValueMs = UINT64_MAX;
+  return true;
+}
+
+void drawTimekeeperDurationMenu() {
+  if (!displayOn || !timekeeperDurationMenuVisible) {
+    return;
+  }
+  const int32_t width = M5.Display.width();
+  const int32_t height = M5.Display.height();
+  const int32_t radius =
+#if STACKCHAN_DEVICE_CORES3
+    25;
+#else
+    max<int32_t>(34, min(width, height) * 8 / 100);
+#endif
+  const uint16_t background = TFT_BLACK;
+  const uint16_t normalFill = M5.Display.color565(18, 22, 26);
+  const uint16_t normalBorder = M5.Display.color565(104, 114, 124);
+  const uint16_t selectedFill = M5.Display.color565(22, 72, 54);
+  const uint16_t selectedBorder = M5.Display.color565(92, 230, 164);
+  const uint16_t shadow = M5.Display.color565(2, 4, 6);
+  const uint16_t selectedMinutes = static_cast<uint16_t>(
+    timekeeperController.countdownDurationMs() / (60ULL * 1000ULL));
+
+  M5.Display.fillScreen(background);
+  M5.Display.setFont(&fonts::efontJA_12);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE, background);
+  M5.Display.setTextSize(1.7f);
+  M5.Display.drawString("タイマー設定", width / 2,
+#if STACKCHAN_DEVICE_CORES3
+                        18);
+#else
+                        height * 9 / 100);
+#endif
+
+  for (const TimekeeperActivity mode : {
+         TimekeeperActivity::Countdown,
+         TimekeeperActivity::Pomodoro,
+       }) {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t w = 0;
+    int32_t h = 0;
+    timekeeperTimerModeButtonBounds(mode, x, y, w, h);
+    const bool selected = timekeeperController.activity() == mode;
+    M5.Display.fillRoundRect(x + 2, y + 4, w, h, 14, shadow);
+    M5.Display.fillRoundRect(x, y, w, h, 14, selected ? selectedFill : normalFill);
+    M5.Display.drawRoundRect(x, y, w, h, 14, selected ? selectedBorder : normalBorder);
+    M5.Display.setFont(&fonts::efontJA_12);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(TFT_WHITE, selected ? selectedFill : normalFill);
+    M5.Display.setTextSize(1.45f);
+    M5.Display.drawString(mode == TimekeeperActivity::Pomodoro
+                            ? "ポモドーロ"
+                            : "通常タイマー",
+                          x + w / 2,
+                          y + h / 2);
+  }
+
+  if (timekeeperController.activity() == TimekeeperActivity::Pomodoro) {
+    const uint64_t workMinutes =
+      timekeeperController.pomodoroWorkDurationMs() / (60ULL * 1000ULL);
+    const uint64_t breakMinutes =
+      timekeeperController.pomodoroBreakDurationMs() / (60ULL * 1000ULL);
+    M5.Display.setFont(&fonts::efontJA_12);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(TFT_WHITE, background);
+    M5.Display.setTextSize(2.0f);
+    M5.Display.drawString(String("作業 ") + String(workMinutes) + "分",
+                          width / 2,
+                          height * 47 / 100);
+    M5.Display.drawString(String("休憩 ") + String(breakMinutes) + "分",
+                          width / 2,
+                          height * 61 / 100);
+    M5.Display.setTextColor(M5.Display.color565(164, 174, 184), background);
+    M5.Display.setTextSize(1.25f);
+    M5.Display.drawString("時間はスマホアプリで設定",
+                          width / 2,
+                          height * 76 / 100);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(top_left);
+    return;
+  }
+
+  M5.Display.setFont(&fonts::efontJA_12);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(TFT_WHITE, background);
+  M5.Display.setTextSize(1.2f);
+  M5.Display.drawString("時間（分）", width / 2,
+#if STACKCHAN_DEVICE_CORES3
+                        94);
+#else
+                        height * 36 / 100);
+#endif
+
+  for (size_t index = 0; index < kTimekeeperCountdownPresetCount; ++index) {
+    int32_t x = 0;
+    int32_t y = 0;
+    timekeeperDurationOptionCenter(index, x, y);
+    const uint16_t minutes = kTimekeeperCountdownPresetsMinutes[index];
+    const bool selected = minutes == selectedMinutes;
+    M5.Display.fillCircle(x + 2, y + 4, radius, shadow);
+    M5.Display.fillCircle(x, y, radius, selected ? selectedFill : normalFill);
+    M5.Display.drawCircle(x, y, radius, selected ? selectedBorder : normalBorder);
+    M5.Display.drawCircle(x, y, radius - 1, selected ? selectedBorder : normalBorder);
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(TFT_WHITE, selected ? selectedFill : normalFill);
+    M5.Display.setTextSize(minutes >= 100 ? 2 : 3);
+    M5.Display.drawString(String(minutes), x, y);
+  }
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(top_left);
+}
+
+void showTimekeeperDurationMenu() {
+  if (!displayOn || experienceMode != ExperienceMode::Timekeeper ||
+      (timekeeperController.activity() != TimekeeperActivity::Countdown &&
+       timekeeperController.activity() != TimekeeperActivity::Pomodoro) ||
+      timekeeperController.isRunning()) {
+    return;
+  }
+  timekeeperDurationMenuVisible = true;
+  faceController.setEnabled(false);
+  drawTimekeeperDurationMenu();
+}
+
+void hideTimekeeperDurationMenu(bool redrawTimekeeper) {
+  if (!timekeeperDurationMenuVisible) {
+    return;
+  }
+  timekeeperDurationMenuVisible = false;
+  faceController.setEnabled(displayOn && !infoScreenVisible &&
+                            !experienceModeMenuVisible &&
+                            !travelFacePickerVisible);
+  if (redrawTimekeeper && displayOn && !infoScreenVisible &&
+      experienceMode == ExperienceMode::Timekeeper) {
+    drawTimekeeperOverlay(monotonicMs(), true);
+  }
+}
+
+bool updateTimekeeperDurationMenuTouch(const m5::touch_detail_t& touch,
+                                       uint64_t nowMs) {
+  if (!timekeeperDurationMenuVisible) {
+    return false;
+  }
+  if (!touch.wasClicked()) {
+    return true;
+  }
+  for (const TimekeeperActivity mode : {
+         TimekeeperActivity::Countdown,
+         TimekeeperActivity::Pomodoro,
+       }) {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t w = 0;
+    int32_t h = 0;
+    timekeeperTimerModeButtonBounds(mode, x, y, w, h);
+    if (!touchIn(touch, x, y, w, h)) {
+      continue;
+    }
+    selectTimekeeperTimerSubmode(mode, nowMs);
+    drawTimekeeperDurationMenu();
+    Serial.printf("[timekeeper.ui] timer submode=%s\n",
+                  timekeeperActivityName(mode));
+    return true;
+  }
+  if (timekeeperController.activity() == TimekeeperActivity::Pomodoro) {
+    hideTimekeeperDurationMenu(true);
+    return true;
+  }
+  const int32_t radius =
+#if STACKCHAN_DEVICE_CORES3
+    25;
+#else
+    max<int32_t>(34,
+                 min(M5.Display.width(), M5.Display.height()) * 8 / 100);
+#endif
+  for (size_t index = 0; index < kTimekeeperCountdownPresetCount; ++index) {
+    int32_t x = 0;
+    int32_t y = 0;
+    timekeeperDurationOptionCenter(index, x, y);
+    const int32_t dx = touch.x - x;
+    const int32_t dy = touch.y - y;
+    if (dx * dx + dy * dy > radius * radius) {
+      continue;
+    }
+    if (timekeeperController.state() != TimekeeperState::Ready) {
+      handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+    }
+    const uint16_t minutes = kTimekeeperCountdownPresetsMinutes[index];
+    timekeeperController.setCountdownMinutes(minutes, nowMs);
+    lastTimekeeperUiValueMs = UINT64_MAX;
+    Serial.printf("[timekeeper.ui] countdown preset=%u minutes\n",
+                  static_cast<unsigned>(minutes));
+    hideTimekeeperDurationMenu(true);
+    return true;
+  }
+  hideTimekeeperDurationMenu(true);
+  return true;
+}
+
+void drawTimekeeperTab(M5Canvas& target,
+                       int32_t x,
+                       int32_t h,
+                       int32_t w,
+                       const char* label,
+                       TimekeeperActivity activity) {
+  const bool active = activity == TimekeeperActivity::Countdown
+                        ? (timekeeperController.activity() == TimekeeperActivity::Countdown ||
+                           timekeeperController.activity() == TimekeeperActivity::Pomodoro)
+                        : timekeeperController.activity() == activity;
+  const uint16_t fill = active
+                          ? M5.Display.color565(20, 64, 48)
+                          : M5.Display.color565(8, 12, 16);
+  const uint16_t border = active
+                            ? M5.Display.color565(86, 224, 158)
+                            : M5.Display.color565(70, 82, 94);
+  target.fillRoundRect(x, 0, w, h, 11, fill);
+  target.drawRoundRect(x, 0, w, h, 11, border);
+  target.drawRoundRect(x + 1, 1, w - 2, h - 2, 10, border);
+  drawTimekeeperJapaneseText(target,
+                             label,
+                             x + w / 2,
+                             h / 2,
+                             TFT_WHITE,
+                             fill,
+                             1.25f);
+}
+
+void drawTimekeeperAdjustButton(M5Canvas& target,
+                                int32_t x,
+                                int32_t y,
+                                int32_t radius,
+                                const char* label) {
+  const uint16_t fill = M5.Display.color565(8, 12, 16);
+  const uint16_t border = M5.Display.color565(96, 180, 220);
+  const uint16_t shadow = M5.Display.color565(2, 4, 6);
+  target.fillCircle(x + 2, y + 4, radius, shadow);
+  target.fillCircle(x, y, radius, fill);
+  target.drawCircle(x, y, radius, border);
+  target.drawCircle(x, y, radius - 1, border);
+  target.setFont(&fonts::Font0);
+  target.setTextDatum(middle_center);
+  target.setTextColor(TFT_WHITE, fill);
+  target.setTextSize(3);
+  target.drawString(label, x, y);
+  target.setTextSize(1);
+  target.setTextDatum(top_left);
+}
+
+const char* timekeeperChallengeDifficultyLabel(
+  TimekeeperChallengeDifficulty difficulty) {
+  switch (difficulty) {
+    case TimekeeperChallengeDifficulty::Low:
+      return "低";
+    case TimekeeperChallengeDifficulty::Medium:
+      return "中";
+    case TimekeeperChallengeDifficulty::High:
+      return "高";
+  }
+  return "中";
+}
+
+void drawTimekeeperDifficultyButton(M5Canvas& target,
+                                    int32_t x,
+                                    int32_t y,
+                                    int32_t radius) {
+  const uint16_t fill = M5.Display.color565(30, 42, 50);
+  const uint16_t border = M5.Display.color565(224, 190, 90);
+  const uint16_t shadow = M5.Display.color565(2, 4, 6);
+  target.fillCircle(x + 2, y + 4, radius, shadow);
+  target.fillCircle(x, y, radius, fill);
+  target.drawCircle(x, y, radius, border);
+  target.drawCircle(x, y, radius - 1, border);
+  drawTimekeeperJapaneseText(
+    target,
+    timekeeperChallengeDifficultyLabel(timekeeperController.challengeDifficulty()),
+    x,
+    y,
+    TFT_WHITE,
+    fill,
+    1.8f);
+}
+
+void drawTimekeeperOverlay(uint64_t nowMs, bool force) {
+  if (!displayOn || experienceMode != ExperienceMode::Timekeeper ||
+      infoScreenVisible || experienceModeMenuVisible || timekeeperDurationMenuVisible) {
+    return;
+  }
+  const uint64_t valueMs = timekeeperController.displayMs(nowMs);
+  const bool running = timekeeperController.isRunning();
+  const uint64_t minimumIntervalMs = running ? 33ULL : 250ULL;
+  if (!force && lastTimekeeperUiDrawMs != 0 &&
+      nowMs - lastTimekeeperUiDrawMs < minimumIntervalMs) {
+    return;
+  }
+  lastTimekeeperUiValueMs = valueMs / minimumIntervalMs;
+  lastTimekeeperUiDrawMs = nowMs;
+
+  const bool speechBubbleVisible = faceController.speechBubbleVisible();
+  const TimekeeperLayout layout = makeTimekeeperLayout(speechBubbleVisible);
+  constexpr uint16_t transparent = 0xF81F;
+  TimekeeperUiCanvasCache& cache = timekeeperUiCanvasCache();
+  const bool previousCacheReady = cache.ready;
+  const TimekeeperButtonLayer previousButtonLayer = cache.buttonLayer;
+  cache.ready = false;
+
+  const int32_t tabsW = layout.tabW * 3 + layout.tabGap * 2;
+  if (!ensureTimekeeperCanvas(cache.tabCanvas,
+                              cache.tabCanvasW,
+                              cache.tabCanvasH,
+                              tabsW,
+                              layout.tabH)) {
+    return;
+  }
+  cache.tabCanvas.fillSprite(transparent);
+  drawTimekeeperTab(cache.tabCanvas,
+                    0,
+                    layout.tabH,
+                    layout.tabW,
+                    "計測",
+                    TimekeeperActivity::Stopwatch);
+  drawTimekeeperTab(cache.tabCanvas,
+                    layout.tabW + layout.tabGap,
+                    layout.tabH,
+                    layout.tabW,
+                    "タイマー",
+                    TimekeeperActivity::Countdown);
+  drawTimekeeperTab(cache.tabCanvas,
+                    (layout.tabW + layout.tabGap) * 2,
+                    layout.tabH,
+                    layout.tabW,
+                    "ピタリ",
+                    TimekeeperActivity::TenSecondChallenge);
+  cache.tabCanvas.pushSprite(&M5.Display, layout.tabX, layout.tabY, transparent);
+
+  if (!ensureTimekeeperCanvas(cache.panelCanvas,
+                              cache.panelCanvasW,
+                              cache.panelCanvasH,
+                              layout.panelW,
+                              layout.panelH)) {
+    return;
+  }
+  const uint16_t panel = M5.Display.color565(4, 8, 12);
+  cache.panelCanvas.fillSprite(transparent);
+  cache.panelCanvas.fillRoundRect(0, 0, layout.panelW, layout.panelH, 16, panel);
+  cache.panelCanvas.drawRoundRect(0,
+                            0,
+                            layout.panelW,
+                            layout.panelH,
+                            16,
+                            M5.Display.color565(66, 90, 106));
+  const int32_t panelCenterX = layout.panelW / 2;
+  const bool pomodoroActive =
+    timekeeperController.activity() == TimekeeperActivity::Pomodoro;
+#if STACKCHAN_DEVICE_CORES3
+  const bool latestLapInClockPanel =
+    timekeeperController.activity() == TimekeeperActivity::Stopwatch &&
+    timekeeperController.lapCount() > 0;
+#else
+  constexpr bool latestLapInClockPanel = false;
+#endif
+  const int32_t timeY = (pomodoroActive || latestLapInClockPanel)
+                          ? layout.panelH * 68 / 100
+                          : layout.panelH / 2;
+  bool hideChallengeTime = false;
+  if (timekeeperController.activity() == TimekeeperActivity::TenSecondChallenge &&
+      running) {
+    switch (timekeeperController.challengeDifficulty()) {
+      case TimekeeperChallengeDifficulty::Low:
+        hideChallengeTime = false;
+        break;
+      case TimekeeperChallengeDifficulty::Medium: {
+        const uint64_t targetMs = timekeeperController.challengeTargetMs();
+        const uint64_t hideAtMs = targetMs / 2ULL;
+        hideChallengeTime = valueMs >= hideAtMs;
+        break;
+      }
+      case TimekeeperChallengeDifficulty::High:
+        hideChallengeTime = true;
+        break;
+    }
+  }
+  if (pomodoroActive) {
+    String phaseLabel;
+    if (timekeeperController.state() == TimekeeperState::Completed) {
+      phaseLabel = String(timekeeperController.pomodoroCycles()) + "セット完了";
+    } else if (timekeeperController.state() == TimekeeperState::Ready) {
+      phaseLabel = String("ポモドーロ ") +
+                   String(timekeeperController.pomodoroCycles()) + "セット";
+    } else {
+      phaseLabel = timekeeperController.pomodoroPhase() ==
+                       TimekeeperPomodoroPhase::Break
+                     ? "休憩 "
+                     : "作業 ";
+      phaseLabel += String(timekeeperController.pomodoroCycleIndex()) + "/" +
+                    String(timekeeperController.pomodoroCycles());
+    }
+    drawTimekeeperJapaneseText(cache.panelCanvas,
+                               phaseLabel,
+                               panelCenterX,
+                               layout.panelH * 22 / 100,
+                               M5.Display.color565(170, 226, 255),
+                               panel,
+                               1.0f);
+    const String formattedTime = formatTimekeeperMs(valueMs);
+    cache.panelCanvas.setFont(&fonts::Font0);
+    cache.panelCanvas.setTextDatum(middle_center);
+    cache.panelCanvas.setTextColor(TFT_WHITE, panel);
+#if STACKCHAN_DEVICE_CORES3
+    cache.panelCanvas.setTextSize(formattedTime.length() <= 9 ? 3 : 2);
+#else
+    cache.panelCanvas.setTextSize(formattedTime.length() <= 9 ? 4 : 3);
+#endif
+    cache.panelCanvas.drawString(formattedTime, panelCenterX, timeY);
+    cache.panelCanvas.setTextSize(1);
+    cache.panelCanvas.setTextDatum(top_left);
+  } else if (hideChallengeTime) {
+    drawTimekeeperJapaneseText(cache.panelCanvas,
+                               "時間はひみつ",
+                               panelCenterX,
+                               timeY,
+                               TFT_WHITE,
+                               panel,
+                               1.8f);
+  } else {
+    if (latestLapInClockPanel) {
+      const String lapValue =
+        formatTimekeeperMs(timekeeperController.lastLapDurationMs());
+      const String lapTextValue = String("LAP ") +
+                                  String(timekeeperController.lapCount()) +
+                                  "  " + lapValue;
+      cache.panelCanvas.setFont(&fonts::Font0);
+      cache.panelCanvas.setTextDatum(middle_center);
+      cache.panelCanvas.setTextColor(M5.Display.color565(136, 220, 255), panel);
+#if STACKCHAN_DEVICE_CORES3
+      cache.panelCanvas.setTextSize(1);
+#else
+      cache.panelCanvas.setTextSize(2);
+#endif
+      cache.panelCanvas.drawString(lapTextValue,
+                                   panelCenterX,
+                                   layout.panelH * 20 / 100);
+      cache.panelCanvas.setTextSize(1);
+      cache.panelCanvas.setTextDatum(top_left);
+    }
+    const String formattedTime = formatTimekeeperMs(valueMs);
+    cache.panelCanvas.setFont(&fonts::Font0);
+    cache.panelCanvas.setTextDatum(middle_center);
+    cache.panelCanvas.setTextColor(TFT_WHITE, panel);
+#if STACKCHAN_DEVICE_CORES3
+    cache.panelCanvas.setTextSize(
+      latestLapInClockPanel ? 3 : (formattedTime.length() <= 9 ? 4 : 3));
+#else
+    cache.panelCanvas.setTextSize(formattedTime.length() <= 9 ? 5 : 4);
+#endif
+    cache.panelCanvas.drawString(formattedTime, panelCenterX, timeY);
+    cache.panelCanvas.setTextSize(1);
+    cache.panelCanvas.setTextDatum(top_left);
+  }
+
+  cache.panelCanvas.pushSprite(&M5.Display,
+                               layout.panelX,
+                               layout.panelY,
+                               transparent);
+
+  const TimekeeperActivity activity = timekeeperController.activity();
+  const bool countdownAdjustButtons = activity == TimekeeperActivity::Countdown && !running;
+  const bool pomodoroCycleButtons =
+    activity == TimekeeperActivity::Pomodoro &&
+    timekeeperController.state() == TimekeeperState::Ready;
+#if STACKCHAN_DEVICE_CORES3
+  constexpr bool separateLatestLapPanel = false;
+#else
+  const bool separateLatestLapPanel =
+    activity == TimekeeperActivity::Stopwatch &&
+    timekeeperController.lapCount() > 0;
+#endif
+  const TimekeeperButtonLayer buttonLayer =
+    countdownAdjustButtons
+      ? TimekeeperButtonLayer::CountdownAdjust
+      : (pomodoroCycleButtons
+           ? TimekeeperButtonLayer::PomodoroCycles
+           : (activity == TimekeeperActivity::TenSecondChallenge
+                ? TimekeeperButtonLayer::ChallengeControls
+                : (separateLatestLapPanel
+                     ? TimekeeperButtonLayer::LatestLap
+                     : TimekeeperButtonLayer::None)));
+  const int32_t buttonGroupW = layout.twoButtonW * 2 + layout.twoButtonGap;
+  const int32_t buttonCanvasW = M5.Display.width();
+  const int32_t buttonCanvasH = max<int32_t>(layout.buttonH,
+                                             layout.adjustButtonRadius * 2 + 8);
+  if (!ensureTimekeeperCanvas(cache.buttonCanvas,
+                              cache.buttonCanvasW,
+                              cache.buttonCanvasH,
+                              buttonCanvasW,
+                              buttonCanvasH)) {
+    return;
+  }
+  cache.buttonCanvas.fillSprite(transparent);
+  if (countdownAdjustButtons || pomodoroCycleButtons) {
+    cache.buttonY = layout.adjustButtonY - layout.adjustButtonRadius - 4;
+    const int32_t localCenterY = layout.adjustButtonRadius + 4;
+    drawTimekeeperAdjustButton(cache.buttonCanvas,
+                               layout.adjustButtonLeftX,
+                               localCenterY,
+                               layout.adjustButtonRadius,
+                               "-1");
+    drawTimekeeperAdjustButton(cache.buttonCanvas,
+                               layout.adjustButtonRightX,
+                               localCenterY,
+                               layout.adjustButtonRadius,
+                               "+1");
+  } else if (activity == TimekeeperActivity::TenSecondChallenge) {
+    cache.buttonY = layout.adjustButtonY - layout.adjustButtonRadius - 4;
+    char targetSeconds[4];
+    snprintf(targetSeconds,
+             sizeof(targetSeconds),
+             "%u",
+             static_cast<unsigned>(timekeeperController.challengeTargetMs() / 1000ULL));
+    drawTimekeeperAdjustButton(cache.buttonCanvas,
+                               layout.adjustButtonLeftX,
+                               layout.adjustButtonRadius + 4,
+                               layout.adjustButtonRadius,
+                               targetSeconds);
+    drawTimekeeperDifficultyButton(cache.buttonCanvas,
+                                   layout.adjustButtonRightX,
+                                   layout.adjustButtonRadius + 4,
+                                   layout.adjustButtonRadius);
+  } else if (separateLatestLapPanel) {
+    cache.buttonY = layout.buttonY;
+    const uint16_t lapPanel = M5.Display.color565(4, 8, 12);
+    const uint16_t lapBorder = M5.Display.color565(70, 100, 116);
+    const uint16_t lapText = M5.Display.color565(136, 220, 255);
+    cache.buttonCanvas.fillRoundRect(layout.twoButtonX,
+                                     3,
+                                     buttonGroupW,
+                                     layout.buttonH - 6,
+                                     12,
+                                     lapPanel);
+    cache.buttonCanvas.drawRoundRect(layout.twoButtonX,
+                                     3,
+                                     buttonGroupW,
+                                     layout.buttonH - 6,
+                                     12,
+                                     lapBorder);
+    const String lapValue = formatTimekeeperMs(timekeeperController.lastLapDurationMs());
+    const String lapTextValue = String("LAP ") +
+                                String(timekeeperController.lapCount()) +
+                                "  " + lapValue;
+    cache.buttonCanvas.setFont(&fonts::Font0);
+    cache.buttonCanvas.setTextDatum(middle_center);
+    cache.buttonCanvas.setTextColor(lapText, lapPanel);
+    cache.buttonCanvas.setTextSize(2);
+    cache.buttonCanvas.drawString(lapTextValue,
+                                  layout.twoButtonX + buttonGroupW / 2,
+                                  layout.buttonH / 2);
+    cache.buttonCanvas.setTextSize(1);
+    cache.buttonCanvas.setTextDatum(top_left);
+  } else {
+    cache.buttonY = layout.buttonY;
+  }
+  cache.buttonX = 0;
+  cache.buttonCanvas.pushSprite(&M5.Display,
+                                cache.buttonX,
+                                cache.buttonY,
+                                transparent);
+  cache.layout = layout;
+  cache.buttonLayer = buttonLayer;
+  cache.speechBubbleVisible = speechBubbleVisible;
+  cache.ready = true;
+  if (previousCacheReady && previousButtonLayer != buttonLayer) {
+    // Transparent pixels cannot erase an older button layer already present
+    // on the LCD. Recompose the face once whenever that layer changes so
+    // removed countdown/lap controls disappear immediately rather than on
+    // the next blink frame.
+    faceController.redrawNow();
+  }
+}
+
+void drawTimekeeperFrameOverlay(M5Canvas& target) {
+  if (!displayOn || experienceMode != ExperienceMode::Timekeeper ||
+      infoScreenVisible || experienceModeMenuVisible || timekeeperDurationMenuVisible) {
+    return;
+  }
+  TimekeeperUiCanvasCache& cache = timekeeperUiCanvasCache();
+  const bool speechBubbleVisible = faceController.speechBubbleVisible();
+  if (!cache.ready || cache.speechBubbleVisible != speechBubbleVisible) {
+    return;
+  }
+  constexpr uint16_t transparent = 0xF81F;
+  cache.tabCanvas.pushSprite(&target,
+                             cache.layout.tabX,
+                             cache.layout.tabY,
+                             transparent);
+  cache.panelCanvas.pushSprite(&target,
+                               cache.layout.panelX,
+                               cache.layout.panelY,
+                               transparent);
+  cache.buttonCanvas.pushSprite(&target,
+                                cache.buttonX,
+                                cache.buttonY,
+                                transparent);
+}
+
+bool selectTimekeeperActivity(TimekeeperActivity activity, uint64_t nowMs) {
+  if (activity == timekeeperController.activity() || !timekeeperController.canChangeActivity()) {
+    return false;
+  }
+  if (timekeeperController.state() != TimekeeperState::Ready) {
+    handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+  }
+  if (!timekeeperController.selectActivity(activity, nowMs)) {
+    return false;
+  }
+  if (activity == TimekeeperActivity::Countdown ||
+      activity == TimekeeperActivity::Pomodoro) {
+    timekeeperTimerSubmode = activity;
+    saveTimekeeperTimerSubmode();
+  }
+  lastTimekeeperUiValueMs = UINT64_MAX;
+  drawTimekeeperOverlay(nowMs, true);
+  return true;
+}
+
+bool updateTimekeeperTouch(const m5::touch_detail_t& touch, uint64_t nowMs) {
+  if (experienceMode != ExperienceMode::Timekeeper || infoScreenVisible) {
+    return false;
+  }
+  if (pendingTimekeeperSmileResult.active) {
+    // Keep the result pose uninterrupted until its deferred announcement has
+    // been released. The smile is short, so consuming touches here also avoids
+    // a new challenge announcement overtaking the result announcement.
+    return true;
+  }
+  if (updateTimekeeperDurationMenuTouch(touch, nowMs)) {
+    return true;
+  }
+
+  if (touch.wasFlicked()) {
+    const int32_t distanceX = touch.distanceX();
+    const int32_t distanceY = touch.distanceY();
+    if (abs(distanceX) > abs(distanceY) && abs(distanceX) >= 48) {
+      // Keep the activities arranged in the same left-to-right order as the
+      // tabs. A left swipe advances; a right swipe goes back.
+      int activityIndex = timekeeperController.activity() == TimekeeperActivity::Stopwatch
+                            ? 0
+                            : ((timekeeperController.activity() == TimekeeperActivity::Countdown ||
+                                timekeeperController.activity() == TimekeeperActivity::Pomodoro)
+                                 ? 1
+                                 : 2);
+      const int direction = distanceX < 0 ? 1 : -1;
+      activityIndex = constrain(activityIndex + direction, 0, 2);
+      const TimekeeperActivity selected = activityIndex == 0
+                                            ? TimekeeperActivity::Stopwatch
+                                            : (activityIndex == 1
+                                                 ? timekeeperTimerSubmode
+                                                 : TimekeeperActivity::TenSecondChallenge);
+      if (selected != timekeeperController.activity() &&
+          timekeeperController.canChangeActivity()) {
+        selectTimekeeperActivity(selected, nowMs);
+        Serial.printf("[timekeeper.ui] swipe activity=%s\n",
+                      timekeeperActivityName(selected));
+      }
+    }
+    // Timekeeper owns all flick gestures, including vertical flicks and
+    // attempts made while the timer is running.
+    return true;
+  }
+  if (!touch.wasClicked()) {
+    return false;
+  }
+  const TimekeeperLayout layout = makeTimekeeperLayout(faceController.speechBubbleVisible());
+  if (touchIn(touch,
+              layout.tabX,
+              layout.tabY,
+              layout.tabW,
+              layout.tabH)) {
+    selectTimekeeperActivity(TimekeeperActivity::Stopwatch, nowMs);
+    return true;
+  }
+  if (touchIn(touch,
+              layout.tabX + layout.tabW + layout.tabGap,
+              layout.tabY,
+              layout.tabW,
+              layout.tabH)) {
+    selectTimekeeperActivity(timekeeperTimerSubmode, nowMs);
+    return true;
+  }
+  if (touchIn(touch,
+              layout.tabX + (layout.tabW + layout.tabGap) * 2,
+              layout.tabY,
+              layout.tabW,
+              layout.tabH)) {
+    selectTimekeeperActivity(TimekeeperActivity::TenSecondChallenge, nowMs);
+    return true;
+  }
+
+  const TimekeeperActivity activity = timekeeperController.activity();
+  const bool running = timekeeperController.isRunning();
+  if (activity == TimekeeperActivity::Countdown && !running) {
+    const int32_t leftDx = touch.x - layout.adjustButtonLeftX;
+    const int32_t leftDy = touch.y - layout.adjustButtonY;
+    const int32_t rightDx = touch.x - layout.adjustButtonRightX;
+    const int32_t rightDy = touch.y - layout.adjustButtonY;
+    const int32_t radiusSquared = layout.adjustButtonRadius * layout.adjustButtonRadius;
+    if (leftDx * leftDx + leftDy * leftDy <= radiusSquared) {
+      if (timekeeperController.state() != TimekeeperState::Ready) {
+        handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+      }
+      timekeeperController.adjustCountdownMinutes(-1, nowMs);
+      drawTimekeeperOverlay(nowMs, true);
+      return true;
+    }
+    if (rightDx * rightDx + rightDy * rightDy <= radiusSquared) {
+      if (timekeeperController.state() != TimekeeperState::Ready) {
+        handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+      }
+      timekeeperController.adjustCountdownMinutes(1, nowMs);
+      drawTimekeeperOverlay(nowMs, true);
+      return true;
+    }
+    if (touchIn(touch,
+                layout.panelX,
+                layout.panelY,
+                layout.panelW,
+                layout.panelH)) {
+      showTimekeeperDurationMenu();
+      return true;
+    }
+  }
+  if (activity == TimekeeperActivity::Pomodoro) {
+    if (timekeeperController.state() == TimekeeperState::Ready) {
+      const int32_t leftDx = touch.x - layout.adjustButtonLeftX;
+      const int32_t leftDy = touch.y - layout.adjustButtonY;
+      const int32_t rightDx = touch.x - layout.adjustButtonRightX;
+      const int32_t rightDy = touch.y - layout.adjustButtonY;
+      const int32_t radiusSquared = layout.adjustButtonRadius * layout.adjustButtonRadius;
+      if (leftDx * leftDx + leftDy * leftDy <= radiusSquared) {
+        if (timekeeperController.adjustPomodoroCycles(-1, nowMs)) {
+          saveTimekeeperCycles();
+          drawTimekeeperOverlay(nowMs, true);
+          Serial.printf("[timekeeper.ui] pomodoro cycles=%u\n",
+                        static_cast<unsigned>(timekeeperController.pomodoroCycles()));
+        }
+        return true;
+      }
+      if (rightDx * rightDx + rightDy * rightDy <= radiusSquared) {
+        if (timekeeperController.adjustPomodoroCycles(1, nowMs)) {
+          saveTimekeeperCycles();
+          drawTimekeeperOverlay(nowMs, true);
+          Serial.printf("[timekeeper.ui] pomodoro cycles=%u\n",
+                        static_cast<unsigned>(timekeeperController.pomodoroCycles()));
+        }
+        return true;
+      }
+    }
+    if (!running && touchIn(touch,
+                            layout.panelX,
+                            layout.panelY,
+                            layout.panelW,
+                            layout.panelH)) {
+      showTimekeeperDurationMenu();
+      return true;
+    }
+  }
+  if (activity == TimekeeperActivity::TenSecondChallenge && !running) {
+    const int32_t targetDx = touch.x - layout.adjustButtonLeftX;
+    const int32_t targetDy = touch.y - layout.adjustButtonY;
+    const int32_t difficultyDx = touch.x - layout.adjustButtonRightX;
+    const int32_t difficultyDy = touch.y - layout.adjustButtonY;
+    const int32_t radiusSquared = layout.adjustButtonRadius * layout.adjustButtonRadius;
+    if (targetDx * targetDx + targetDy * targetDy <= radiusSquared) {
+      if (timekeeperController.state() != TimekeeperState::Ready) {
+        handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+      }
+      const uint64_t currentTargetMs = timekeeperController.challengeTargetMs();
+      const uint16_t nextTargetSeconds = currentTargetMs == 10000ULL
+                                           ? 30
+                                           : (currentTargetMs == 30000ULL ? 60 : 10);
+      timekeeperController.setChallengeTargetSeconds(nextTargetSeconds, nowMs);
+      drawTimekeeperOverlay(nowMs, true);
+      Serial.printf("[timekeeper.ui] challenge target=%u seconds\n",
+                    static_cast<unsigned>(nextTargetSeconds));
+      return true;
+    }
+    if (difficultyDx * difficultyDx + difficultyDy * difficultyDy <= radiusSquared) {
+      if (timekeeperController.state() != TimekeeperState::Ready) {
+        handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+      }
+      timekeeperController.cycleChallengeDifficulty(nowMs);
+      drawTimekeeperOverlay(nowMs, true);
+      Serial.printf("[timekeeper.ui] challenge difficulty=%s\n",
+                    timekeeperChallengeDifficultyName(
+                      timekeeperController.challengeDifficulty()));
+      return true;
+    }
+  }
+#if STACKCHAN_DEVICE_CORES3
+  // CoreS3 has no dedicated lap/reset button. A tap that did not hit a tab,
+  // timer control, or setup panel acts like the StopWatch blue button.
+  if (activity == TimekeeperActivity::Stopwatch && running) {
+    handleTimekeeperEvent(timekeeperController.lap(nowMs), true);
+    drawTimekeeperOverlay(nowMs, true);
+    Serial.println("[timekeeper.ui] background tap lap");
+  } else if (!running && timekeeperController.state() != TimekeeperState::Ready) {
+    handleTimekeeperEvent(timekeeperController.reset(nowMs), false);
+    drawTimekeeperOverlay(nowMs, true);
+    Serial.println("[timekeeper.ui] background tap reset");
+  } else {
+    Serial.printf("[timekeeper.ui] background tap ignored activity=%s running=%d state=%d\n",
+                  timekeeperActivityName(activity),
+                  running ? 1 : 0,
+                  static_cast<int>(timekeeperController.state()));
+  }
+  return true;
+#endif
+  return false;
+}
+
+bool handleTimekeeperBlueButton(uint64_t nowMs) {
+  if (experienceMode != ExperienceMode::Timekeeper || infoScreenVisible ||
+      experienceModeMenuVisible || timekeeperDurationMenuVisible) {
+    return false;
+  }
+  if (pendingTimekeeperSmileResult.active) {
+    return true;
+  }
+  const TimekeeperActivity activity = timekeeperController.activity();
+  const bool running = timekeeperController.isRunning();
+  TimekeeperEvent event;
+  bool handled = false;
+  bool allowAnnouncement = false;
+
+  if (activity == TimekeeperActivity::Stopwatch && running) {
+    event = timekeeperController.lap(nowMs);
+    handled = true;
+    allowAnnouncement = true;
+  } else if (!running && timekeeperController.state() != TimekeeperState::Ready) {
+    event = timekeeperController.reset(nowMs);
+    handled = true;
+  }
+
+  if (handled) {
+    handleTimekeeperEvent(event, allowAnnouncement);
+    drawTimekeeperOverlay(nowMs, true);
+    Serial.printf("[button] blue timekeeper activity=%s action=%s\n",
+                  timekeeperActivityName(activity),
+                  allowAnnouncement ? "lap" : "reset");
+  } else {
+    Serial.printf("[button] blue timekeeper ignored activity=%s running=%d state=%d\n",
+                  timekeeperActivityName(activity),
+                  running ? 1 : 0,
+                  static_cast<int>(timekeeperController.state()));
+  }
+  // Always consume the blue button in Timekeeper mode so it never turns the
+  // display off, even when the current state has no blue-button action.
+  return true;
+}
+
+void updateTimekeeper(uint64_t nowMs) {
+  if (pendingTimekeeperAnnouncement.active &&
+      nowMs >= pendingTimekeeperAnnouncement.expiresAtMs) {
+    pendingTimekeeperAnnouncement = PendingTimekeeperAnnouncement();
+  }
+  if (experienceMode != ExperienceMode::Timekeeper || !displayOn) {
+    return;
+  }
+  updatePendingTimekeeperSmileResult();
+  handleTimekeeperEvent(timekeeperController.update(nowMs), true);
+}
+#endif
+
 void updateTouch(unsigned long now) {
 #if STACKCHAN_SMALL_DISPLAY
   (void)now;
@@ -9302,6 +12489,47 @@ void updateTouch(unsigned long now) {
     resetOverlayTouchGesture();
     return;
   }
+
+#if STACKCHAN_DEVICE_CORES3
+  // Edge gestures have precedence over Timekeeper's ordinary horizontal
+  // activity swipe. When an overlay is already open, the opposite edge
+  // gesture closes it instead of navigating directly to the other overlay.
+  if (isLeftEdgeModeSwipe(touch)) {
+    if (infoScreenVisible) {
+      setInfoScreenVisible(false);
+      Serial.println("[gesture] settings close left_to_right");
+      return;
+    }
+    showExperienceModeMenu();
+    return;
+  }
+  if (isRightEdgeSettingsSwipe(touch)) {
+    if (experienceModeMenuVisible) {
+      hideExperienceModeMenu();
+      Serial.println("[gesture] mode_menu close right_to_left");
+      return;
+    }
+    setInfoScreenVisible(true);
+    return;
+  }
+#endif
+
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (updateExperienceModeMenuTouch(touch, now)) {
+    return;
+  }
+#if STACKCHAN_DEVICE_CORES3
+  if (handleTravelScreenDoubleTap(touch, now)) {
+    return;
+  }
+#endif
+  if (updateTravelFacePickerTouch(touch, now)) {
+    return;
+  }
+  if (updateTimekeeperTouch(touch, monotonicMs())) {
+    return;
+  }
+#endif
 
   if (updateOverlayButtonTouch(now, touch)) {
     return;
@@ -9339,12 +12567,6 @@ void updateTouch(unsigned long now) {
   }
 #endif
 
-#if !STACKCHAN_DEVICE_STOPWATCH
-  if (isSettingsSwipe(touch)) {
-    setInfoScreenVisible(!infoScreenVisible);
-    return;
-  }
-#endif
 }
 
 void updateButtons(unsigned long now) {
@@ -9495,14 +12717,57 @@ void updateButtons(unsigned long now) {
     return;
   }
 #if STACKCHAN_DEVICE_STOPWATCH
-#if STACKCHAN_GURUGURU_FACE_ENABLED
-  if (M5.BtnA.wasDoubleClicked()) {
-    setGuruguruFaceMode(!guruguruFaceMode, now);
+  if (M5.BtnA.wasPressed()) {
+    stopwatchYellowButtonPressed = true;
+    stopwatchYellowButtonLongHandled = false;
+    stopwatchYellowButtonPressedAtMs = monotonicMs();
+  }
+  if (stopwatchYellowButtonPressed && M5.BtnA.isPressed() &&
+      !stopwatchYellowButtonLongHandled &&
+      monotonicMs() - stopwatchYellowButtonPressedAtMs >= 700ULL) {
+    stopwatchYellowButtonLongHandled = true;
+    showExperienceModeMenu();
+    Serial.println("[button] yellow hold mode_menu");
     return;
   }
-#endif
-  if (M5.BtnA.wasSingleClicked()) {
-    setInfoScreenVisible(!infoScreenVisible);
+  if (stopwatchYellowButtonPressed && M5.BtnA.wasReleased()) {
+    const bool wasLongPress = stopwatchYellowButtonLongHandled;
+    stopwatchYellowButtonPressed = false;
+    stopwatchYellowButtonLongHandled = false;
+    stopwatchYellowButtonPressedAtMs = 0;
+    if (wasLongPress || experienceModeMenuVisible) {
+      hideExperienceModeMenu();
+      return;
+    }
+    if (timekeeperDurationMenuVisible) {
+      hideTimekeeperDurationMenu(true);
+      return;
+    }
+    if (experienceMode == ExperienceMode::Travel && !infoScreenVisible) {
+      // Travel clicks use M5Button's finalized click count so a double click
+      // can be distinguished from two single-expression advances.
+      if (M5.BtnA.wasDecideClickCount()) {
+        handleTravelYellowClickCount(M5.BtnA.getClickCount());
+      }
+      return;
+    }
+    if (experienceMode == ExperienceMode::Timekeeper && !infoScreenVisible) {
+      if (pendingTimekeeperSmileResult.active) {
+        Serial.println("[button] yellow ignored during result smile");
+        return;
+      }
+      const uint64_t releasedAtMs = monotonicMs();
+      handleTimekeeperEvent(timekeeperController.toggle(releasedAtMs), true);
+      drawTimekeeperOverlay(releasedAtMs, true);
+      Serial.println("[button] yellow timekeeper_toggle");
+    } else {
+      setInfoScreenVisible(!infoScreenVisible);
+    }
+    return;
+  }
+  if (experienceMode == ExperienceMode::Travel && !infoScreenVisible &&
+      M5.BtnA.wasDecideClickCount()) {
+    handleTravelYellowClickCount(M5.BtnA.getClickCount());
     return;
   }
   if (M5.BtnB.wasHold()) {
@@ -9516,6 +12781,16 @@ void updateButtons(unsigned long now) {
   if (M5.BtnB.wasDecideClickCount()) {
     const uint8_t clickCount = M5.BtnB.getClickCount();
     Serial.printf("[button] key_b_click_count=%u\n", clickCount);
+#if STACKCHAN_DEVICE_STOPWATCH
+    if (experienceMode == ExperienceMode::Timekeeper && !infoScreenVisible) {
+      if (clickCount == 1) {
+        handleTimekeeperBlueButton(monotonicMs());
+      }
+      // Timekeeper owns the blue button. Never fall through to display-off or
+      // Guruguru actions, including for double/multiple clicks.
+      return;
+    }
+#endif
     if (clickCount == 1) {
       setDisplayOn(!displayOn);
       return;
@@ -9540,7 +12815,11 @@ void updateButtons(unsigned long now) {
       return;
     }
     if (clickCount == 2) {
-      setGuruguruFaceMode(!guruguruFaceMode, now);
+      requestExperienceMode(
+        experienceMode == ExperienceMode::Guruguru
+          ? ExperienceMode::Conversation
+          : ExperienceMode::Guruguru,
+        now);
       return;
     }
     if (clickCount >= 3) {
@@ -9560,6 +12839,156 @@ void updateButtons(unsigned long now) {
 #endif
 #endif
 }
+
+#if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_TIMEKEEPER_ENABLED
+void resetBackTouchTimekeeperGesture() {
+  backTouchTimekeeperArmed = false;
+  backTouchTimekeeperPressed = false;
+  backTouchTimekeeperPressSinceMs = 0;
+  backTouchTimekeeperLastDetectedMs = 0;
+  backTouchTimekeeperReleasedSinceMs = 0;
+}
+
+bool handleTimekeeperBackTouch(unsigned long now, bool backTouchDetected) {
+  if (experienceMode != ExperienceMode::Timekeeper || infoScreenVisible) {
+    resetBackTouchTimekeeperGesture();
+    return false;
+  }
+
+  if (!backTouchTimekeeperArmed) {
+    backTouchTimekeeperPressed = false;
+    if (backTouchDetected) {
+      backTouchTimekeeperReleasedSinceMs = 0;
+      return true;
+    }
+    if (backTouchTimekeeperReleasedSinceMs == 0) {
+      backTouchTimekeeperReleasedSinceMs = now;
+      return true;
+    }
+    if (now - backTouchTimekeeperReleasedSinceMs >=
+        BACK_TOUCH_TIMEKEEPER_RELEASE_MS) {
+      backTouchTimekeeperArmed = true;
+      Serial.println("[timekeeper.input] back touch armed");
+    }
+    return true;
+  }
+
+  if (backTouchDetected) {
+    backTouchTimekeeperReleasedSinceMs = 0;
+    backTouchTimekeeperLastDetectedMs = now;
+    if (!backTouchTimekeeperPressed) {
+      backTouchTimekeeperPressed = true;
+      backTouchTimekeeperPressSinceMs = now;
+    }
+    return true;
+  }
+
+  if (!backTouchTimekeeperPressed) {
+    return true;
+  }
+  if (now - backTouchTimekeeperLastDetectedMs <
+      BACK_TOUCH_TIMEKEEPER_RELEASE_MS) {
+    return true;
+  }
+
+  const unsigned long pressDurationMs =
+    backTouchTimekeeperLastDetectedMs - backTouchTimekeeperPressSinceMs;
+  backTouchTimekeeperPressed = false;
+  backTouchTimekeeperPressSinceMs = 0;
+  backTouchTimekeeperLastDetectedMs = 0;
+  backTouchTimekeeperReleasedSinceMs = now;
+  if (pressDurationMs < BACK_TOUCH_TIMEKEEPER_TAP_MIN_MS ||
+      pressDurationMs > BACK_TOUCH_TIMEKEEPER_TAP_MAX_MS) {
+    Serial.printf("[timekeeper.input] back touch ignored duration_ms=%lu\n",
+                  pressDurationMs);
+    return true;
+  }
+  if (pendingTimekeeperSmileResult.active) {
+    Serial.println("[timekeeper.input] back touch ignored during result smile");
+    return true;
+  }
+
+  const uint64_t eventNowMs = monotonicMs();
+  handleTimekeeperEvent(timekeeperController.toggle(eventNowMs), true);
+  drawTimekeeperOverlay(eventNowMs, true);
+  Serial.printf("[timekeeper.input] back touch toggle duration_ms=%lu state=%s\n",
+                pressDurationMs,
+                timekeeperStateName(timekeeperController.state()));
+  return true;
+}
+
+void resetBackTouchTravelGesture() {
+  backTouchTravelArmed = false;
+  backTouchTravelPressed = false;
+  backTouchTravelPressSinceMs = 0;
+  backTouchTravelLastDetectedMs = 0;
+  backTouchTravelReleasedSinceMs = 0;
+}
+
+bool handleTravelBackTouch(unsigned long now, bool backTouchDetected) {
+  if (experienceMode != ExperienceMode::Travel || infoScreenVisible ||
+      experienceModeMenuVisible) {
+    resetBackTouchTravelGesture();
+    return false;
+  }
+
+  if (!backTouchTravelArmed) {
+    backTouchTravelPressed = false;
+    if (backTouchDetected) {
+      backTouchTravelReleasedSinceMs = 0;
+      return true;
+    }
+    if (backTouchTravelReleasedSinceMs == 0) {
+      backTouchTravelReleasedSinceMs = now;
+      return true;
+    }
+    if (now - backTouchTravelReleasedSinceMs >= BACK_TOUCH_TRAVEL_RELEASE_MS) {
+      backTouchTravelArmed = true;
+      Serial.println("[travel.input] back touch armed");
+    }
+    return true;
+  }
+
+  if (backTouchDetected) {
+    backTouchTravelReleasedSinceMs = 0;
+    backTouchTravelLastDetectedMs = now;
+    if (!backTouchTravelPressed) {
+      backTouchTravelPressed = true;
+      backTouchTravelPressSinceMs = now;
+    }
+    return true;
+  }
+
+  if (!backTouchTravelPressed) {
+    return true;
+  }
+  if (now - backTouchTravelLastDetectedMs < BACK_TOUCH_TRAVEL_RELEASE_MS) {
+    return true;
+  }
+
+  const unsigned long pressDurationMs =
+    backTouchTravelLastDetectedMs - backTouchTravelPressSinceMs;
+  backTouchTravelPressed = false;
+  backTouchTravelPressSinceMs = 0;
+  backTouchTravelLastDetectedMs = 0;
+  backTouchTravelReleasedSinceMs = now;
+  if (pressDurationMs < BACK_TOUCH_TRAVEL_TAP_MIN_MS ||
+      pressDurationMs > BACK_TOUCH_TRAVEL_TAP_MAX_MS) {
+    Serial.printf("[travel.input] back touch ignored duration_ms=%lu\n",
+                  pressDurationMs);
+    return true;
+  }
+
+  if (travelFacePickerVisible) {
+    hideTravelFacePicker(true);
+    Serial.println("[travel.input] back touch tap picker_close");
+  } else {
+    showTravelFacePicker();
+    Serial.println("[travel.input] back touch tap picker_open");
+  }
+  return true;
+}
+#endif
 
 #if STACKCHAN_HAS_BACK_TOUCH && STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
 void resetBackTouchGuruguruGesture() {
@@ -9627,13 +13056,21 @@ void updateBackTouch(unsigned long now) {
     backTouchReleasedSinceMs = 0;
     backTouchCandidateSinceMs = 0;
     backTouchClearSinceMs = 0;
+#if STACKCHAN_TIMEKEEPER_ENABLED
+    resetBackTouchTimekeeperGesture();
+    resetBackTouchTravelGesture();
+#endif
 #if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
     resetBackTouchGuruguruGesture();
 #endif
     return;
   }
 
-  if (infoScreenVisible) {
+  if (infoScreenVisible || experienceModeMenuVisible) {
+#if STACKCHAN_TIMEKEEPER_ENABLED
+    resetBackTouchTimekeeperGesture();
+    resetBackTouchTravelGesture();
+#endif
 #if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
     resetBackTouchGuruguruGesture();
 #endif
@@ -9664,6 +13101,19 @@ void updateBackTouch(unsigned long now) {
     Serial.println("[touch] back touch ready");
     return;
   }
+
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (handleTimekeeperBackTouch(now, backTouchDetected)) {
+    backTouchCandidateSinceMs = 0;
+    backTouchClearSinceMs = 0;
+    return;
+  }
+  if (handleTravelBackTouch(now, backTouchDetected)) {
+    backTouchCandidateSinceMs = 0;
+    backTouchClearSinceMs = 0;
+    return;
+  }
+#endif
 
 #if STACKCHAN_DEVICE_CORES3 && STACKCHAN_GURUGURU_FACE_ENABLED
   if (handleGuruguruBackTouch(now, backTouchDetected)) {
@@ -9752,6 +13202,11 @@ void setup() {
   phoneCameraRemoteController.begin(esp_random());
 #endif
   ensureDeviceId();
+  ensureBootId();
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  timekeeperController.begin(esp_random());
+  loadTimekeeperSettings();
+#endif
   networkMode = loadNetworkMode();
   loadWifiCredentials();
   loadDeviceSettings();
@@ -9767,6 +13222,9 @@ void setup() {
   }
 
   faceController.begin();
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  faceController.setFrameOverlayRenderer(drawTimekeeperFrameOverlay);
+#endif
   applyThermalFaceMode();
   affectionController.begin(&preferences);
   streetPassController.begin(&preferences);
@@ -9827,9 +13285,20 @@ void loop() {
 #endif
   updateSharedImuSample(now);
   updateStepCounter(now);
-  updateStepAffectionReward(now);
-  updateStepSync(now);
+  // Display-off policy is intentionally strict: only raw step counting,
+  // StreetPass and wake/power housekeeping continue. Rewards and app sync are
+  // deferred until the display is back on.
+  if (displayOn) {
+    updateStepAffectionReward(now);
+    updateStepSync(now);
+  }
   updateButtons(now);
+  updatePendingExperienceMode(now);
+#if STACKCHAN_TIMEKEEPER_ENABLED
+  if (displayOn) {
+    updateTimekeeper(monotonicMs());
+  }
+#endif
   if (updateDisplayOffStreetPassMode(now)) {
     return;
   }
@@ -10013,11 +13482,25 @@ void loop() {
 #endif
       }
       faceController.update(faceNow);
+#if STACKCHAN_TIMEKEEPER_ENABLED
+      if (!experienceModeMenuVisible && !timekeeperDurationMenuVisible &&
+          experienceMode == ExperienceMode::Timekeeper) {
+        drawTimekeeperOverlay(monotonicMs(), false);
+      }
+#endif
       noteVoicePerfFaceUpdate(speaking,
                               static_cast<uint32_t>(millis() - faceStartedAt),
                               faceNow);
+#if STACKCHAN_TIMEKEEPER_ENABLED
+      if (!experienceModeMenuVisible && !timekeeperDurationMenuVisible &&
+          !travelFacePickerVisible) {
+        drawLowPowerPrompt();
+        drawStreetPassNotificationOverlay();
+      }
+#else
       drawLowPowerPrompt();
       drawStreetPassNotificationOverlay();
+#endif
       if (speaking) {
         const unsigned long audioStartedAt = millis();
         audioController.update(millis());

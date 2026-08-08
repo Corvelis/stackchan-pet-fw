@@ -26,6 +26,8 @@ enum class ThermalFaceMode : uint8_t {
 
 class FaceController {
 public:
+  using FrameOverlayRenderer = void (*)(M5Canvas& target);
+
   void begin();
   void setState(ChanState state);
   void restartSpeakingAnimation();
@@ -34,11 +36,14 @@ public:
   void setAuthFaceMode(AuthFaceMode mode);
   void setPhotoFaceMode(bool enabled);
   void setPhotoMasterFaceMode(bool enabled);
+  void setTravelPhotoFace(const char* path);
   void setPetFaceMode(bool enabled);
 #if STACKCHAN_PET_ANIMATION_ENABLED
   void setPetFaceMode(bool enabled, unsigned long now, bool animate, bool longPetting = false);
   void setPetAnimationTouchFrame(uint8_t frame, unsigned long now);
   bool petAnimationActive() const;
+  bool startTimekeeperSmileAnimation(unsigned long now);
+  bool timekeeperSmileAnimationActive() const;
 #endif
   void setShakeFaceMode(bool enabled);
   void setGuruguruFaceMode(bool enabled);
@@ -63,6 +68,7 @@ public:
                            PhoneCameraOperation operation = PhoneCameraOperation::None);
   void setAffectionState(const AffectionState& state);
   void showAffectionDelta(int delta, unsigned long now);
+  void setAffectionDeltaYOffset(int32_t offset);
   void showGuruguruStep(uint8_t steps, uint8_t difficulty, unsigned long now);
   void prepareSpeakingCache(AuthFaceMode authMode);
   void startSpeaking(AuthFaceMode authMode);
@@ -72,6 +78,9 @@ public:
   bool setSpeechBubbleText(const char* text);
   void clearSpeechBubble();
   bool speechBubbleVisible() const;
+  void setTimekeeperPresentationMode(bool enabled);
+  void setFrameOverlayRenderer(FrameOverlayRenderer renderer);
+  void redrawNow();
   const FaceAssetStatus& faceAssetStatus() const;
   void update(unsigned long now);
 
@@ -159,11 +168,15 @@ private:
     Start,
     Loop,
     End,
-    After
+    After,
+    TimekeeperSmile
   };
   static constexpr uint8_t kPetAnimationFrameCount = 16;
   bool preparePetAnimationCache();
+  bool preparePetAnimationFrames(const uint8_t* frames, uint8_t count);
+  bool prepareTimekeeperSmileCache();
   void releasePetAnimationCache();
+  void releasePetAnimationCacheExceptTimekeeperSmile();
   bool loadPetAnimationFrameToCanvas(M5Canvas& canvas, uint8_t frame);
   bool drawPetAnimationFrame(uint8_t frame);
   bool startPetAnimation(unsigned long now);
@@ -207,6 +220,7 @@ private:
   String resolvedImagePath(const char* path) const;
   template <typename Target>
   bool drawFaceImageTarget(Target& target, File& file, const char* path) const;
+  void presentOverlayFrame(unsigned long now);
   void drawAffectionOverlay(unsigned long now);
   void drawAffectionOverlayOnCanvas(unsigned long now);
   void drawBatteryOverlay();
@@ -217,6 +231,7 @@ private:
   void drawMicOverlayOnCanvas();
   void drawSpeechBubbleOverlay();
   void drawSpeechBubbleOverlayOnCanvas();
+  void drawFrameOverlayOnCanvas();
   bool prepareSpeechBubbleCanvas();
   bool rebuildSpeechBubbleCanvas(const char* text);
   template <typename Target>
@@ -239,6 +254,7 @@ private:
   void scheduleSmile(unsigned long now);
 
   M5Canvas canvas_;
+  FrameOverlayRenderer frameOverlayRenderer_ = nullptr;
   M5Canvas speechBubbleCanvas_;
   M5Canvas talkCanvas_[kTalkCacheSetCount][2];
   M5Canvas shakeAnimationCanvas_[kShakeAnimationFrameCount];
@@ -305,6 +321,7 @@ private:
   uint8_t petAnimationSequenceIndex_ = 0;
   uint8_t petAnimationTouchFrame_ = 3;
   bool petAnimationLong_ = false;
+  bool timekeeperSmileRestoreVoiceCache_ = false;
   unsigned long nextPetAnimationFrameMs_ = 0;
 #endif
   ChanState state_ = ChanState::Idle;
@@ -312,6 +329,7 @@ private:
   AuthFaceMode authFaceMode_ = AuthFaceMode::Unknown;
   bool photoFaceMode_ = false;
   bool photoMasterFaceMode_ = false;
+  String travelPhotoFacePath_;
   bool petFaceMode_ = false;
   bool shakeFaceMode_ = false;
   uint8_t shakeAnimationFrame_ = 0;
@@ -329,6 +347,7 @@ private:
   unsigned long nextGuruguruDizzyFrameMs_ = 0;
 #endif
   bool enabled_ = true;
+  bool timekeeperPresentationMode_ = false;
   ThermalFaceMode thermalFaceMode_ = ThermalFaceMode::Normal;
   bool canvasReady_ = false;
   bool speechBubbleCanvasAllocated_ = false;
@@ -359,6 +378,7 @@ private:
   AffectionState affectionState_;
   int16_t affectionDelta_ = 0;
   unsigned long affectionDeltaUntilMs_ = 0;
+  int16_t affectionDeltaYOffset_ = 0;
   uint8_t guruguruStep_ = 0;
   uint8_t guruguruStepDifficulty_ = 0;
   unsigned long lastAffectionOverlayMs_ = 0;
