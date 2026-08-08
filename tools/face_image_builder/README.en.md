@@ -13,8 +13,9 @@ This directory contains the tools and samples used to create face asset v2 anima
 | Guruguru direction | 17 cells selected from 5x5 | `dir0.jpg` ... `dir16.jpg` |
 | Center blink | Center cell from 5x5 | `blink16.jpg` on CoreS3/AtomS3R, `blink8.jpg` on StopWatch |
 | Dizzy | 15 cells from 4x4 | `dizzy_01.jpg` ... `dizzy_15.jpg` |
+| Travel expressions | 3x3, row-major | `travel_wink.jpg` ... `travel_peace.jpg` |
 
-CoreS3 and AtomS3R use 65 images; StopWatch uses 57 images. Every directory also contains `face_assets.json`.
+The required face asset v2 set contains 65 images on CoreS3 and AtomS3R and 57 on StopWatch. Travel-capable CoreS3 and StopWatch builds add nine expressions and two picker pages.
 
 ## Recommended workflow
 
@@ -23,6 +24,8 @@ CoreS3 and AtomS3R use 65 images; StopWatch uses 57 images. Every directory also
 3. Run `generate_v2_face_assets.py` to resize, map target filenames, and write manifests for all three devices.
 4. Validate and test through ignored `data_local*` or `face_assets_v2_work/` directories.
 5. Replace the repository `data*` directory as a whole only when promoting reviewed release assets.
+
+For the 3x3 travel sheet, split and resize directly for CoreS3 and StopWatch, then run `build_travel_picker_pages.py` to create each device's picker layout. See [`build_faces_from_sprite_sheet/README.en.md`](build_faces_from_sprite_sheet/README.en.md) for the frame order and commands.
 
 ```sh
 python3 -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
@@ -68,6 +71,7 @@ face_image_builder/
     animation_prompts/
   build_faces_from_sprite_sheet/
     split_firmware_sheet.py
+    build_travel_picker_pages.py
     requirements.txt
     samples/
       base_animation_4x4/

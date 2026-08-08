@@ -80,6 +80,18 @@ DIRECTION_MAPS = {
     ],
 }
 
+TRAVEL_EXPRESSION_NAMES = (
+    "travel_wink",
+    "travel_sparkle",
+    "travel_surprised",
+    "travel_shy",
+    "travel_delicious",
+    "travel_mischief",
+    "travel_teary",
+    "travel_yawn",
+    "travel_peace",
+)
+
 
 @dataclass(frozen=True)
 class SheetSpec:
@@ -286,6 +298,9 @@ def clean_prefix_outputs(out_dir: Path, prefix: str, output_naming: str) -> None
             rf"^{re.escape(prefix)}m\d+_e\d+\.(?:jpg|jpeg|png)$",
             re.IGNORECASE,
         )
+    elif output_naming == "travel-expressions":
+        names = "|".join(re.escape(name) for name in TRAVEL_EXPRESSION_NAMES)
+        pattern = re.compile(rf"^(?:{names})\.(?:jpg|jpeg|png)$", re.IGNORECASE)
     else:
         pattern = re.compile(rf"^{re.escape(prefix)}\d+\.(?:jpg|jpeg|png)$", re.IGNORECASE)
     for path in out_dir.iterdir():
@@ -304,6 +319,8 @@ def output_name(
 ) -> str:
     if output_naming == "base-mouth-eye":
         return f"{prefix}m{row}_e{col}{suffix}"
+    if output_naming == "travel-expressions":
+        return f"{TRAVEL_EXPRESSION_NAMES[index]}{suffix}"
     number = str(index).zfill(pad) if pad > 0 else str(index)
     return f"{prefix}{number}{suffix}"
 
@@ -563,11 +580,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pad", type=int, default=0, help="Zero-pad output numbers, for example 2 for 01.")
     parser.add_argument(
         "--output-naming",
-        choices=("indexed", "base-mouth-eye"),
+        choices=("indexed", "base-mouth-eye", "travel-expressions"),
         default="indexed",
         help=(
             "Output naming scheme. 'base-mouth-eye' maps 4x4 rows to mouth "
-            "indices and columns to eye indices, for example base_m0_e0."
+            "indices and columns to eye indices, for example base_m0_e0. "
+            "'travel-expressions' maps the 3x3 travel sheet to its canonical "
+            "travel_wink ... travel_peace names."
         ),
     )
     parser.add_argument("--preview-dir", type=Path)
@@ -606,6 +625,11 @@ def main() -> None:
             raise SystemExit("base-mouth-eye naming requires --grid 4x4 --directions 16")
         if args.start_index != 0 or args.pad != 0:
             raise SystemExit("base-mouth-eye naming does not use --start-index or --pad")
+    if args.output_naming == "travel-expressions":
+        if args.grid != GridSpec(3, 3) or args.directions != 9:
+            raise SystemExit("travel-expressions naming requires --grid 3x3 --directions 9")
+        if args.start_index != 0 or args.pad != 0:
+            raise SystemExit("travel-expressions naming does not use --start-index or --pad")
 
     specs = args.sheet or default_sheet_specs()
     target_size = args.size or TARGET_SIZES[args.target]

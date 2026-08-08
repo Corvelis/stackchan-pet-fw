@@ -103,6 +103,50 @@ class ValidateFaceAssetsTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any("base_m3_e3.jpg" in error for error in result.errors))
 
+    def test_partial_travel_group_is_rejected(self) -> None:
+        target = validator.TARGETS["cores3"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "data"
+            populate(
+                directory,
+                validator.expected_v2_files(target),
+                target.width,
+                target.height,
+            )
+            write_test_jpeg(directory / "travel_wink.jpg", target.width, target.height)
+            (directory / validator.MANIFEST_NAME).write_text(
+                json.dumps(validator.build_v2_manifest(target)),
+                encoding="utf-8",
+            )
+
+            result = validator.validate_directory(directory, target, "auto")
+
+        self.assertFalse(result.ok)
+        self.assertTrue(any("partial optional image group" in error for error in result.errors))
+
+    def test_complete_travel_group_passes(self) -> None:
+        target = validator.TARGETS["cores3"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "data"
+            populate(
+                directory,
+                validator.expected_v2_files(target),
+                target.width,
+                target.height,
+            )
+            for name in validator.TRAVEL_OPTIONAL_FILES:
+                width, height = validator.expected_image_dimensions(target, name)
+                write_test_jpeg(directory / name, width, height)
+            (directory / validator.MANIFEST_NAME).write_text(
+                json.dumps(validator.build_v2_manifest(target)),
+                encoding="utf-8",
+            )
+
+            result = validator.validate_directory(directory, target, "auto")
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(result.checked_files, 76)
+
     def test_v2_manifest_rejects_wrong_target(self) -> None:
         target = validator.TARGETS["atoms3r"]
         manifest = validator.build_v2_manifest(target)

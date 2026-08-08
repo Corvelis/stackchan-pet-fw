@@ -17,9 +17,76 @@ SCRIPT = (
     / "build_faces_from_sprite_sheet"
     / "split_firmware_sheet.py"
 )
+TRAVEL_PICKER_SCRIPT = (
+    ROOT
+    / "tools"
+    / "face_image_builder"
+    / "build_faces_from_sprite_sheet"
+    / "build_travel_picker_pages.py"
+)
 
 
 class SplitFirmwareSheetTest(unittest.TestCase):
+    def test_travel_picker_pages_match_target_dimensions_and_slot_layouts(self) -> None:
+        source_names = (
+            "pet_anim_8.jpg",
+            "pet_anim_10.jpg",
+            "travel_wink.jpg",
+            "travel_sparkle.jpg",
+            "travel_surprised.jpg",
+            "travel_shy.jpg",
+            "travel_delicious.jpg",
+            "travel_peace.jpg",
+            "dizzy_01.jpg",
+            "dizzy_09.jpg",
+            "pet_anim_13.jpg",
+            "pet_anim_14.jpg",
+            "travel_mischief.jpg",
+            "travel_teary.jpg",
+            "travel_yawn.jpg",
+        )
+        targets = {
+            "cores3": ((320, 240), (44, 62)),
+            "stopwatch": ((386, 386), (193, 52)),
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work = Path(temp_dir)
+            assets = work / "assets"
+            assets.mkdir()
+            for index, name in enumerate(source_names):
+                Image.new("RGB", (48, 48), (80 + index, 120, 160)).save(assets / name)
+
+            for target, (expected_size, first_center) in targets.items():
+                output = work / target
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(TRAVEL_PICKER_SCRIPT),
+                        str(assets),
+                        "--target",
+                        target,
+                        "--output-dir",
+                        str(output),
+                        "--quality",
+                        "100",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    {path.name for path in output.iterdir()},
+                    {"travel_picker_page_0.jpg", "travel_picker_page_1.jpg"},
+                )
+                with Image.open(output / "travel_picker_page_0.jpg") as page:
+                    self.assertEqual(page.size, expected_size)
+                    pixel = page.getpixel(first_center)
+                    self.assertGreater(pixel[0], 70)
+                    self.assertGreater(pixel[1], 110)
+                    self.assertGreater(pixel[2], 150)
+
     def test_tracked_v2_samples_split_into_sixteen_frames(self) -> None:
         samples = (
             (
@@ -224,6 +291,93 @@ class SplitFirmwareSheetTest(unittest.TestCase):
             for index, color in enumerate(colors):
                 with Image.open(output / f"pet_anim_{index}.png") as frame:
                     self.assertEqual(frame.getpixel((10, 10)), color)
+
+    def test_travel_sheet_uses_canonical_expression_names_in_row_major_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work = Path(temp_dir)
+            sheet = work / "travel_3x3.png"
+            output = work / "canonical"
+
+            image = Image.new("RGB", (90, 90), "black")
+            draw = ImageDraw.Draw(image)
+            colors: list[tuple[int, int, int]] = []
+            for index in range(9):
+                row, col = divmod(index, 3)
+                color = (32 + index * 18, 48 + index * 12, 96)
+                colors.append(color)
+                draw.rectangle(
+                    (col * 30, row * 30, (col + 1) * 30 - 1, (row + 1) * 30 - 1),
+                    fill=color,
+                )
+            image.save(sheet)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--sheet",
+                    f"{sheet}:travel_",
+                    "--grid",
+                    "3x3",
+                    "--directions",
+                    "9",
+                    "--layout",
+                    "even",
+                    "--crop-size",
+                    "auto",
+                    "--size",
+                    "30",
+                    "--format",
+                    "png",
+                    "--output-naming",
+                    "travel-expressions",
+                    "--out-dir",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            names = (
+                "travel_wink",
+                "travel_sparkle",
+                "travel_surprised",
+                "travel_shy",
+                "travel_delicious",
+                "travel_mischief",
+                "travel_teary",
+                "travel_yawn",
+                "travel_peace",
+            )
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {f"{name}.png" for name in names},
+            )
+            for index, name in enumerate(names):
+                with Image.open(output / f"{name}.png") as frame:
+                    self.assertEqual(frame.getpixel((15, 15)), colors[index])
+
+    def test_travel_expression_naming_rejects_the_wrong_grid(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--grid",
+                "4x4",
+                "--directions",
+                "16",
+                "--output-naming",
+                "travel-expressions",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --grid 3x3 --directions 9", result.stderr)
 
     def test_row_top_mask_removes_previous_row_fragment_without_zooming(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

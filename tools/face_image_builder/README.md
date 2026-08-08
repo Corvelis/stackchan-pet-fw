@@ -13,8 +13,9 @@
 | ぐるぐる方向 | 5×5から17コマ | `dir0.jpg` ... `dir16.jpg` |
 | 中央blink | 5×5から中央を使用 | CoreS3/AtomS3Rは`blink16.jpg`、StopWatchは`blink8.jpg` |
 | 混乱 | 4×4から15コマ | `dizzy_01.jpg` ... `dizzy_15.jpg` |
+| 旅モード表情 | 3×3、行優先 | `travel_wink.jpg` ... `travel_peace.jpg` |
 
-CoreS3とAtomS3Rは65画像、StopWatchは57画像と`face_assets.json`を使います。
+必須の顔画像v2はCoreS3とAtomS3Rが65画像、StopWatchが57画像です。旅モード対応のCoreS3とStopWatchには、9表情と2ページの選択画面を追加します。
 
 ## 推奨ワークフロー
 
@@ -23,6 +24,8 @@ CoreS3とAtomS3Rは65画像、StopWatchは57画像と`face_assets.json`を使い
 3. `generate_v2_face_assets.py`で3機種向けにリサイズ・命名変換・manifest生成を行います。
 4. 検証後、`data_local*`へ配置して実機確認します。
 5. 配布用画像として採用する場合だけ、`data/`、`data_stopwatch/`、`data_atoms3r/`をディレクトリ単位で置き換えます。
+
+旅モード3×3はCoreS3とStopWatchへ直接リサイズして分割し、その後`build_travel_picker_pages.py`で端末別の選択画面を生成します。詳しいコマ順とコマンドは[`build_faces_from_sprite_sheet/README.md`](build_faces_from_sprite_sheet/README.md)を参照してください。
 
 ```sh
 python3 -m pip install -r tools/face_image_builder/build_faces_from_sprite_sheet/requirements.txt
@@ -68,6 +71,7 @@ face_image_builder/
     animation_prompts/
   build_faces_from_sprite_sheet/
     split_firmware_sheet.py
+    build_travel_picker_pages.py
     requirements.txt
     samples/
       base_animation_4x4/
