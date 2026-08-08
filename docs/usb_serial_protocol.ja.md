@@ -124,6 +124,19 @@ StreetPass API も同じ JSON transport を使います。
 {"type":"interaction.event","event":"camera_button","phase":"pressed","source":"device"}
 ```
 
+CoreS3とStopWatchの0.5.0では、同じJSON transportで体験モード、タイムキーパー、
+ポモドーロ設定、画面OFF前通知も扱います。
+
+```json
+{"type":"experience.mode.changed","version":1,"mode":"timekeeper","previousMode":"conversation","revision":1}
+{"type":"timekeeper.event","version":1,"activity":"stopwatch","event":"lap","state":"running","lapIndex":1}
+{"type":"timekeeper.pomodoro.config.get","version":1,"requestId":"pomodoro-001"}
+{"type":"device.communication.suspending","version":1,"reason":"display_off"}
+```
+
+全フィールド、`bootId`／`eventId`、読み上げ結果、再送条件は
+[タイムキーパー・体験モード通信仕様](timekeeper_protocol.ja.md)を参照してください。
+
 ## TTS PCM
 
 client-to-device の TTS は SCU1 type `0x02` です。

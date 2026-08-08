@@ -97,6 +97,20 @@ LEGACY_FACE_STEMS = (
     "low_power_blink",
 )
 
+TRAVEL_OPTIONAL_FILES = {
+    "travel_wink.jpg",
+    "travel_sparkle.jpg",
+    "travel_surprised.jpg",
+    "travel_shy.jpg",
+    "travel_delicious.jpg",
+    "travel_mischief.jpg",
+    "travel_teary.jpg",
+    "travel_yawn.jpg",
+    "travel_peace.jpg",
+    "travel_picker_page_0.jpg",
+    "travel_picker_page_1.jpg",
+}
+
 
 @dataclass
 class ValidationResult:
@@ -141,6 +155,18 @@ def expected_v2_files(target: TargetSpec) -> set[str]:
 
 def expected_legacy_minimal_files() -> set[str]:
     return {f"{stem}.jpg" for stem in LEGACY_MINIMAL_STEMS}
+
+
+def optional_files(target: TargetSpec) -> set[str]:
+    if target.name in {"cores3", "stopwatch"}:
+        return TRAVEL_OPTIONAL_FILES
+    return set()
+
+
+def expected_image_dimensions(target: TargetSpec, name: str) -> tuple[int, int]:
+    if target.name == "cores3" and name.startswith("travel_picker_page_"):
+        return 320, 240
+    return target.width, target.height
 
 
 def build_v2_manifest(target: TargetSpec) -> dict[str, object]:
@@ -323,12 +349,20 @@ def validate_directory(directory: Path, target: TargetSpec, mode: str = "auto") 
 
     image_entries = [entry for entry in entries if entry.is_file() and entry.suffix.lower() == ".jpg"]
     actual = {entry.name for entry in image_entries}
+    optional = optional_files(target)
+    present_optional = actual & optional
+    if present_optional and present_optional != optional:
+        missing_optional = sorted(optional - present_optional)
+        errors.append(
+            "partial optional image group; either include all or none: "
+            + ", ".join(missing_optional)
+        )
     missing = sorted(expected - actual)
     if missing:
         errors.append("missing images: " + ", ".join(missing))
 
     if strict_file_set:
-        unexpected = sorted(actual - expected)
+        unexpected = sorted(actual - expected - optional)
         if unexpected:
             errors.append("unexpected JPG images: " + ", ".join(unexpected))
 
@@ -342,7 +376,7 @@ def validate_directory(directory: Path, target: TargetSpec, mode: str = "auto") 
         errors.append("unsupported image files: " + ", ".join(other_images))
 
     checked_files = 0
-    for name in sorted(expected & actual):
+    for name in sorted((expected | optional) & actual):
         path = directory / name
         try:
             dimensions = image_dimensions(path)
@@ -350,10 +384,10 @@ def validate_directory(directory: Path, target: TargetSpec, mode: str = "auto") 
             errors.append(f"{name}: {exc}")
             continue
         checked_files += 1
-        expected_dimensions = (target.width, target.height)
+        expected_dimensions = expected_image_dimensions(target, name)
         if dimensions != expected_dimensions:
             errors.append(
-                f"{name}: expected {target.width}x{target.height}, "
+                f"{name}: expected {expected_dimensions[0]}x{expected_dimensions[1]}, "
                 f"got {dimensions[0]}x{dimensions[1]}"
             )
 

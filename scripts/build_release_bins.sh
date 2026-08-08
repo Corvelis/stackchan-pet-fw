@@ -22,6 +22,50 @@ RELEASE_DOCUMENTS=(
   THIRD_PARTY_NOTICES.md
 )
 
+is_release_output_name() {
+  local candidate="$1"
+  local allowed
+
+  if [[ "${candidate}" == "SHA256SUMS" ]]; then
+    return 0
+  fi
+  for allowed in "${RELEASE_ASSETS[@]}" "${RELEASE_DOCUMENTS[@]}"; do
+    if [[ "${candidate}" == "${allowed}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+reject_unexpected_dist_entries() {
+  if [[ ! -d "${DIST_DIR}" ]]; then
+    return 0
+  fi
+
+  local path
+  local name
+  local unexpected=0
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    if [[ ! -f "${path}" ]] || ! is_release_output_name "${name}"; then
+      echo "Unexpected entry in dist/: ${name}" >&2
+      unexpected=1
+    fi
+  done < <(find "${DIST_DIR}" -mindepth 1 -maxdepth 1 -print0)
+
+  if [[ "${unexpected}" -ne 0 ]]; then
+    echo "Move or remove unexpected dist/ entries before building release assets." >&2
+    return 1
+  fi
+}
+
+if [[ -n "${STACKCHAN_FACE_DATA_DIR:-}" ]]; then
+  echo "STACKCHAN_FACE_DATA_DIR must be unset for release builds; release assets use tracked data directories." >&2
+  exit 1
+fi
+
+reject_unexpected_dist_entries
+
 if [[ -z "${PIO_BIN}" ]]; then
   if command -v pio >/dev/null 2>&1; then
     PIO_BIN="pio"

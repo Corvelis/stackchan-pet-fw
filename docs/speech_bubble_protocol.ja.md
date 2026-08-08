@@ -118,6 +118,12 @@ CoreS3 / StopWatch / AtomS3R Chatbot ファームウェアは、TTS PCMに対応
 
 WebSocket/USB切断、表示OFF、`cancel`、別発話への切り替えで即時消去します。また、通信切断を検出できない場合に備え、PCM受信・再生カーソルが15秒間進まなければ自動消去します。
 
+CoreS3とStopWatchのタイムキーパー／旅モードでは専用表示を優先するため、
+`display.speech_bubble.*`を受信しても吹き出しを表示しません。モードへ入る時点で既存の
+吹き出しも消去します。タイムキーパーの読み上げ連携では
+[タイムキーパー・体験モード通信仕様](timekeeper_protocol.ja.md)の`announcement`を使い、
+PCMは再生しても吹き出しcueは送らないでください。
+
 AtomS3Rは画面が小さいため、口のアニメーションを隠さないよう吹き出しを画面上部へ配置します。
 
 吹き出し用PSRAM spriteは初回表示時だけ確保し、文節切り替えでは再利用します。使用量はCoreS3約32 KiB、StopWatch約53 KiB、AtomS3R約10 KiBです。

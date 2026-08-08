@@ -52,9 +52,18 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
   "type": "device.info",
   "requestId": "client-req-device-001",
   "deviceId": "stackchan_8f3a21",
+  "bootId": "b7e31c9a4d20f011",
+  "experienceMode": "conversation",
+  "experienceModeRevision": 0,
+  "pomodoro": {
+    "workDurationMs": 1500000,
+    "breakDurationMs": 300000,
+    "totalCycles": 4,
+    "configRevision": 1
+  },
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "0.4.1",
+  "firmwareVersion": "0.5.0",
   "protocolVersion": 2,
   "faceRenderer": "image",
   "faceRendererMode": "animated",
@@ -62,7 +71,16 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
   "faceAssetManifestPresent": true,
   "faceAssetManifestValid": true,
   "legacyFaceFallbackActive": false,
-  "capabilities": ["device.info", "affection.get", "affection.sync", "display.speech_bubble.v1"],
+  "capabilities": [
+    "device.info",
+    "experience.mode.v1",
+    "device.communication.suspending.v1",
+    "timekeeper.v1",
+    "timekeeper.pomodoro.v1",
+    "affection.get",
+    "affection.sync",
+    "display.speech_bubble.v1"
+  ],
   "display": {"width": 320, "height": 240, "shape": "rect"},
   "speechBubble": {
     "version": 1,
@@ -81,11 +99,15 @@ WebSocket クライアントが接続した直後、ファームウェアは最�
 
 `deviceId` は初回起動時に生成してNVSに保存する安定IDです。IPアドレスやUSB接続ごとの
 一時IDではありません。保存できない場合は eFuse MAC 由来の安定IDへ fallback します。
+`bootId`は起動ごとに変わり、再接続やイベント重複判定で起動境界を識別します。
 `faceRendererMode` は実際に選択された `classic` / `animated` / `transition` / `legacy` /
 `emergency` のいずれかです。不正なmanifestでは `faceAssetError`、画像欠落時は
 `faceAssetMissing` も追加されます。`display`と`speechBubble`は、クライアントが画面形状と
 吹き出し制限を実機から判定するための値です。StopWatchでは`capabilities`に`steps.sync`も
 追加されます。歩数JSONは[歩数カウンター／同期仕様](step_counter_protocol.ja.md)を参照してください。
+CoreS3とStopWatchでは`experience.mode.v1`、`device.communication.suspending.v1`、
+`timekeeper.v1`、`timekeeper.pomodoro.v1`と、現在モード／ポモドーロ設定を追加します。
+詳しくは[タイムキーパー・体験モード通信仕様](timekeeper_protocol.ja.md)を参照してください。
 また、StopWatchでは`phone_camera.remote_shutter.v1`と
 `phone_camera.remote_lens.v1`も追加されます。対応スマホアプリはこれらのcapabilityを
 確認してから、[スマホカメラ・リモート撮影仕様](phone_camera_remote_protocol.ja.md)の

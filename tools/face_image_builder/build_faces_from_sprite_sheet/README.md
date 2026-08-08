@@ -1,6 +1,6 @@
 # スプライトシート分割CLI
 
-`split_firmware_sheet.py`は、4×4または5×5のスプライトシートを、顔画像v2の正規フレームへ分割します。旧6×6静止顔ツールは現行ツリーから削除しており、必要な場合は`v0.3.1`タグを参照してください。
+`split_firmware_sheet.py`は、3×3、4×4、5×5のスプライトシートを、顔画像v2の正規フレームへ分割します。旧6×6静止顔ツールは現行ツリーから削除しており、必要な場合は`v0.3.1`タグを参照してください。
 
 [English](README.en.md)
 
@@ -62,6 +62,41 @@ python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sh
   --start-index 1 --pad 2 --size 512 --format png \
   --out-dir face_assets_v2_work/canonical
 ```
+
+## 旅モード3×3
+
+左上から行優先で、`travel_wink`、`travel_sparkle`、`travel_surprised`、`travel_shy`、`travel_delicious`、`travel_mischief`、`travel_teary`、`travel_yawn`、`travel_peace`へ出力します。旅モードを使うCoreS3とStopWatchだけに配置し、AtomS3R用`data_atoms3r/`へは追加しません。
+
+```sh
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py \
+  --sheet path/to/travel_3x3.png:travel_ \
+  --grid 3x3 --directions 9 --layout even --crop-size auto \
+  --target cores3 --format jpg --quality 82 \
+  --output-naming travel-expressions --out-dir data_local
+
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/split_firmware_sheet.py \
+  --sheet path/to/travel_3x3.png:travel_ \
+  --grid 3x3 --directions 9 --layout even --crop-size auto \
+  --target stopwatch --format jpg --quality 82 \
+  --output-naming travel-expressions --out-dir data_stopwatch_local
+```
+
+9枚を配置した後、コード内の選択肢順と端末別レイアウトに合わせて旅モードのピッカーページを作ります。
+
+- Page 0: `pet_anim_8`、`pet_anim_10`、`travel_wink`、`travel_sparkle`、`travel_surprised`、`travel_shy`、`travel_delicious`、`travel_peace`
+- Page 1: `dizzy_01`、`dizzy_09`、`pet_anim_13`、`pet_anim_14`、`travel_mischief`、`travel_teary`、`travel_yawn`
+
+入力画像が1枚でも欠けている場合は生成を中止します。既定JPEG qualityは82です。配布前検証は、旅モード11ファイルが全部揃っているか、まったく存在しない構成だけを許可します。
+
+```sh
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/build_travel_picker_pages.py \
+  data_local --target cores3
+
+python3 tools/face_image_builder/build_faces_from_sprite_sheet/build_travel_picker_pages.py \
+  data_stopwatch_local --target stopwatch
+```
+
+実機確認と`validate_face_assets.py`が成功した後、配布用へ採用する時だけ同じコマンドの出力先を`data/`と`data_stopwatch/`へ変更します。`data_local*`自体はGitへ追加しません。
 
 ## 境界片の補正
 

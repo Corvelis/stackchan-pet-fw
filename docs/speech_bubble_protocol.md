@@ -116,6 +116,13 @@ Overflow text is truncated with `...` at a valid UTF-8 boundary. The bubble is c
 
 The device clears the bubble immediately on WebSocket/USB disconnect, display off, cancel, or sequence replacement. It also clears after 15 seconds without PCM receive/playback cursor progress as a fallback for undetected connection loss.
 
+Timekeeper and Travel on CoreS3/StopWatch reserve the display for their own UI.
+The firmware intentionally hides incoming `display.speech_bubble.*` commands in
+those modes and clears any existing bubble on entry. For Timekeeper speech, use
+the `announcement` flow in the
+[Timekeeper and Experience Mode Protocol](timekeeper_protocol.md); PCM may play,
+but the client should not send bubble cues.
+
 AtomS3R places the bubble at the top of its small display so it does not cover the mouth animation.
 
 The PSRAM sprite is allocated only on first display and reused between segments. It uses about 32 KiB on CoreS3, 53 KiB on StopWatch, and 10 KiB on AtomS3R.

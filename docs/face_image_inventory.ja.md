@@ -5,8 +5,9 @@
 ## 結論
 
 - 通常配布は顔画像v2のみです。
-- CoreS3とAtomS3Rは65 JPG、StopWatchは57 JPGです。
-- 各ディレクトリに`face_assets.json`を置き、起動時に全体を検証します。
+- 必須の顔画像v2はCoreS3とAtomS3Rが65 JPG、StopWatchが57 JPGです。
+- 旅モード対応のCoreS3とStopWatchは、9表情と2ページの選択画面を含めて、それぞれ76 JPG、68 JPGです。
+- 各ディレクトリに`face_assets.json`を置き、起動時に必須セットを検証します。旅モード画像は後方互換のため起動時必須セットには含めませんが、配布前スクリプトは11ファイル全部または0ファイルだけを許可し、部分構成を拒否します。
 - 旧48静止顔、旧方向blink一式、旧6×6／3×3生成素材は現行配布へ含めません。
 - 旧画像だけの端末はfirmware-only更新時の`legacy` fallbackで起動できます。旧画像をGitへ残す必要はありません。
 
@@ -17,7 +18,7 @@
 | 配布画像 | `data/` | `data_stopwatch/` | `data_atoms3r/` |
 | 個人差し替え | `data_local/` | `data_stopwatch_local/` | `data_atoms3r_local/` |
 | 解像度 | 240×240 | 386×386 | 128×128 |
-| 画像数 | 65 | 57 | 65 |
+| 画像数 | 76（必須65 + 旅11） | 68（必須57 + 旅11） | 65 |
 | レンダラー | `animated` | `animated` | `animated` |
 
 `data_local*`、`legacy_face_assets_local/`、`face_assets_v2_work/`はGit管理外です。
@@ -33,6 +34,16 @@
 | `dizzy_*` | 15 | 15 | 15 |
 
 StopWatchは`dir0..8`と`blink8`を使います。正規ソースの`dir0,2,4,6,8,10,12,14,16`を`dir0..8`へ変換します。CoreS3とAtomS3Rは`dir0..16`と`blink16`です。
+
+## 旅モード追加ファイル
+
+| グループ | CoreS3 | StopWatch | AtomS3R |
+| --- | ---: | ---: | ---: |
+| `travel_wink` ... `travel_peace` | 9（240×240） | 9（386×386） | なし |
+| `travel_picker_page_0..1` | 2（320×240） | 2（386×386） | なし |
+
+3×3スプライトシートは左上から行優先で9表情へ分割します。ピッカーページは、既存表情を含むファームウェアの選択肢順に`build_travel_picker_pages.py`で生成します。
+0.5.0のCoreS3／StopWatch配布ディレクトリには11ファイルをすべて含めます。0.4.1からのfirmware-only更新ではLittleFSを保持するため旅画像なしでも起動でき、完全な旅モードを導入する場合はfactory更新または`uploadfs`を使用します。
 
 ## ビルド時の扱い
 

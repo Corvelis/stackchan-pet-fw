@@ -7,7 +7,7 @@ This document describes how each face image v2 group is used at runtime. See tag
 ## Rendering Priority
 
 ```text
-shake/dizzy recovery > guruguru > petting animation > base animation
+travel still > shake/dizzy recovery > guruguru > petting animation > base animation
 ```
 
 Affection, authentication, thermal, low-power, and camera states do not switch face image groups. Required state remains active and is shown through overlays where applicable.
@@ -42,6 +42,22 @@ Input is the rear touch sensor on CoreS3, a touch or drag near the center of the
 - Dizzy: `dizzy_01..15`
 
 Direction faces follow tilt or touch direction, and `dizzy_*` plays after dizzy motion is detected. When the dizzy sequence ends, the base animation returns from closed eyes to the normal open-eye frame.
+
+## Travel Mode
+
+Travel uses nine `travel_*` expressions plus six reused `pet_anim_*`/`dizzy_*`
+expressions as still photo faces. While selected, the same image survives
+transient app state changes and does not lip-sync or blink until another face is
+selected, the face is reset, or Travel ends.
+
+Picker pages are display-only composite JPGs rather than animation frames. They
+are 320x240 on CoreS3 and 386x386 on StopWatch.
+
+## Timekeeper
+
+Timekeeper UI is composited over the face as a frame overlay. A challenge result
+within 200ms reuses `pet_anim_0,8,9,10,9,8,0` as a dedicated smile, then restores
+the normal cache state.
 
 ## Legacy Compatibility
 

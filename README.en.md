@@ -10,29 +10,32 @@ servos and camera capture.
 This repository contains the device firmware. External client implementations are
 out of scope.
 
-## Latest Release: v0.4.1
+## Latest Release: v0.5.0
 
-### StopWatch Phone Camera
+The new experience features and Travel assets in 0.5.0 target CoreS3 and
+StopWatch. AtomS3R's user-visible changes are limited to the release-version
+update and the shared `device.info.bootId`; it keeps its existing
+Conversation/Guruguru behavior, capabilities, and 65 face images.
 
-- Sends shutter and front/rear lens requests to a compatible phone app over WebSocket or USB Serial.
-- Short-press the lower-right camera overlay to capture; hold it for about 0.8 seconds to switch lenses.
-- Shows the current lens as `IN`／`OUT` and reports pending, success, and failure through the display and haptics.
-- Validates transport, request ID, and operation while handling timeouts, disconnects, and display-off safely.
+### Experience Modes
 
-### Touch Controls and Time Sync
+- Adds Conversation, Guruguru, Timekeeper, and Travel selectors to CoreS3 and StopWatch.
+- Open the selector with a right flick from the CoreS3 left edge or a hold of the StopWatch yellow BtnA.
+- Defers mode changes safely during audio playback and notifies connected clients after a change.
 
-- Uses shared gesture tracking for camera and microphone overlays to prevent long-press and drag misfires.
-- Moves the StopWatch microphone overlay to the lower-left and enlarges StopWatch／CoreS3 touch targets.
-- Standardizes time on `Asia/Tokyo` and immediately applies RTC, app, and NTP updates to the system clock.
-- Confirms NTP responses and supports Wi-Fi reconnect sync, retry, and six-hour refreshes.
+### Timekeeper
 
-### Protocol and Distribution
+- Adds Stopwatch/laps, Countdown, 10/30/60-second Challenge, and Pomodoro.
+- Implements target-specific touch/button controls, milestones, result ranks, and affection rewards.
+- Adds announcement events, prefetch, critical-event resend, and Pomodoro configuration APIs.
 
-- Adds `phone_camera.remote_shutter.v1` and `phone_camera.remote_lens.v1` capabilities.
-- Publishes the phone-camera remote protocol in Japanese and English.
-- Distributes update `firmware` and first-install `factory` binaries for all three targets.
+### Travel Mode
 
-See the [0.4.1 Release Notes](docs/release_notes_0.4.1.md) for details and the
+- Adds 15 photo-friendly expressions and a two-page picker to CoreS3 and StopWatch.
+- Publishes a 3x3 prompt for nine consistent expressions, a splitter, and target-specific picker generation.
+- `factory` includes the new Travel assets; a `firmware`-only update preserves the existing LittleFS.
+
+See the [0.5.0 Release Notes](docs/release_notes_0.5.0.md) for details and the
 [English Changelog](CHANGELOG.md) for the complete version history.
 
 ## Supported Devices
@@ -58,6 +61,9 @@ instructions, and unsupported features.
 - Affection management and status overlays
 - StopWatch step counter, 30-day history, and synchronization
 - StopWatch shutter and lens requests to a compatible phone app
+- Four on-device experience modes on CoreS3 and StopWatch
+- Stopwatch, countdown, time challenge, and Pomodoro
+- Travel-mode still-expression picker on CoreS3 and StopWatch
 - CoreS3 servo reactions
 
 ## Installation
@@ -128,6 +134,8 @@ See the protocol documents for details.
 - [Affection API](docs/device_affection_api.md)
 - [StopWatch Step Sync Protocol](docs/step_counter_protocol.md)
 - [StopWatch Phone Camera Remote Protocol](docs/phone_camera_remote_protocol.md)
+- [Experience Modes and On-Device Controls](docs/experience_modes.md)
+- [Timekeeper and Experience Mode Protocol](docs/timekeeper_protocol.md)
 
 ## Documentation
 
@@ -135,7 +143,9 @@ See the protocol documents for details.
 | --- | --- |
 | Target builds and controls | [Device Guide](docs/devices.md) |
 | Binary installation and recovery | [Binary Installation Guide](docs/install_binary.md) |
-| v0.4.1 update | [0.4.1 Release Notes](docs/release_notes_0.4.1.md) |
+| v0.5.0 update | [0.5.0 Release Notes](docs/release_notes_0.5.0.md) |
+| Experience, Travel, and Timekeeper controls | [Experience Modes and On-Device Controls](docs/experience_modes.md) |
+| Timekeeper app integration | [Timekeeper and Experience Mode Protocol](docs/timekeeper_protocol.md) |
 | v0.4.0 face asset v2 migration | [0.4.0 Release Notes](docs/release_notes_0.4.0.md) |
 | Complete version history | [Changelog](CHANGELOG.md) |
 | Face image creation | [Face Image Builder](tools/face_image_builder/README.en.md) |
@@ -160,7 +170,7 @@ are not embedded in binaries.
 ## License
 
 The current firmware source, bundled original images, and samples use the
-[MIT License](LICENSE). The current source tree and v0.4.1 release assets contain
+[MIT License](LICENSE). The current source tree and v0.5.0 release assets contain
 no third-party character material.
 
 Historical release binaries containing Tsukuyomi-chan images are not relicensed

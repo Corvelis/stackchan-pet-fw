@@ -11,5 +11,6 @@ These are the canonical face asset v2 prompts. Supply your own authorized charac
 | `guruguru_5x5_prompt.txt` | 5x5 | `dir0` ... `dir16` | `samples/guruguru_dir_5x5/` |
 | `guruguru_blink_5x5_prompt.txt` | 5x5 | `blink0` ... `blink16` | `samples/guruguru_blink_5x5/` |
 | `dizzy_4x4_prompt.txt` | 4x4 | `dizzy_01` ... `dizzy_15` | `samples/dizzy_4x4/` |
+| `travel_3x3_prompt.txt` | 3x3 | `travel_wink` ... `travel_peace` | — |
 
 See [`../../build_faces_from_sprite_sheet/README.en.md`](../../build_faces_from_sprite_sheet/README.en.md) for splitting instructions. Do not blindly apply sample-specific alignment offsets to other generated sheets.

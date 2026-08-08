@@ -36,6 +36,7 @@ python3 scripts/check_bilingual_docs.py
 ```
 
 - 通常配布用の`data*`はmanifest付きv2だけを受け付けます。manifestなしの129枚構成は移行ツールと互換テスト専用です。新旧画像を部分的に混ぜないでください。
+- `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/`は実機でのローカル確認専用です。Gitへ追加せず、release生成時は`STACKCHAN_FACE_DATA_DIR`を設定しないでください。`build_release_bins.sh`は設定されている場合に失敗します。
 - `.pio/`、`dist/`、バックアップ、ローカル画像素材、秘密情報はコミットしないでください。
 - 開発PCのユーザー名を含む絶対パスを、文書、コメント、設定、サンプルへ記載しないでください。
 - Release環境はコンパイル時のホームパスを匿名化し、`build_release_bins.sh`は生成バイナリに実ホームパスが残っていないことを検査します。
@@ -70,6 +71,7 @@ python3 scripts/check_bilingual_docs.py
   `build_release_bins.sh` rejects binaries that still contain the real home
   directory.
 - Release `data*` directories must be complete manifest-backed v2 sets. The manifest-free 129-image layout is only for migration tooling and compatibility tests. Never mix partial new and legacy sets.
+- `data_local/`, `data_stopwatch_local/`, and `data_atoms3r_local/` are for local device checks only. Never commit them, and leave `STACKCHAN_FACE_DATA_DIR` unset for release generation. `build_release_bins.sh` fails when it is set.
 - Do not commit `.pio/`, `dist/`, backups, local source artwork, or secrets.
 - Paired documents include `CHANGELOG.md`／`CHANGELOG.ja.md`,
   `docs/*.md`／`docs/*.ja.md`, and each tool's

@@ -70,6 +70,9 @@ and manifest status in `faceAssetManifestPresent` / `faceAssetManifestValid`.
 | Guruguru input | touch / IMU switchable | touch / IMU switchable | IMU only |
 | Guruguru directions | 16 directions + center | 8 directions + center | 16 directions + center |
 | Guruguru dizzy animation | yes | yes | yes |
+| Four-mode experience selector | yes | yes | no |
+| Timekeeper | yes | yes | no |
+| Travel expression picker | yes | yes | no |
 | Haptic feedback | no | yes | no |
 | Clock display | no | yes | no |
 | Step counter / 30-day history | no | yes | no |
@@ -84,6 +87,7 @@ Implementation differences:
 - CoreS3 builds with `STACKCHAN_HAS_SERVO=1`, `STACKCHAN_HAS_CAMERA=1`, and `STACKCHAN_HAS_BACK_TOUCH=1`, so it uses servo motion, camera capture, and the Stack-chan back touch sensor.
 - StopWatch builds with `STACKCHAN_ROUND_DISPLAY=1`, `STACKCHAN_HAS_SCREEN_TOUCH_PETTING=1`, and `STACKCHAN_HAS_HAPTIC=1`, so it uses the round UI, screen-touch petting, haptics, and clock display.
 - AtomS3R Chatbot builds with `STACKCHAN_SMALL_DISPLAY=1` and `STACKCHAN_HAS_ATOMIC_ECHO_BASE=1`, so it uses BtnA-only controls and Atomic Echo Base audio.
+- CoreS3 and StopWatch support Conversation, Guruguru, Timekeeper, and Travel. AtomS3R keeps its existing Conversation and Guruguru controls. See [Experience Modes and On-Device Controls](experience_modes.md).
 - StopWatch counts steps from its IMU, rolls activity days over at 04:00 Japan Standard Time, and stores up to 30 days including today. See the [Step Counter And Sync Protocol](step_counter_protocol.md).
 - Petting display uses `pet_anim_0..pet_anim_15` on all three targets. Only the physical trigger differs: CoreS3 uses back touch, StopWatch uses center screen touch/drag, and AtomS3R uses BtnA hold.
 - Guruguru display uses `dir*`, `blink*`, and `dizzy_*` assets on all three targets. CoreS3 and AtomS3R use `dir0..16` with center frame `blink16`; StopWatch uses the reduced `dir0..8` set with center frame `blink8`.
@@ -98,9 +102,11 @@ settings screen is visible, or while the display is off.
 
 | Device | Normal/voice screen | Guruguru face mode | Settings screens |
 | --- | --- | --- | --- |
-| CoreS3 + Stack-chan | Power short-press toggles display. Power double-click turns guruguru on. Back touch triggers petting. Edge flick opens settings | Power double-click turns guruguru off. Triple-click or more switches touch/IMU input. Touch input uses screen touch/drag for 16 directions plus center. IMU input uses device tilt; screen hold resets the baseline | Hold Network to switch STA/SoftAP. Servo screen saves/restores home |
-| StopWatch | BtnA short-press opens settings. BtnA double-click turns guruguru on. BtnB/power short-press toggles display. Center touch/drag triggers petting. While connected, tapping the lower-left mic overlay toggles mute. When a compatible app reports camera readiness, short-press the lower-right camera overlay to take a phone photo or hold it for about 0.8 seconds to switch front/rear cameras | BtnA double-click turns guruguru off. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
+| CoreS3 + Stack-chan | Power short-press toggles display. Power double-click switches Conversation/Guruguru. Back touch triggers petting. A right flick from the left edge opens the four-mode selector; a left flick from the right edge opens settings | Power double-click returns to Conversation. Triple-click or more switches touch/IMU input. Touch input uses screen touch/drag for 16 directions plus center. IMU input uses device tilt; screen hold resets the baseline | Hold Network to switch STA/SoftAP. Servo screen saves/restores home |
+| StopWatch | BtnA short-press opens settings. Holding BtnA about 0.7 seconds opens the four-mode selector. BtnB/power short-press toggles display. Center touch/drag triggers petting. While connected, tapping the lower-left mic overlay toggles mute. When a compatible app reports camera readiness, short-press the lower-right camera overlay to take a phone photo or hold it for about 0.8 seconds to switch front/rear cameras | Hold BtnA about 0.7 seconds for the mode selector. BtnB double-click switches touch/IMU input. BtnB hold resets the baseline. Touch input uses screen touch/drag for 8 directions plus center. IMU input uses device tilt | `<` / `>` or left/right flick changes pages. Hold Network to switch STA/SoftAP |
 | AtomS3R Chatbot | BtnA short-press opens Network. BtnA double-click mutes mic. BtnA hold triggers petting. BtnA triple-click turns guruguru on | BtnA triple-click turns guruguru off. IMU input only. BtnA hold resets the baseline. BtnA short-press still advances pages, and opening Network stops guruguru display. BtnA double-click is ignored | BtnA short-press changes pages. Hold Network to switch STA/SoftAP. Double-click Audio to enter volume adjust mode |
+
+See [Experience Modes and On-Device Controls](experience_modes.md) for target-specific Timekeeper and Travel actions.
 
 Turning the display off ends the audio state and app connection, then stops
 Wi-Fi, HTTP, WebSocket, and USB Serial. Turning it on starts Wi-Fi reconnection,
@@ -177,14 +183,15 @@ To build one device, pass `cores3`, `stopwatch`, or `atoms3r`.
 
 ### Controls
 
-- Flick from a screen edge: show or hide the settings screen.
+- Flick right from the left edge: open the four-mode selector, or close settings when settings are visible.
+- Flick left from the right edge: open settings, or close the mode selector when it is visible.
 - Hold the Network screen: switch between STA and SoftAP.
 - Short-press the power button: display on/off.
-- Back touch: petting interaction.
+- Back touch in Conversation: petting. In Timekeeper it starts/pauses/resumes; in Travel it opens/closes the expression picker.
 - Tap the microphone overlay while a WebSocket or USB Serial client is connected: mute or unmute mic streaming.
 - Tap the camera overlay: send a `camera_button` event.
 - Servo screen: save or restore servo home.
-- Double-click the power button: toggle guruguru face mode.
+- Double-click the power button: switch between Conversation and Guruguru.
 - Triple-click or more on the power button while guruguru face mode is active: switch between touch input and IMU input.
 - Touch the screen while guruguru face mode is active: in touch input mode, select the face direction. In IMU input mode, hold the screen to reset the IMU baseline.
 
@@ -211,9 +218,11 @@ Release asset generation uses the `m5stack-stopwatch-release` environment.
 
 ### Controls
 
-- Short-press BtnA: show or hide the settings screen.
-- Double-click BtnA: toggle guruguru face mode.
+- Short-press BtnA: show/hide settings in Conversation/Guruguru, start/pause/resume in Timekeeper, or open/close the picker in Travel.
+- Hold BtnA for about 0.7 seconds: open the four-mode selector; choose on screen and release BtnA to close it.
+- Press BtnA two or more times in Travel: reset to the normal face.
 - Short-press BtnB or the power button: display on/off.
+- Short-press BtnB in Timekeeper: lap while Stopwatch is running, or reset after pause/finish. BtnB never turns the display off in Timekeeper.
 - Double-click BtnB while guruguru face mode is active: switch between touch input and IMU input.
 - Hold BtnB while guruguru face mode is active: reset the IMU baseline.
 - Briefly hold near the center of the normal face screen, or drag from near the center: petting interaction. This is disabled while the display is off or the settings screen is visible.

@@ -54,9 +54,18 @@ Outbound JSON:
   "type": "device.info",
   "requestId": "client-req-device-001",
   "deviceId": "stackchan_8f3a21",
+  "bootId": "b7e31c9a4d20f011",
+  "experienceMode": "conversation",
+  "experienceModeRevision": 0,
+  "pomodoro": {
+    "workDurationMs": 1500000,
+    "breakDurationMs": 300000,
+    "totalCycles": 4,
+    "configRevision": 1
+  },
   "displayName": "Stack-chan",
   "firmwareName": "stackchan-pet-fw",
-  "firmwareVersion": "0.4.1",
+  "firmwareVersion": "0.5.0",
   "protocolVersion": 2,
   "faceRenderer": "image",
   "faceRendererMode": "animated",
@@ -64,7 +73,16 @@ Outbound JSON:
   "faceAssetManifestPresent": true,
   "faceAssetManifestValid": true,
   "legacyFaceFallbackActive": false,
-  "capabilities": ["device.info", "affection.get", "affection.sync", "display.speech_bubble.v1"],
+  "capabilities": [
+    "device.info",
+    "experience.mode.v1",
+    "device.communication.suspending.v1",
+    "timekeeper.v1",
+    "timekeeper.pomodoro.v1",
+    "affection.get",
+    "affection.sync",
+    "display.speech_bubble.v1"
+  ],
   "display": {"width": 320, "height": 240, "shape": "rect"},
   "speechBubble": {
     "version": 1,
@@ -83,7 +101,9 @@ Outbound JSON:
 
 `deviceId` is a stable ID generated on first boot and stored in NVS. It is not an
 IP address or a per-USB-connection temporary ID. If NVS storage fails, the
-firmware falls back to a stable ID derived from the eFuse MAC.
+firmware falls back to a stable ID derived from the eFuse MAC. `bootId` changes
+on each boot and identifies restart boundaries for reconnect and event
+deduplication.
 `faceRendererMode` is the active `classic`, `animated`, `transition`, `legacy`,
 or `emergency` profile. Invalid manifests add `faceAssetError`, and missing
 frames also add `faceAssetMissing`. `display` and `speechBubble` let clients
@@ -93,6 +113,10 @@ StopWatch, `capabilities` also contains `steps.sync`; see the
 `phone_camera.remote_shutter.v1` and `phone_camera.remote_lens.v1`. Compatible
 phone apps should check these capabilities before using the `phone_camera.*`
 messages in the [Phone Camera Remote Protocol](phone_camera_remote_protocol.md).
+CoreS3 and StopWatch add `experience.mode.v1`,
+`device.communication.suspending.v1`, `timekeeper.v1`, and
+`timekeeper.pomodoro.v1`, together with current-mode and Pomodoro fields. See the
+[Timekeeper and Experience Mode Protocol](timekeeper_protocol.md).
 
 ## Device-Owned State
 

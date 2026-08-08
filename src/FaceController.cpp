@@ -461,6 +461,21 @@ void FaceController::setPhotoMasterFaceMode(bool enabled) {
   }
 }
 
+void FaceController::setTravelPhotoFace(const char* path) {
+  const String nextPath = path == nullptr ? String() : String(path);
+  if (travelPhotoFacePath_ == nextPath) {
+    return;
+  }
+
+  travelPhotoFacePath_ = nextPath;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  if (enabled_) {
+    showBaseFace();
+  }
+}
+
 void FaceController::setPetFaceMode(bool enabled) {
   if (enabled && faceAssetStatus_.mode != FaceAssetMode::Classic &&
       !faceAssetModeUsesAnimation(faceAssetStatus_.mode)) {
@@ -551,6 +566,49 @@ void FaceController::setPetFaceMode(bool enabled, unsigned long now, bool animat
 
 bool FaceController::petAnimationActive() const {
   return petAnimationPhase_ != PetAnimationPhase::None;
+}
+
+bool FaceController::startTimekeeperSmileAnimation(unsigned long now) {
+  if (!enabled_ || state_ == ChanState::Speaking || petAnimationActive() ||
+      !faceAssetModeUsesAnimation(faceAssetStatus_.mode)) {
+    return false;
+  }
+
+  bool restoreVoiceCache = false;
+  bool smileCacheReady = prepareTimekeeperSmileCache();
+#if STACKCHAN_VOICE_SPRITE_ANIMATION_ENABLED
+  if (!smileCacheReady && micConnected_) {
+    // A connected app reserves PSRAM for all mouth/eye frames and normally
+    // releases most pet_anim frames. This is only a fallback: Timekeeper
+    // normally keeps its four smile frames resident alongside the voice cache.
+    releaseVoiceSpriteCache();
+    restoreVoiceCache = true;
+    smileCacheReady = prepareTimekeeperSmileCache();
+  }
+#endif
+  if (!smileCacheReady) {
+#if STACKCHAN_VOICE_SPRITE_ANIMATION_ENABLED
+    if (restoreVoiceCache) {
+      prepareVoiceSpriteCache(true);
+    }
+#endif
+    return false;
+  }
+
+  timekeeperSmileRestoreVoiceCache_ = restoreVoiceCache;
+  petAnimationPhase_ = PetAnimationPhase::TimekeeperSmile;
+  petAnimationSequenceIndex_ = 0;
+  petAnimationLong_ = false;
+  nextPetAnimationFrameMs_ = now;
+  blinking_ = false;
+  smiling_ = false;
+  currentPath_ = "";
+  updatePetAnimation(now);
+  return timekeeperSmileAnimationActive();
+}
+
+bool FaceController::timekeeperSmileAnimationActive() const {
+  return petAnimationPhase_ == PetAnimationPhase::TimekeeperSmile;
 }
 
 void FaceController::setPetAnimationTouchFrame(uint8_t frame, unsigned long now) {
@@ -929,6 +987,7 @@ bool FaceController::drawGuruguruDizzyFrameDirect(const char* path, uint8_t fram
       drawCameraOverlayOnCanvas();
       drawMicOverlayOnCanvas();
       drawSpeechBubbleOverlayOnCanvas();
+      drawFrameOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
     } else {
 #if STACKCHAN_ROUND_DISPLAY
@@ -1061,6 +1120,49 @@ void FaceController::setEnabled(bool enabled) {
   }
 }
 
+void FaceController::setFrameOverlayRenderer(FrameOverlayRenderer renderer) {
+  frameOverlayRenderer_ = renderer;
+}
+
+void FaceController::setTimekeeperPresentationMode(bool enabled) {
+  if (timekeeperPresentationMode_ == enabled) {
+    return;
+  }
+  timekeeperPresentationMode_ = enabled;
+  micOverlayDirty_ = true;
+  cameraOverlayDirty_ = true;
+  phoneCameraOverlayDirty_ = true;
+
+#if STACKCHAN_PET_ANIMATION_ENABLED
+  if (enabled) {
+    prepareTimekeeperSmileCache();
+  } else if (micConnected_) {
+    releasePetAnimationCache();
+  } else {
+    preparePetAnimationCache();
+  }
+#endif
+
+  if (enabled_) {
+    currentPath_ = "";
+    showBaseFace();
+  }
+}
+
+void FaceController::redrawNow() {
+  if (!enabled_) {
+    return;
+  }
+  currentPath_ = "";
+  showBaseFace();
+}
+
+void FaceController::drawFrameOverlayOnCanvas() {
+  if (frameOverlayRenderer_ != nullptr && canvasReady_) {
+    frameOverlayRenderer_(canvas_);
+  }
+}
+
 void FaceController::setThermalFaceMode(ThermalFaceMode mode) {
   if (thermalFaceMode_ == mode) {
     return;
@@ -1136,6 +1238,7 @@ void FaceController::setMicState(bool connected, bool muted, bool streaming) {
     return;
   }
   const bool connectionChanged = micConnected_ != connected;
+  const bool overlayRemoved = !STACKCHAN_SMALL_DISPLAY && micConnected_ && !connected;
   micConnected_ = connected;
   micMuted_ = muted;
   micStreaming_ = streaming;
@@ -1151,9 +1254,13 @@ void FaceController::setMicState(bool connected, bool muted, bool streaming) {
   deferOverlayDraw = state_ == ChanState::Speaking && voiceSpriteAnimationAllowed();
 #endif
   if (enabled_ && !deferOverlayDraw) {
-    drawCameraOverlay();
-    drawMicOverlay();
-    drawSpeechBubbleOverlay();
+    if (overlayRemoved && !timekeeperPresentationMode_) {
+      redrawNow();
+    } else {
+      drawCameraOverlay();
+      drawMicOverlay();
+      drawSpeechBubbleOverlay();
+    }
   }
 }
 
@@ -1176,6 +1283,7 @@ void FaceController::setCameraCaptureActive(bool active) {
   if (cameraCaptureActive_ == active) {
     return;
   }
+  const bool overlayRemoved = cameraCaptureActive_ && !active && !micConnected_;
   cameraCaptureActive_ = active;
   cameraOverlayDirty_ = true;
   bool deferOverlayDraw = false;
@@ -1183,7 +1291,11 @@ void FaceController::setCameraCaptureActive(bool active) {
   deferOverlayDraw = state_ == ChanState::Speaking && voiceSpriteAnimationAllowed();
 #endif
   if (enabled_ && !deferOverlayDraw) {
-    drawCameraOverlay();
+    if (overlayRemoved && !timekeeperPresentationMode_) {
+      redrawNow();
+    } else {
+      drawCameraOverlay();
+    }
   }
 }
 
@@ -1195,6 +1307,8 @@ void FaceController::setPhoneCameraState(PhoneCameraState state,
       phoneCameraOperation_ == operation) {
     return;
   }
+  const bool overlayRemoved = phoneCameraState_ != PhoneCameraState::Unavailable &&
+                              state == PhoneCameraState::Unavailable;
   phoneCameraState_ = state;
   phoneCameraLens_ = lens;
   phoneCameraOperation_ = operation;
@@ -1204,7 +1318,11 @@ void FaceController::setPhoneCameraState(PhoneCameraState state,
   deferOverlayDraw = state_ == ChanState::Speaking && voiceSpriteAnimationAllowed();
 #endif
   if (enabled_ && !deferOverlayDraw) {
-    drawCameraOverlay();
+    if (overlayRemoved && !timekeeperPresentationMode_) {
+      redrawNow();
+    } else {
+      drawCameraOverlay();
+    }
   }
 }
 
@@ -1245,7 +1363,7 @@ void FaceController::setAffectionState(const AffectionState& state) {
 	      currentPath_ = "";
 	      showBaseFace();
 	    }
-    drawAffectionOverlay(millis());
+    presentOverlayFrame(millis());
   }
 }
 
@@ -1261,8 +1379,17 @@ void FaceController::showAffectionDelta(int delta, unsigned long now) {
   deferOverlayDraw = state_ == ChanState::Speaking && voiceSpriteAnimationAllowed();
 #endif
   if (enabled_ && !deferOverlayDraw) {
-    drawAffectionOverlay(now);
+    presentOverlayFrame(now);
   }
+}
+
+void FaceController::setAffectionDeltaYOffset(int32_t offset) {
+  const int16_t next = static_cast<int16_t>(constrain(offset, -200, 200));
+  if (affectionDeltaYOffset_ == next) {
+    return;
+  }
+  affectionDeltaYOffset_ = next;
+  affectionOverlayDirty_ = true;
 }
 
 void FaceController::showGuruguruStep(uint8_t steps, uint8_t difficulty, unsigned long now) {
@@ -1291,8 +1418,10 @@ void FaceController::update(unsigned long now) {
   }
 
 #if STACKCHAN_CLASSIC_FACE_ENABLED
-  updateClassicFace(now);
-  return;
+  if (travelPhotoFacePath_.isEmpty()) {
+    updateClassicFace(now);
+    return;
+  }
 #endif
 
   if (faceAssetStatus_.mode == FaceAssetMode::Emergency) {
@@ -1316,6 +1445,18 @@ void FaceController::update(unsigned long now) {
     }
     if (redraw) {
       drawEmergencyFace();
+    }
+    return;
+  }
+
+  // A travel photo expression is intentionally a still image. It owns the
+  // face until cleared, including while an app sends transient state changes.
+  // Recompose the full canvas when an overlay changes so the fixed expression
+  // never enters the normal blink or mouth animation paths.
+  if (!travelPhotoFacePath_.isEmpty()) {
+    if (currentPath_ != travelPhotoFacePath_ || overlaysNeedRefresh(now)) {
+      currentPath_ = "";
+      drawFace(travelPhotoFacePath_.c_str());
     }
     return;
   }
@@ -1395,11 +1536,7 @@ void FaceController::update(unsigned long now) {
       phoneCameraOverlayDirty_ ||
       micOverlayDirty_ ||
       affectionDeltaExpired) {
-    drawAffectionOverlay(now);
-    drawBatteryOverlay();
-    drawCameraOverlay();
-    drawMicOverlay();
-    drawSpeechBubbleOverlay();
+    presentOverlayFrame(now);
   }
 
 #if STACKCHAN_VOICE_SPRITE_ANIMATION_ENABLED
@@ -1860,6 +1997,7 @@ bool FaceController::drawShakeAnimationFrame(uint8_t frame) {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     M5.Display.fillScreen(TFT_BLACK);
@@ -2199,6 +2337,7 @@ void FaceController::drawClassicFace() {
 #if CLASSIC_FACE_LIP_SYNC_DIAG_LOG_ENABLED
     pushStartedUs = micros();
 #endif
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     drawClassicFaceTarget(M5.Display);
@@ -2339,6 +2478,7 @@ void FaceController::drawEmergencyFace() {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     drawEmergencyFaceTarget(M5.Display);
@@ -2353,12 +2493,19 @@ void FaceController::drawEmergencyFace() {
 
 void FaceController::showBaseFace() {
 #if STACKCHAN_CLASSIC_FACE_ENABLED
-  classicFaceDirty_ = true;
-  drawClassicFace();
-  return;
+  if (travelPhotoFacePath_.isEmpty()) {
+    classicFaceDirty_ = true;
+    drawClassicFace();
+    return;
+  }
 #endif
   if (faceAssetStatus_.mode == FaceAssetMode::Emergency) {
     drawEmergencyFace();
+    return;
+  }
+
+  if (!travelPhotoFacePath_.isEmpty()) {
+    drawFace(travelPhotoFacePath_.c_str());
     return;
   }
 
@@ -2436,11 +2583,13 @@ void FaceController::showBaseFace() {
 
 void FaceController::drawFace(const char* path, bool drawOverlays) {
 #if STACKCHAN_CLASSIC_FACE_ENABLED
-  (void)path;
-  (void)drawOverlays;
-  classicFaceDirty_ = true;
-  drawClassicFace();
-  return;
+  if (travelPhotoFacePath_.isEmpty()) {
+    (void)path;
+    (void)drawOverlays;
+    classicFaceDirty_ = true;
+    drawClassicFace();
+    return;
+  }
 #endif
   if (faceAssetStatus_.mode == FaceAssetMode::Emergency) {
     drawEmergencyFace();
@@ -2506,8 +2655,10 @@ void FaceController::drawFace(const char* path, bool drawOverlays) {
       drawCameraOverlayOnCanvas();
       drawMicOverlayOnCanvas();
       drawSpeechBubbleOverlayOnCanvas();
+      drawFrameOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
     } else if (ok) {
+      drawFrameOverlayOnCanvas();
       canvas_.pushSprite(&M5.Display, 0, 0);
     }
   } else {
@@ -2538,10 +2689,42 @@ String FaceController::petAnimationFramePath(uint8_t frame) const {
 }
 
 bool FaceController::preparePetAnimationCache() {
+  static const uint8_t kAllFrames[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+  };
+  if (!preparePetAnimationFrames(kAllFrames,
+                                 static_cast<uint8_t>(sizeof(kAllFrames) /
+                                                      sizeof(kAllFrames[0])))) {
+    return false;
+  }
+  petAnimationCachePrepared_ = true;
+  return true;
+}
+
+bool FaceController::prepareTimekeeperSmileCache() {
+  static const uint8_t kSmileFrames[] = {0, 8, 9, 10};
+  return preparePetAnimationFrames(kSmileFrames,
+                                   static_cast<uint8_t>(sizeof(kSmileFrames) /
+                                                        sizeof(kSmileFrames[0])));
+}
+
+bool FaceController::preparePetAnimationFrames(const uint8_t* frames, uint8_t count) {
   if (!faceAssetModeUsesAnimation(faceAssetStatus_.mode)) {
     return false;
   }
-  if (petAnimationCachePrepared_) {
+  if (frames == nullptr || count == 0) {
+    return false;
+  }
+
+  bool allReady = true;
+  for (uint8_t index = 0; index < count; ++index) {
+    const uint8_t frame = frames[index];
+    if (frame >= kPetAnimationFrameCount || !petAnimationCacheReady_[frame]) {
+      allReady = false;
+      break;
+    }
+  }
+  if (allReady) {
     return true;
   }
 
@@ -2552,7 +2735,12 @@ bool FaceController::preparePetAnimationCache() {
   const int32_t cacheW = FACE_CACHE_WIDTH;
   const int32_t cacheH = FACE_CACHE_HEIGHT;
   bool ok = true;
-  for (uint8_t frame = 0; frame < kPetAnimationFrameCount; ++frame) {
+  for (uint8_t index = 0; index < count; ++index) {
+    const uint8_t frame = frames[index];
+    if (frame >= kPetAnimationFrameCount) {
+      ok = false;
+      break;
+    }
     if (petAnimationCacheReady_[frame]) {
       continue;
     }
@@ -2592,7 +2780,6 @@ bool FaceController::preparePetAnimationCache() {
     return false;
   }
 
-  petAnimationCachePrepared_ = true;
   return true;
 }
 
@@ -2614,6 +2801,24 @@ void FaceController::releasePetAnimationAfterCache() {
   }
 
   for (uint8_t frame = 8; frame < kPetAnimationFrameCount; ++frame) {
+    if (petAnimationCacheAllocated_[frame]) {
+      petAnimationCanvas_[frame].deleteSprite();
+    }
+    petAnimationCacheAllocated_[frame] = false;
+    petAnimationCacheReady_[frame] = false;
+  }
+  petAnimationCachePrepared_ = false;
+}
+
+void FaceController::releasePetAnimationCacheExceptTimekeeperSmile() {
+  if (petAnimationActive()) {
+    return;
+  }
+  for (uint8_t frame = 0; frame < kPetAnimationFrameCount; ++frame) {
+    const bool keep = frame == 0 || frame == 8 || frame == 9 || frame == 10;
+    if (keep) {
+      continue;
+    }
     if (petAnimationCacheAllocated_[frame]) {
       petAnimationCanvas_[frame].deleteSprite();
     }
@@ -2664,7 +2869,9 @@ bool FaceController::loadPetAnimationFrameToCanvas(M5Canvas& canvas, uint8_t fra
 }
 
 bool FaceController::drawPetAnimationFrame(uint8_t frame) {
-  if (frame >= kPetAnimationFrameCount || !preparePetAnimationCache() || !petAnimationCacheReady_[frame]) {
+  if (frame >= kPetAnimationFrameCount ||
+      (!petAnimationCacheReady_[frame] && !preparePetAnimationCache()) ||
+      !petAnimationCacheReady_[frame]) {
     return false;
   }
 
@@ -2689,6 +2896,7 @@ bool FaceController::drawPetAnimationFrame(uint8_t frame) {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     M5.Display.fillScreen(TFT_BLACK);
@@ -2748,10 +2956,24 @@ void FaceController::finishPetAnimation(unsigned long now, bool longPetting) {
 
 void FaceController::stopPetAnimation(bool restoreFace) {
   const bool wasActive = petAnimationActive();
+  const bool restoreVoiceCache = timekeeperSmileRestoreVoiceCache_;
   petAnimationPhase_ = PetAnimationPhase::None;
   petAnimationSequenceIndex_ = 0;
   petAnimationLong_ = false;
+  timekeeperSmileRestoreVoiceCache_ = false;
   nextPetAnimationFrameMs_ = 0;
+
+#if STACKCHAN_VOICE_SPRITE_ANIMATION_ENABLED
+  if (restoreVoiceCache) {
+    // Free the temporary pet frames before recreating the connected-app mouth
+    // cache. releasePetAnimationCache() is safe here because the phase is None
+    // and the restore flag has already been cleared.
+    releasePetAnimationCache();
+    prepareVoiceSpriteCache(true);
+  }
+#else
+  (void)restoreVoiceCache;
+#endif
 
   if (restoreFace && wasActive && enabled_) {
     currentPath_ = "";
@@ -2765,6 +2987,7 @@ const uint8_t* FaceController::petAnimationSequence(uint8_t& length, unsigned lo
   static const uint8_t kEnd[] = {2, 1, 0};
   static const uint8_t kLongAfter[] = {8, 9, 10, 11, 9, 8, 0};
   static const uint8_t kShortAfter[] = {12, 13, 14, 15, 12, 0};
+  static const uint8_t kTimekeeperSmile[] = {0, 8, 9, 10, 9, 8, 0};
 
   switch (petAnimationPhase_) {
     case PetAnimationPhase::Start:
@@ -2788,6 +3011,10 @@ const uint8_t* FaceController::petAnimationSequence(uint8_t& length, unsigned lo
       length = static_cast<uint8_t>(sizeof(kShortAfter) / sizeof(kShortAfter[0]));
       intervalMs = PET_ANIMATION_AFTER_INTERVAL_MS;
       return kShortAfter;
+    case PetAnimationPhase::TimekeeperSmile:
+      length = static_cast<uint8_t>(sizeof(kTimekeeperSmile) / sizeof(kTimekeeperSmile[0]));
+      intervalMs = TIMEKEEPER_SMILE_FRAME_INTERVAL_MS;
+      return kTimekeeperSmile;
     case PetAnimationPhase::None:
     default:
       length = 0;
@@ -2801,6 +3028,9 @@ unsigned long FaceController::petAnimationFrameInterval(uint8_t frame, unsigned 
     if ((petAnimationLong_ && frame == 10) || (!petAnimationLong_ && frame == 14)) {
       return PET_ANIMATION_AFTER_HOLD_MS;
     }
+  }
+  if (petAnimationPhase_ == PetAnimationPhase::TimekeeperSmile && frame == 10) {
+    return TIMEKEEPER_SMILE_HOLD_MS;
   }
   return defaultIntervalMs;
 }
@@ -2843,6 +3073,7 @@ void FaceController::updatePetAnimation(unsigned long now) {
         petAnimationSequenceIndex_ = 0;
         break;
       case PetAnimationPhase::After:
+      case PetAnimationPhase::TimekeeperSmile:
         stopPetAnimation(true);
         return;
       case PetAnimationPhase::None:
@@ -3022,7 +3253,7 @@ void FaceController::drawRoundAffectionOverlayTarget(Target& target, unsigned lo
     const uint16_t labelBorder = positive ? M5.Display.color565(132, 48, 82) : M5.Display.color565(78, 64, 74);
     const int32_t labelW = 112;
     const int32_t labelH = 34;
-    const int32_t labelY = cy - outerR + 38;
+    const int32_t labelY = cy - outerR + 38 + affectionDeltaYOffset_;
     target.fillRoundRect(cx - labelW / 2, labelY - labelH / 2, labelW, labelH, 16, labelBg);
     target.drawRoundRect(cx - labelW / 2, labelY - labelH / 2, labelW, labelH, 16, labelBorder);
     drawHeart(target, cx - 30, labelY, 10, deltaColor);
@@ -3197,12 +3428,12 @@ void FaceController::drawRoundCameraOverlayTarget(Target& target) {
   const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
   const int32_t cy = M5.Display.height() / 2 + size * 17 / 100;
   const int32_t r = 28;
-  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
   if (phoneCameraState_ == PhoneCameraState::Unavailable) {
     cameraOverlayDirty_ = false;
     phoneCameraOverlayDirty_ = false;
     return;
   }
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
 
   uint16_t border = M5.Display.color565(90, 170, 230);
   uint16_t fill = M5.Display.color565(14, 32, 46);
@@ -3264,11 +3495,11 @@ void FaceController::drawRoundCameraOverlayTarget(Target& target) {
   const int32_t cx = M5.Display.width() / 2 + size * 36 / 100;
   const int32_t cy = M5.Display.height() / 2 - size * 17 / 100;
   const int32_t r = 28;
-  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
   if (!micConnected_ && !cameraCaptureActive_) {
     cameraOverlayDirty_ = false;
     return;
   }
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
 
   const uint16_t border = cameraCaptureActive_
                             ? M5.Display.color565(255, 205, 80)
@@ -3308,11 +3539,11 @@ void FaceController::drawRoundMicOverlayTarget(Target& target) {
   const int32_t cx = M5.Display.width() / 2 - size * 36 / 100;
   const int32_t cy = M5.Display.height() / 2 + size * 17 / 100;
   const int32_t r = 22;
-  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
   if (!micConnected_) {
     micOverlayDirty_ = false;
     return;
   }
+  target.fillCircle(cx, cy, r + 4, TFT_BLACK);
 
   const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
   const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
@@ -3334,6 +3565,31 @@ void FaceController::drawRoundMicOverlayTarget(Target& target) {
   (void)target;
   micOverlayDirty_ = false;
 #endif
+}
+
+void FaceController::presentOverlayFrame(unsigned long now) {
+  // Keep overlay-only refreshes atomic. In particular, the rectangular
+  // affection bar clears its entire strip before being redrawn. Performing
+  // that clear directly on the LCD exposes a black intermediate frame and
+  // makes the bar appear to flicker whenever another overlay becomes dirty.
+  if (canvasReady_) {
+    drawAffectionOverlayOnCanvas(now);
+    drawBatteryOverlayOnCanvas();
+    drawCameraOverlayOnCanvas();
+    drawMicOverlayOnCanvas();
+    drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
+    canvas_.pushSprite(&M5.Display, 0, 0);
+    return;
+  }
+
+  // Preserve the existing low-memory fallback when the full-screen canvas
+  // could not be allocated.
+  drawAffectionOverlay(now);
+  drawBatteryOverlay();
+  drawCameraOverlay();
+  drawMicOverlay();
+  drawSpeechBubbleOverlay();
 }
 
 void FaceController::drawAffectionOverlay(unsigned long now) {
@@ -3903,6 +4159,10 @@ void FaceController::drawSpeechBubbleOverlayOnCanvas() {
 }
 
 void FaceController::drawMicOverlay() {
+  if (timekeeperPresentationMode_) {
+    micOverlayDirty_ = false;
+    return;
+  }
 #if STACKCHAN_ROUND_DISPLAY
   drawRoundMicOverlayTarget(M5.Display);
   return;
@@ -3937,11 +4197,11 @@ void FaceController::drawMicOverlay() {
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
   const int32_t y = M5.Display.height() - h - 8;
-  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
   if (!micConnected_) {
     micOverlayDirty_ = false;
     return;
   }
+  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
 
   const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
   const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
@@ -3962,6 +4222,11 @@ void FaceController::drawMicOverlay() {
 }
 
 void FaceController::drawCameraOverlay() {
+  if (timekeeperPresentationMode_) {
+    cameraOverlayDirty_ = false;
+    phoneCameraOverlayDirty_ = false;
+    return;
+  }
 #if STACKCHAN_ROUND_DISPLAY
   drawRoundCameraOverlayTarget(M5.Display);
   return;
@@ -3974,11 +4239,11 @@ void FaceController::drawCameraOverlay() {
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
   const int32_t y = M5.Display.height() - 140;
-  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
   if (!micConnected_ && !cameraCaptureActive_) {
     cameraOverlayDirty_ = false;
     return;
   }
+  M5.Display.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
 
   const uint16_t border = cameraCaptureActive_
                             ? M5.Display.color565(255, 205, 80)
@@ -4008,6 +4273,11 @@ void FaceController::drawCameraOverlay() {
 }
 
 void FaceController::drawCameraOverlayOnCanvas() {
+  if (timekeeperPresentationMode_) {
+    cameraOverlayDirty_ = false;
+    phoneCameraOverlayDirty_ = false;
+    return;
+  }
 #if STACKCHAN_ROUND_DISPLAY
   drawRoundCameraOverlayTarget(canvas_);
   return;
@@ -4020,11 +4290,11 @@ void FaceController::drawCameraOverlayOnCanvas() {
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
   const int32_t y = M5.Display.height() - 140;
-  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
   if (!micConnected_ && !cameraCaptureActive_) {
     cameraOverlayDirty_ = false;
     return;
   }
+  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
 
   const uint16_t border = cameraCaptureActive_
                             ? M5.Display.color565(255, 205, 80)
@@ -4054,6 +4324,10 @@ void FaceController::drawCameraOverlayOnCanvas() {
 }
 
 void FaceController::drawMicOverlayOnCanvas() {
+  if (timekeeperPresentationMode_) {
+    micOverlayDirty_ = false;
+    return;
+  }
 #if STACKCHAN_ROUND_DISPLAY
   drawRoundMicOverlayTarget(canvas_);
   return;
@@ -4088,11 +4362,11 @@ void FaceController::drawMicOverlayOnCanvas() {
   const int32_t h = 64;
   const int32_t x = M5.Display.width() - w - 5;
   const int32_t y = M5.Display.height() - h - 8;
-  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
   if (!micConnected_) {
     micOverlayDirty_ = false;
     return;
   }
+  canvas_.fillRoundRect(x - 2, y - 2, w + 4, h + 4, 8, TFT_BLACK);
 
   const uint16_t border = micMuted_ ? M5.Display.color565(220, 90, 90) : M5.Display.color565(90, 210, 150);
   const uint16_t fill = micMuted_ ? M5.Display.color565(52, 18, 22) : M5.Display.color565(16, 42, 30);
@@ -4393,9 +4667,18 @@ void FaceController::applyVoiceSpriteConnectionCachePolicy(bool connected) {
   if (connected) {
     clearVoiceSpriteBlockingModes(millis());
 #if STACKCHAN_PET_ANIMATION_ENABLED
-    releasePetAnimationCache();
+    if (timekeeperPresentationMode_) {
+      releasePetAnimationCacheExceptTimekeeperSmile();
+    } else {
+      releasePetAnimationCache();
+    }
 #endif
     prepareVoiceSpriteCache(true);
+#if STACKCHAN_PET_ANIMATION_ENABLED
+    if (timekeeperPresentationMode_) {
+      prepareTimekeeperSmileCache();
+    }
+#endif
     return;
   }
 
@@ -4477,6 +4760,7 @@ bool FaceController::drawCachedVoiceSpriteFrame(uint8_t mouth, uint8_t eye) {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     if (enteringVoiceSprite) {
@@ -4829,6 +5113,7 @@ bool FaceController::drawCachedTalkFace(const char* path) {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     talkCanvas_[setIndex][index].pushSprite(&M5.Display, x, y);
@@ -5615,6 +5900,7 @@ bool FaceController::drawCachedGuruguruFace(const char* path) {
     drawCameraOverlayOnCanvas();
     drawMicOverlayOnCanvas();
     drawSpeechBubbleOverlayOnCanvas();
+    drawFrameOverlayOnCanvas();
     canvas_.pushSprite(&M5.Display, 0, 0);
   } else {
     M5.Display.fillScreen(TFT_BLACK);
