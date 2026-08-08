@@ -2,6 +2,32 @@
 
 [日本語](CHANGELOG.ja.md) | [English](CHANGELOG.md)
 
+## [0.5.0](docs/release_notes_0.5.0.ja.md) - 2026-08-08
+
+### 追加
+
+- CoreS3／StopWatchの会話、ぐるぐる、タイムキーパー、旅モードと4分割選択画面。
+- ストップウォッチ、ラップ、カウントダウン、時間当てチャレンジ、ポモドーロ。
+- タイムキーパーイベント、読み上げprefetch／結果、重要通知再送、ポモドーロ設定protocol。
+- 旅モード用9表情、2ページピッカー、3×3生成プロンプト、分割／ピッカー生成ツール。
+- 全3機種の`device.info`に、起動境界を識別する`bootId`。
+- CoreS3／StopWatchの`device.info`に、現在モード、ポモドーロ設定、4つのversion付きcapability。
+- 体験モード操作仕様とタイムキーパー通信仕様の日本語／英語文書。
+
+### 変更
+
+- タイムキーパー／旅モードでは専用表示を優先し、なでなで、ふりふり、マイク／カメラ表示、吹き出しを抑止。
+- タイムキーパーUIとoverlayをフル画面canvasへまとめ、画面更新時のちらつきを低減。
+- CoreS3電源ダブルクリックのぐるぐる切替を新しい体験モード管理へ統合。
+- CoreS3配布画像を76 JPG、StopWatchを68 JPGへ更新。AtomS3Rは65 JPGを維持。
+- 旅モード追加画像を11枚全部または0枚として検証し、部分構成を拒否。
+- AtomS3Rのユーザー向け機能、capability、顔画像構成は、versionと`bootId`以外を従来どおり維持。
+
+### 移行時の注意
+
+- 0.4.1からのfirmware-only更新は既存LittleFSを保持するため、完全な旅モードには0.5.0 factoryまたは`uploadfs`が必要。
+- `data_local*`は引き続きローカル確認専用で、Git管理とGitHub Releasesには含めない。
+
 ## [0.4.1](docs/release_notes_0.4.1.ja.md) - 2026-08-01
 
 ### 追加

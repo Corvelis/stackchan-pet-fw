@@ -31,9 +31,13 @@ manifestが存在するのに壊れている場合は`emergency`とし、欠け�
 | 方向 | 17 | 9 | 17 | `dir0.jpg` ... |
 | 中央blink | 1 | 1 | 1 | CoreS3/AtomS3R=`blink16.jpg`、StopWatch=`blink8.jpg` |
 | 混乱 | 15 | 15 | 15 | `dizzy_01.jpg` ... `dizzy_15.jpg` |
-| 合計 | 65 | 57 | 65 | |
+| 必須合計 | 65 | 57 | 65 | |
+| 旅モード静止表情 | 9 | 9 | なし | `travel_wink.jpg` ... `travel_peace.jpg` |
+| 旅モードピッカー | 2 | 2 | なし | `travel_picker_page_0.jpg`, `travel_picker_page_1.jpg` |
+| 0.5.0配布合計 | 76 | 68 | 65 | |
 
 `base_m{mouth}_e{eye}`は口4段階×目4段階です。なでなでは左上から行優先で16コマを並べます。StopWatchは正規17方向から8方向＋中央へ変換します。
+旅モード11ファイルはCoreS3／StopWatchの追加セットで、起動時manifestの必須65／57枚には含めません。これによりfirmware-only更新で旧LittleFSを維持した端末も起動でき、存在する旅画像だけを利用できます。0.5.0の配布用`data*`は11ファイルをすべて含みます。
 
 ## manifestと検証
 
@@ -47,8 +51,8 @@ python3 scripts/validate_face_assets.py
 ## 自分の顔画像を作る
 
 [顔画像ビルダー](../tools/face_image_builder/README.md)には、参考画像から基本顔・なでなで・方向・
-中央blink・混乱のスプライトシートを作るプロンプト、4×4／5×5分割CLI、公開サンプル、
-3機種向けのリサイズ・命名変換・manifest生成手順があります。
+中央blink・混乱・旅モード表情のスプライトシートを作るプロンプト、3×3／4×4／5×5分割CLI、
+旅モードピッカー生成、公開サンプル、3機種向けのリサイズ・命名変換・manifest生成手順があります。
 
 生成途中のファイルはGit管理外の`face_assets_v2_work/`、実機確認用の完成セットは
 `data_local/`、`data_stopwatch_local/`、`data_atoms3r_local/`を使ってください。
@@ -58,13 +62,17 @@ python3 scripts/validate_face_assets.py
 
 - 基本状態: idle、listening、speaking
 - アニメーション: petting、shake recovery、guruguru direction、dizzy
+- 旅モード: 選択した`travel_*`または再利用表情を静止表示し、通常の口パクとまばたきを停止
+- タイムキーパー結果: `pet_anim_0,8,9,10,9,8,0`を専用笑顔として再利用
 - 状態overlay: バッテリー、マイク、カメラ、熱、低電力
-- その他overlay: 吹き出し、時刻、歩数、好感度変化
+- その他overlay: 吹き出し、時刻、歩数、好感度変化、タイムキーパーUI
 
 shake recoveryは閉じ目から通常目へ`e3 → e2 → e1 → e0`で戻ります。マイク接続中でも旧`idle`/`blink`へ切り替えません。
 
 なでなでは、入力開始から3秒未満で終了すると`pet_anim_12..15`の不満リアクション、
 3秒以上続けて終了すると`pet_anim_8..11`の喜びリアクションへ進みます。
+
+タイムキーパーと旅モードでは、画面領域を競合させないためマイク／カメラ表示と吹き出しを抑止します。タイムキーパーUIはフル画面canvasのframe overlayとして顔と一度に転送し、overlayだけの更新でも黒い中間frameを露出しないよう合成します。StopWatchではタイムキーパー中の好感度差分表示を下へずらします。
 
 ## 互換期間
 

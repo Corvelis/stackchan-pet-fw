@@ -7,7 +7,7 @@
 ## 表示の優先順位
 
 ```text
-shake/dizzy recovery > guruguru > petting animation > base animation
+travel still > shake/dizzy recovery > guruguru > petting animation > base animation
 ```
 
 好感度、認証、熱、低電力、撮影状態は顔画像グループを切り替えません。必要な状態はoverlayや処理として維持します。
@@ -42,6 +42,16 @@ shake/dizzy recovery > guruguru > petting animation > base animation
 - 混乱: `dizzy_01..15`
 
 方向顔は傾きやタッチ方向へ追従し、混乱判定後は`dizzy_*`を再生します。混乱終了後は基本アニメーションの閉じ目から通常目へ戻ります。
+
+## 旅モード
+
+旅モードは`travel_*`9表情と、既存の`pet_anim_*`／`dizzy_*`6表情を写真向け静止顔として使用します。選択中はアプリから一時的なstate変更を受けても同じ画像を維持し、別表情の選択、通常顔へのリセット、または旅モード終了まで口パクとまばたきを行いません。
+
+ピッカーページは表示専用の合成JPGであり、顔アニメーションframeではありません。CoreS3は320×240、StopWatchは386×386です。
+
+## タイムキーパー
+
+タイムキーパーUIは顔の上へframe overlayとして合成します。チャレンジ結果の誤差が200ms以内の場合は`pet_anim_0,8,9,10,9,8,0`を専用笑顔として再利用し、終了後に通常のキャッシュ状態へ戻します。
 
 ## 旧互換
 

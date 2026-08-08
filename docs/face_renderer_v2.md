@@ -31,9 +31,13 @@ An invalid present manifest selects `emergency`; missing v2 frames are not fille
 | Direction | 17 | 9 | 17 | `dir0.jpg` ... |
 | Center blink | 1 | 1 | 1 | `blink16.jpg` on CoreS3/AtomS3R, `blink8.jpg` on StopWatch |
 | Dizzy | 15 | 15 | 15 | `dizzy_01.jpg` ... `dizzy_15.jpg` |
-| Total | 65 | 57 | 65 | |
+| Required total | 65 | 57 | 65 | |
+| Travel still expressions | 9 | 9 | none | `travel_wink.jpg` ... `travel_peace.jpg` |
+| Travel picker pages | 2 | 2 | none | `travel_picker_page_0.jpg`, `travel_picker_page_1.jpg` |
+| 0.5.0 release total | 76 | 68 | 65 | |
 
 `base_m{mouth}_e{eye}` is four mouth levels by four eye levels. Petting frames use row-major ordering. StopWatch maps the canonical 17 directions to eight directions plus center.
+The 11 Travel files are an additional CoreS3/StopWatch set and are not part of the boot manifest's required 65/57 images. This keeps a firmware-only update bootable with an older LittleFS and lets it use whichever Travel faces are present. The 0.5.0 release `data*` directories contain the complete 11-file addition.
 
 ## Manifest and validation
 
@@ -48,8 +52,9 @@ python3 scripts/validate_face_assets.py
 
 The [Face Image Builder](../tools/face_image_builder/README.en.md) provides
 reference-image prompts for base, petting, direction, center-blink, and dizzy
-sprite sheets; 4x4/5x5 splitting; public samples; and target-specific resizing,
-naming, and manifest generation.
+sprite sheets, plus Travel expressions; 3x3/4x4/5x5 splitting; Travel picker
+generation; public samples; and target-specific resizing, naming, and manifest
+generation.
 
 Keep intermediate work in ignored `face_assets_v2_work/` and complete test sets
 in `data_local/`, `data_stopwatch_local/`, or `data_atoms3r_local/`. Never mix
@@ -60,14 +65,22 @@ set only after it passes validation.
 
 - Base state: idle, listening, speaking
 - Animation: petting, shake recovery, guruguru direction, dizzy
+- Travel: keep the selected `travel_*` or reused expression still and stop normal lip sync/blink
+- Timekeeper result: reuse `pet_anim_0,8,9,10,9,8,0` as a dedicated smile
 - Status overlays: battery, microphone, camera, thermal, low power
-- Other overlays: speech bubble, clock, step count, affection delta
+- Other overlays: speech bubble, clock, step count, affection delta, Timekeeper UI
 
 Shake recovery opens the eyes through `e3 → e2 → e1 → e0`. It never exposes legacy `idle` or `blink`, including while a microphone client is connected.
 
 Petting that ends before 3 seconds uses the dissatisfied `pet_anim_12..15`
 reaction. Petting that lasts at least 3 seconds uses the happy
 `pet_anim_8..11` reaction.
+
+Timekeeper and Travel suppress microphone/camera overlays and speech bubbles to
+avoid competing for the same screen area. Timekeeper UI is a frame overlay
+composited into the full-screen canvas and pushed with the face, so an
+overlay-only refresh does not expose a black intermediate frame. StopWatch also
+moves the affection-delta label downward while Timekeeper is active.
 
 ## Compatibility window
 

@@ -8,29 +8,31 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 
 このリポジトリはデバイス本体側のファームウェアです。外部クライアントの実装は含みません。
 
-## 最新リリース: v0.4.1
+## 最新リリース: v0.5.0
 
-### StopWatchスマホカメラ
+0.5.0の新しい体験機能と旅モード画像はCoreS3とStopWatch向けです。AtomS3Rの
+ユーザー向け変更は、配布バイナリのversion更新と全機種共通の`device.info.bootId`に限られ、
+従来の会話／ぐるぐる機能、capability、65枚の顔画像を維持します。
 
-- WebSocket／USB Serialで接続した対応スマホアプリへ、撮影とイン／アウトカメラ切替を要求。
-- 通常画面右下のカメラ表示を短押しで撮影、約0.8秒長押しでレンズ切替。
-- 現在のレンズを`IN`／`OUT`で表示し、処理中・成功・失敗を画面と振動で通知。
-- transport、request ID、処理種別を照合し、タイムアウトや切断、画面OFFを安全に処理。
+### 体験モード
 
-### タッチ操作と時刻同期
+- CoreS3とStopWatchに、会話、ぐるぐる、タイムキーパー、旅モードの選択画面を追加。
+- CoreS3は左端から右フリック、StopWatchは黄色のBtnA長押しで選択。
+- 音声再生中の安全な遅延切替と、モード変更通知に対応。
 
-- カメラ／マイク表示のタッチを共通gesture管理へ移行し、長押しやdragによる誤操作を抑制。
-- StopWatchのマイク表示を左下へ移動し、StopWatch／CoreS3の操作領域を拡大。
-- 時刻を`Asia/Tokyo`へ統一し、RTC、アプリ、NTPからシステム時計へ即時反映。
-- NTP応答確認、Wi-Fi再接続時の再同期、失敗時のretry、6時間ごとの更新に対応。
+### タイムキーパー
 
-### 通信仕様と配布
+- ストップウォッチ、ラップ、カウントダウン、10／30／60秒チャレンジ、ポモドーロを追加。
+- 端末別のタッチ／ボタン操作、マイルストーン、結果ランク、好感度報酬を実装。
+- 読み上げ用イベント、事前生成、重要通知の再送、ポモドーロ設定APIを追加。
 
-- `phone_camera.remote_shutter.v1`／`phone_camera.remote_lens.v1` capabilityを追加。
-- スマホカメラ遠隔操作protocolを日本語／英語で公開。
-- 3機種の更新用`firmware`と初回導入用`factory`バイナリを配布。
+### 旅モード
 
-詳細は[0.4.1リリースノート](docs/release_notes_0.4.1.ja.md)、全versionの履歴は
+- 写真向けの15表情と2ページのピッカーをCoreS3／StopWatchへ追加。
+- 同じ人物の9表情を作る3×3生成プロンプト、分割、端末別ピッカー生成ツールを公開。
+- `factory`には新しい旅画像を含み、`firmware`だけの更新では既存LittleFSを保持。
+
+詳細は[0.5.0リリースノート](docs/release_notes_0.5.0.ja.md)、全versionの履歴は
 [日本語CHANGELOG](CHANGELOG.ja.md)を参照してください。
 
 ## 対応デバイス
@@ -56,6 +58,9 @@ HTTP・WebSocket・USB Serial接続を提供します。CoreS3ではサーボと
 - 好感度管理と状態overlay
 - StopWatchの歩数計、30日履歴、同期
 - StopWatchから対応スマホアプリへのカメラ撮影／レンズ切替要求
+- CoreS3／StopWatchの4体験モードと端末内モード選択
+- ストップウォッチ、カウントダウン、時間当てチャレンジ、ポモドーロ
+- CoreS3／StopWatchの旅モード静止表情ピッカー
 - CoreS3のサーボreaction
 
 ## 導入方法
@@ -124,6 +129,8 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 - [好感度API](docs/device_affection_api.ja.md)
 - [StopWatch歩数同期protocol](docs/step_counter_protocol.ja.md)
 - [StopWatchスマホカメラ・リモート撮影仕様](docs/phone_camera_remote_protocol.ja.md)
+- [体験モードと本体操作](docs/experience_modes.ja.md)
+- [タイムキーパー・体験モード通信仕様](docs/timekeeper_protocol.ja.md)
 
 ## ドキュメント
 
@@ -131,7 +138,9 @@ classic顔は実行時設定ではなく、対応する`*-classic` envを別途b
 | --- | --- |
 | 機種別のbuild・操作 | [対応デバイス別ガイド](docs/devices.ja.md) |
 | binary導入・復旧 | [バイナリ版インストール手順](docs/install_binary.ja.md) |
-| v0.4.1更新 | [0.4.1リリースノート](docs/release_notes_0.4.1.ja.md) |
+| v0.5.0更新 | [0.5.0リリースノート](docs/release_notes_0.5.0.ja.md) |
+| 体験モード・旅モード・タイムキーパー操作 | [体験モードと本体操作](docs/experience_modes.ja.md) |
+| タイムキーパーのアプリ連携 | [タイムキーパー・体験モード通信仕様](docs/timekeeper_protocol.ja.md) |
 | v0.4.0顔画像v2移行 | [0.4.0リリースノート](docs/release_notes_0.4.0.ja.md) |
 | 全versionの変更 | [CHANGELOG](CHANGELOG.ja.md) |
 | 顔画像の作成 | [顔画像ビルダー](tools/face_image_builder/README.md) |
@@ -154,7 +163,7 @@ build pathがbinaryへ残っていないことも検査します。
 ## ライセンス
 
 現在のfirmware source、同梱自作画像、sampleは[MIT License](LICENSE)です。
-現在のsource treeとv0.4.1配布物には第三者のcharacter素材を含みません。
+現在のsource treeとv0.5.0配布物には第三者のcharacter素材を含みません。
 
 つくよみちゃん画像を含む過去の配布binaryには現行MITを適用せず、当時のrelease通知と
 素材提供元の規約に従ってください。依存関係は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を

@@ -30,6 +30,12 @@ asset, omit `--ignore-missing` to detect missing files as well.
 | firmware bin | Update an existing install. Preserves Wi-Fi settings, LittleFS images, and CoreS3 servo calibration. |
 | factory image | First-time install. Combines bootloader, partition table, firmware, and LittleFS runtime image data. |
 
+Version 0.5.0 adds Travel images to CoreS3 and StopWatch. A firmware-only update
+from 0.4.1 keeps the old LittleFS, so the firmware boots but the new 15-face
+picker is not installed. For complete Travel mode, record saved settings and use
+the 0.5.0 factory image, or upload the target `data*` from source with `uploadfs`.
+See the [0.5.0 Release Notes](release_notes_0.5.0.md).
+
 GitHub Release `firmware` and `factory` binaries use image faces. Classic is
 not a runtime option in those binaries. Build and flash the target's
 `*-classic` environment from source as described in the
@@ -41,7 +47,10 @@ image or LittleFS image as well. See the [Face Asset v2 Migration Guide](face_as
 
 For release maintainers, this command generates assets with the same file names
 into `dist/`. It uses the normal image directories for release assets, so do not
-set `STACKCHAN_FACE_DATA_DIR` when running it.
+set `STACKCHAN_FACE_DATA_DIR` when running it. The script fails if the variable
+is set, preventing local assets from entering a release. It also stops when
+`dist/` contains anything other than the nine expected release files, such as
+stale demo videos. Move unexpected files elsewhere before rerunning it.
 
 ```sh
 bash scripts/build_release_bins.sh all
@@ -64,6 +73,8 @@ To generate one device, pass `cores3`, `stopwatch`, or `atoms3r`.
 - Speech bubbles appear only when a compatible client sends TTS PCM together
   with `display.speech_bubble.*` messages. The firmware does not generate
   subtitles by itself.
+- Timekeeper and Travel on CoreS3/StopWatch reserve the display and do not show
+  speech bubbles.
 
 ## Images And License
 

@@ -29,6 +29,11 @@ shasum -a 256 --ignore-missing -c SHA256SUMS
 | firmware bin | 既に導入済みの人向けの更新用です。Wi-Fi 設定、LittleFS 画像、CoreS3 のサーボ原点などを保持します。 |
 | factory image | 新しく入れる人向けです。bootloader、partition table、firmware、LittleFS 画像データを結合しています。 |
 
+0.5.0ではCoreS3とStopWatchに旅モード画像を追加しました。0.4.1からfirmware binだけで更新すると
+既存LittleFSを保持するため、ファームウェアは起動しますが新しい15表情ピッカーは入りません。
+旅モードを完全に使う場合は、設定を控えたうえで0.5.0 factory imageを使用するか、ソースから
+対象`data*`を`uploadfs`してください。詳細は[0.5.0リリースノート](release_notes_0.5.0.ja.md)を参照してください。
+
 GitHub Releaseの`firmware`／`factory`バイナリは画像顔です。クラシック顔は配布バイナリの
 実行時設定ではありません。利用する場合は、ソースから対象機種の`*-classic` envをビルド・
 書き込みしてください。詳細は[対応デバイス別ガイド](devices.ja.md#クラシック顔ビルド)を参照してください。
@@ -39,6 +44,9 @@ GitHub Releaseの`firmware`／`factory`バイナリは画像顔です。クラ�
 
 リリース作成時は、リポジトリ直下で次を実行すると同じファイル名の asset を `dist/` に生成できます。
 このコマンドは通常の画像フォルダを使って配布物を作るため、`STACKCHAN_FACE_DATA_DIR` は指定しません。
+誤ってローカル画像を含めないよう、変数が設定されている場合はスクリプトが失敗します。
+また、古いdemo動画など、規定の9配布ファイル以外が`dist/`に残っている場合も処理を中止します。
+不要なファイルを別の場所へ移してから再実行してください。
 
 ```sh
 bash scripts/build_release_bins.sh all
@@ -57,6 +65,7 @@ bash scripts/build_release_bins.sh all
 - バイナリに含まれる同梱画像も、ファームウェアソースと同じMIT Licenseです。
 - 画像またはその実質的な部分を再配布する場合は、`LICENSE`の著作権表示と許諾表示を含めてください。
 - 発話吹き出しは、対応クライアントがTTS PCMと`display.speech_bubble.*`メッセージを送った場合に表示します。ファームウェア単体では字幕を生成しません。
+- CoreS3／StopWatchのタイムキーパーと旅モードでは専用表示を優先し、発話吹き出しを表示しません。
 
 ## 画像とライセンス
 

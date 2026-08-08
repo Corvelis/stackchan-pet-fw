@@ -128,6 +128,19 @@ The firmware sends JSON events such as:
 {"type":"interaction.event","event":"camera_button","phase":"pressed","source":"device"}
 ```
 
+On CoreS3 and StopWatch, 0.5.0 uses the same JSON transport for experience
+modes, Timekeeper, Pomodoro configuration, and pre-display-off notification.
+
+```json
+{"type":"experience.mode.changed","version":1,"mode":"timekeeper","previousMode":"conversation","revision":1}
+{"type":"timekeeper.event","version":1,"activity":"stopwatch","event":"lap","state":"running","lapIndex":1}
+{"type":"timekeeper.pomodoro.config.get","version":1,"requestId":"pomodoro-001"}
+{"type":"device.communication.suspending","version":1,"reason":"display_off"}
+```
+
+See the [Timekeeper and Experience Mode Protocol](timekeeper_protocol.md) for
+complete fields, `bootId`/`eventId`, announcement results, and resend behavior.
+
 ## TTS PCM
 
 Client-to-device TTS uses SCU1 type `0x02`.

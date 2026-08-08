@@ -2,6 +2,32 @@
 
 [日本語](CHANGELOG.ja.md) | [English](CHANGELOG.md)
 
+## [0.5.0](docs/release_notes_0.5.0.md) - 2026-08-08
+
+### Added
+
+- Conversation, Guruguru, Timekeeper, and Travel with four-sector selectors on CoreS3/StopWatch.
+- Stopwatch, laps, countdown, time challenge, and Pomodoro.
+- Timekeeper events, announcement prefetch/results, critical resend, and Pomodoro configuration protocol.
+- Nine Travel expressions, two picker pages, a 3x3 generation prompt, splitter naming, and picker generator.
+- A boot-scoped `bootId` in `device.info` on all three targets.
+- Current mode, Pomodoro configuration, and four versioned `device.info` capabilities on CoreS3/StopWatch.
+- Paired Japanese/English experience-control and Timekeeper protocol documents.
+
+### Changed
+
+- Timekeeper/Travel reserve their display by suppressing petting, shake, microphone/camera overlays, and speech bubbles.
+- Timekeeper UI and overlays share the full-screen canvas to reduce refresh flicker.
+- CoreS3 power-button double-click now routes Guruguru changes through the experience-mode manager.
+- CoreS3 release images now contain 76 JPGs and StopWatch 68; AtomS3R remains at 65.
+- Travel validation accepts all 11 additional files or none and rejects partial sets.
+- AtomS3R keeps its existing user-visible features, capabilities, and face assets apart from the release-version and `bootId` updates.
+
+### Migration Notes
+
+- A firmware-only update from 0.4.1 preserves LittleFS; use the 0.5.0 factory or `uploadfs` for complete Travel mode.
+- `data_local*` remains local-only and is excluded from Git and GitHub Releases.
+
 ## [0.4.1](docs/release_notes_0.4.1.md) - 2026-08-01
 
 ### Added
